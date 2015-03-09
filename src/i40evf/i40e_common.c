@@ -1,7 +1,7 @@
 /*******************************************************************************
  *
  * Intel Ethernet Controller XL710 Family Linux Virtual Function Driver
- * Copyright(c) 2013 - 2014 Intel Corporation.
+ * Copyright(c) 2013 - 2015 Intel Corporation.
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms and conditions of the GNU General Public License,
@@ -50,6 +50,7 @@ i40e_status i40e_set_mac_type(struct i40e_hw *hw)
 		case I40E_DEV_ID_QSFP_A:
 		case I40E_DEV_ID_QSFP_B:
 		case I40E_DEV_ID_QSFP_C:
+		case I40E_DEV_ID_10G_BASE_T:
 			hw->mac.type = I40E_MAC_XL710;
 			break;
 		case I40E_DEV_ID_VF:
@@ -84,47 +85,51 @@ void i40e_debug_aq(struct i40e_hw *hw, enum i40e_debug_mask mask, void *desc,
 {
 	struct i40e_aq_desc *aq_desc = (struct i40e_aq_desc *)desc;
 	u16 len = LE16_TO_CPU(aq_desc->datalen);
-	u8 *aq_buffer = (u8 *)buffer;
-	u32 data[4];
-	u32 i = 0;
+	u8 *buf = (u8 *)buffer;
+	u16 i = 0;
 
 	if ((!(mask & hw->debug_mask)) || (desc == NULL))
 		return;
 
 	i40e_debug(hw, mask,
 		   "AQ CMD: opcode 0x%04X, flags 0x%04X, datalen 0x%04X, retval 0x%04X\n",
-		   aq_desc->opcode, aq_desc->flags, aq_desc->datalen,
-		   aq_desc->retval);
+		   LE16_TO_CPU(aq_desc->opcode),
+		   LE16_TO_CPU(aq_desc->flags),
+		   LE16_TO_CPU(aq_desc->datalen),
+		   LE16_TO_CPU(aq_desc->retval));
 	i40e_debug(hw, mask, "\tcookie (h,l) 0x%08X 0x%08X\n",
-		   aq_desc->cookie_high, aq_desc->cookie_low);
+		   LE32_TO_CPU(aq_desc->cookie_high),
+		   LE32_TO_CPU(aq_desc->cookie_low));
 	i40e_debug(hw, mask, "\tparam (0,1)  0x%08X 0x%08X\n",
-		   aq_desc->params.internal.param0,
-		   aq_desc->params.internal.param1);
+		   LE32_TO_CPU(aq_desc->params.internal.param0),
+		   LE32_TO_CPU(aq_desc->params.internal.param1));
 	i40e_debug(hw, mask, "\taddr (h,l)   0x%08X 0x%08X\n",
-		   aq_desc->params.external.addr_high,
-		   aq_desc->params.external.addr_low);
+		   LE32_TO_CPU(aq_desc->params.external.addr_high),
+		   LE32_TO_CPU(aq_desc->params.external.addr_low));
 
 	if ((buffer != NULL) && (aq_desc->datalen != 0)) {
-		i40e_memset(data, 0, sizeof(data), I40E_NONDMA_MEM);
 		i40e_debug(hw, mask, "AQ CMD Buffer:\n");
 		if (buf_len < len)
 			len = buf_len;
-		for (i = 0; i < len; i++) {
-			data[((i % 16) / 4)] |=
-				((u32)aq_buffer[i]) << (8 * (i % 4));
-			if ((i % 16) == 15) {
-				i40e_debug(hw, mask,
-					   "\t0x%04X  %08X %08X %08X %08X\n",
-					   i - 15, data[0], data[1], data[2],
-					   data[3]);
-				i40e_memset(data, 0, sizeof(data),
-					    I40E_NONDMA_MEM);
-			}
+		/* write the full 16-byte chunks */
+		for (i = 0; i < (len - 16); i += 16)
+			i40e_debug(hw, mask,
+				   "\t0x%04X  %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X\n",
+				   i, buf[i], buf[i+1], buf[i+2], buf[i+3],
+				   buf[i+4], buf[i+5], buf[i+6], buf[i+7],
+				   buf[i+8], buf[i+9], buf[i+10], buf[i+11],
+				   buf[i+12], buf[i+13], buf[i+14], buf[i+15]);
+		/* write whatever's left over without overrunning the buffer */
+		if (i < len) {
+			char d_buf[80];
+			int j = 0;
+
+			memset(d_buf, 0, sizeof(d_buf));
+			j += sprintf(d_buf, "\t0x%04X ", i);
+			while (i < len)
+				j += sprintf(&d_buf[j], " %02X", buf[i++]);
+			i40e_debug(hw, mask, "%s\n", d_buf);
 		}
-		if ((i % 16) != 0)
-			i40e_debug(hw, mask, "\t0x%04X  %08X %08X %08X %08X\n",
-				   i - (i % 16), data[0], data[1], data[2],
-				   data[3]);
 	}
 }
 
@@ -533,6 +538,27 @@ struct i40e_rx_ptype_decoded i40e_ptype_lookup[] = {
 	I40E_PTT_UNUSED_ENTRY(255)
 };
 
+/**
+ * i40e_validate_mac_addr - Validate unicast MAC address
+ * @mac_addr: pointer to MAC address
+ *
+ * Tests a MAC address to ensure it is a valid Individual Address
+ **/
+i40e_status i40e_validate_mac_addr(u8 *mac_addr)
+{
+	i40e_status status = I40E_SUCCESS;
+
+	/* Broadcast addresses ARE multicast addresses
+	 * Make sure it is not a multicast address
+	 * Reject the zero address
+	 */
+	if (I40E_IS_MULTICAST(mac_addr) ||
+	    (mac_addr[0] == 0 && mac_addr[1] == 0 && mac_addr[2] == 0 &&
+	      mac_addr[3] == 0 && mac_addr[4] == 0 && mac_addr[5] == 0))
+		status = I40E_ERR_INVALID_MAC_ADDR;
+
+	return status;
+}
 
 /**
  * i40e_aq_send_msg_to_pf

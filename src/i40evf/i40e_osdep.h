@@ -1,7 +1,7 @@
 /*******************************************************************************
  *
  * Intel Ethernet Controller XL710 Family Linux Virtual Function Driver
- * Copyright(c) 2013 - 2014 Intel Corporation.
+ * Copyright(c) 2013 - 2015 Intel Corporation.
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms and conditions of the GNU General Public License,
@@ -93,7 +93,7 @@ struct i40e_virt_mem {
 #define i40e_debug(h, m, s, ...)                                \
 do {                                                            \
 	if (((m) & (h)->debug_mask))                            \
-		pr_info("i40e %02x.%x " s,                      \
+		pr_info("i40evf %02x.%x " s,                      \
 			(h)->bus.device, (h)->bus.func,         \
 			##__VA_ARGS__);                         \
 } while (0)

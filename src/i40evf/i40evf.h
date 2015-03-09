@@ -1,7 +1,7 @@
 /*******************************************************************************
  *
  * Intel Ethernet Controller XL710 Family Linux Virtual Function Driver
- * Copyright(c) 2013 - 2014 Intel Corporation.
+ * Copyright(c) 2013 - 2015 Intel Corporation.
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms and conditions of the GNU General Public License,
@@ -124,6 +124,7 @@ struct i40e_q_vector {
 	u8 num_ringpairs;	/* total number of ring pairs in vector */
 	int v_idx;	  /* vector index in list */
 	char name[IFNAMSIZ + 9];
+	bool arm_wb_state;
 #ifdef HAVE_IRQ_AFFINITY_HINT
 	cpumask_var_t affinity_mask;
 #endif
@@ -196,15 +197,13 @@ enum i40evf_critical_section_t {
 /* board specific private data structure */
 struct i40evf_adapter {
 	struct timer_list watchdog_timer;
-#ifdef HAVE_VLAN_RX_REGISTER
-	struct vlan_group *vlgrp;
-#endif
 	struct work_struct reset_task;
 	struct work_struct adminq_task;
 	struct delayed_work init_task;
 	struct i40e_q_vector *q_vector[MAX_MSIX_Q_VECTORS];
 	struct list_head vlan_filter_list;
 	char misc_vector_name[IFNAMSIZ + 9];
+	int num_active_queues;
 
 	/* TX */
 	struct i40e_ring *tx_rings[I40E_MAX_VSI_QP];
@@ -257,7 +256,7 @@ struct i40evf_adapter {
 	struct i40e_hw hw; /* defined in i40e_type.h */
 
 	enum i40evf_state_t state;
-	volatile unsigned long crit_section;
+	unsigned long crit_section;
 
 	struct work_struct watchdog_task;
 	bool netdev_registered;

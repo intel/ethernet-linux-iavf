@@ -1,7 +1,7 @@
 /*******************************************************************************
  *
  * Intel Ethernet Controller XL710 Family Linux Virtual Function Driver
- * Copyright(c) 2013 - 2014 Intel Corporation.
+ * Copyright(c) 2013 - 2015 Intel Corporation.
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms and conditions of the GNU General Public License,
@@ -50,6 +50,7 @@ i40e_status i40e_shutdown_arq(struct i40e_hw *hw);
 u16 i40e_clean_asq(struct i40e_hw *hw);
 void i40e_free_adminq_asq(struct i40e_hw *hw);
 void i40e_free_adminq_arq(struct i40e_hw *hw);
+i40e_status i40e_validate_mac_addr(u8 *mac_addr);
 void i40e_adminq_init_ring_data(struct i40e_hw *hw);
 i40e_status i40e_clean_arq_element(struct i40e_hw *hw,
 					     struct i40e_arq_event_info *e,
@@ -69,7 +70,6 @@ void i40e_idle_aq(struct i40e_hw *hw);
 void i40e_resume_aq(struct i40e_hw *hw);
 bool i40e_check_asq_alive(struct i40e_hw *hw);
 i40e_status i40e_aq_queue_shutdown(struct i40e_hw *hw, bool unloading);
-
 
 i40e_status i40e_set_mac_type(struct i40e_hw *hw);
 

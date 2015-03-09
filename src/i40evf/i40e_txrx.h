@@ -1,7 +1,7 @@
 /*******************************************************************************
  *
  * Intel Ethernet Controller XL710 Family Linux Virtual Function Driver
- * Copyright(c) 2013 - 2014 Intel Corporation.
+ * Copyright(c) 2013 - 2015 Intel Corporation.
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms and conditions of the GNU General Public License,
@@ -30,10 +30,7 @@
 /* Interrupt Throttling and Rate Limiting Goodies */
 
 #define I40E_MAX_ITR               0x0FF0  /* reg uses 2 usec resolution */
-#define I40E_MIN_ITR               0x0004  /* reg uses 2 usec resolution */
-#define I40E_MAX_IRATE             0x03F
-#define I40E_MIN_IRATE             0x001
-#define I40E_IRATE_USEC_RESOLUTION 4
+#define I40E_MIN_ITR               0x0001  /* reg uses 2 usec resolution */
 #define I40E_ITR_100K              0x0005
 #define I40E_ITR_20K               0x0019
 #define I40E_ITR_8K                0x003E
@@ -99,6 +96,14 @@ enum i40e_dyn_idx_t {
 
 /* How many Rx Buffers do we bundle into one write to the hardware ? */
 #define I40E_RX_BUFFER_WRITE	16	/* Must be power of 2 */
+#define I40E_RX_INCREMENT(r, i) \
+	do {					\
+		(i)++;				\
+		if ((i) == (r)->count)		\
+			i = 0;			\
+		r->next_to_clean = i;		\
+	} while (0)
+
 #define I40E_RX_NEXT_DESC(r, i, n)		\
 	do {					\
 		(i)++;				\
@@ -115,6 +120,7 @@ enum i40e_dyn_idx_t {
 
 #define i40e_rx_desc i40e_32byte_rx_desc
 
+#define I40E_MAX_BUFFER_TXD	8
 #define I40E_MIN_TX_LEN		17
 #define I40E_MAX_DATA_PER_TXD	8192
 
@@ -153,6 +159,7 @@ struct i40e_tx_buffer {
 
 struct i40e_rx_buffer {
 	struct sk_buff *skb;
+	void *hdr_buf;
 	dma_addr_t dma;
 	struct page *page;
 	dma_addr_t page_dma;
@@ -225,8 +232,8 @@ struct i40e_ring {
 	u16 rx_buf_len;
 	u8  dtype;
 #define I40E_RX_DTYPE_NO_SPLIT      0
-#define I40E_RX_DTYPE_SPLIT_ALWAYS  1
-#define I40E_RX_DTYPE_HEADER_SPLIT  2
+#define I40E_RX_DTYPE_HEADER_SPLIT  1
+#define I40E_RX_DTYPE_SPLIT_ALWAYS  2
 	u8  hsplit;
 #define I40E_RX_SPLIT_L2      0x1
 #define I40E_RX_SPLIT_IP      0x2
@@ -241,6 +248,7 @@ struct i40e_ring {
 	u8 atr_count;
 
 	bool ring_active;		/* is ring online or not */
+	bool arm_wb;		/* do something to arm write back */
 
 	/* stats structs */
 	struct i40e_queue_stats	stats;
@@ -322,7 +330,9 @@ static inline bool i40e_qv_disable(struct i40e_q_vector *q_vector)
 	return true;
 }
 
-void i40e_alloc_rx_buffers(struct i40e_ring *rxr, u16 cleaned_count);
+void i40e_alloc_rx_buffers_ps(struct i40e_ring *rxr, u16 cleaned_count);
+void i40e_alloc_rx_buffers_1buf(struct i40e_ring *rxr, u16 cleaned_count);
+void i40e_alloc_rx_headers(struct i40e_ring *rxr);
 netdev_tx_t i40e_lan_xmit_frame(struct sk_buff *skb, struct net_device *netdev);
 void i40e_clean_tx_ring(struct i40e_ring *tx_ring);
 void i40e_clean_rx_ring(struct i40e_ring *rx_ring);
@@ -331,4 +341,13 @@ int i40e_setup_rx_descriptors(struct i40e_ring *rx_ring);
 void i40e_free_tx_resources(struct i40e_ring *tx_ring);
 void i40e_free_rx_resources(struct i40e_ring *rx_ring);
 int i40e_napi_poll(struct napi_struct *napi, int budget);
+#ifdef I40E_FCOE
+void i40e_tx_map(struct i40e_ring *tx_ring, struct sk_buff *skb,
+		 struct i40e_tx_buffer *first, u32 tx_flags,
+		 const u8 hdr_len, u32 td_cmd, u32 td_offset);
+int i40e_maybe_stop_tx(struct i40e_ring *tx_ring, int size);
+int i40e_xmit_descriptor_count(struct sk_buff *skb, struct i40e_ring *tx_ring);
+int i40e_tx_prepare_vlan_flags(struct sk_buff *skb,
+			       struct i40e_ring *tx_ring, u32 *flags);
+#endif
 #endif /* _I40E_TXRX_H_ */

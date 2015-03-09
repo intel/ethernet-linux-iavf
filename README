@@ -1,7 +1,7 @@
 Linux* Driver for Intel(R) XL710/X710 Virtual Function
 ======================================================
 
-July 2, 2014
+September 29, 2014
 
 ======================================================
 
@@ -155,6 +155,15 @@ http://ftp.kernel.org/pub/software/network/ethtool/.
 
 Known Issues/Troubleshooting
 ----------------------------
+
+Virtual machine does not get link
+---------------------------------
+If the virtual machine has more than one virtual port assigned to it, and those
+virtual ports are bound to different physical ports, you may not get link on all
+of the virtual ports. The following command may work around the issue:
+  ethtool –r <PF>
+Where <PF> is the PF interface in the host, for example: p5p1. You may need to
+run the command more than once to get link on all virtual ports.
 
 Hardware Issues
 ---------------
