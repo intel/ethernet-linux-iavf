@@ -256,8 +256,6 @@ static int i40evf_set_tx_csum(struct net_device *netdev, u32 data)
  **/
 static int i40evf_set_tso(struct net_device *netdev, u32 data)
 {
-	struct i40evf_adapter *adapter = netdev_priv(netdev);
-
 	if (data) {
 		netdev->features |= NETIF_F_TSO;
 		netdev->features |= NETIF_F_TSO6;
@@ -265,12 +263,14 @@ static int i40evf_set_tso(struct net_device *netdev, u32 data)
 		netif_tx_stop_all_queues(netdev);
 		netdev->features &= ~NETIF_F_TSO;
 		netdev->features &= ~NETIF_F_TSO6;
-#ifdef HAVE_VLAN_RX_REGISTER
+#ifndef HAVE_NETDEV_VLAN_FEATURES
 		/* disable TSO on all VLANs if they're present */
 		if (adapter->vsi.vlgrp) {
-			int i;
-			struct net_device *v_netdev;
+			struct i40evf_adapter *adapter = netdev_priv(netdev);
 			struct vlan_group *vlgrp = adapter->vsi.vlgrp;
+			struct net_device *v_netdev;
+			int i;
+
 			for (i = 0; i < VLAN_GROUP_ARRAY_LEN; i++) {
 				v_netdev = vlan_group_get_device(vlgrp, i);
 				if (v_netdev) {
@@ -332,7 +332,7 @@ static void i40evf_get_drvinfo(struct net_device *netdev,
 
 	strlcpy(drvinfo->driver, i40evf_driver_name, 32);
 	strlcpy(drvinfo->version, i40evf_driver_version, 32);
-
+	strlcpy(drvinfo->fw_version, "N/A", 4);
 	strlcpy(drvinfo->bus_info, pci_name(adapter->pdev), 32);
 }
 
@@ -390,8 +390,10 @@ static int i40evf_set_ringparam(struct net_device *netdev,
 	adapter->tx_desc_count = new_tx_count;
 	adapter->rx_desc_count = new_rx_count;
 
-	if (netif_running(netdev))
-		i40evf_reinit_locked(adapter);
+	if (netif_running(netdev)) {
+		adapter->flags |= I40EVF_FLAG_RESET_NEEDED;
+		schedule_work(&adapter->reset_task);
+	}
 
 	return 0;
 }

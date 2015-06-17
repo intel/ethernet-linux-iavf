@@ -1,7 +1,7 @@
 Linux* Driver for Intel(R) XL710/X710 Virtual Function
 ======================================================
 
-September 29, 2014
+March 26, 2015
 
 ======================================================
 
@@ -164,6 +164,14 @@ of the virtual ports. The following command may work around the issue:
   ethtool –r <PF>
 Where <PF> is the PF interface in the host, for example: p5p1. You may need to
 run the command more than once to get link on all virtual ports.
+
+MAC address of Virtual Function changes unexpectedly
+----------------------------------------------------
+If a Virtual Function's MAC address is not assigned in the host, then the
+VF (virtual function) driver will use a random MAC address. This random MAC
+address may change each time the VF driver is reloaded. You can assign a
+static MAC address in the host machine. This static MAC address will survive
+a VF driver reload.
 
 Hardware Issues
 ---------------
