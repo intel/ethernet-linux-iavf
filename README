@@ -1,7 +1,6 @@
 Linux* Driver for Intel(R) XL710/X710 Virtual Function
 ======================================================
-
-March 26, 2015
+July 28, 2015
 
 ======================================================
 
@@ -155,6 +154,14 @@ http://ftp.kernel.org/pub/software/network/ethtool/.
 
 Known Issues/Troubleshooting
 ----------------------------
+
+Multiple log error messages on i40evf driver removal
+----------------------------------------------------
+If you have several VFs and you remove the i40evf driver, several instances of
+the following log errors are written to the log:
+  Unable to send opcode 2 to PF, err I40E_ERR_QUEUE_EMPTY, aq_err ok
+  Unable to send the message to VF 2 aq_err 12
+  ARQ Overflow Error detected
 
 Virtual machine does not get link
 ---------------------------------

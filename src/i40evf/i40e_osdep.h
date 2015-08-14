@@ -32,8 +32,10 @@
 #include <linux/if_vlan.h>
 #include <linux/tcp.h>
 #include <linux/pci.h>
+#include <linux/highuid.h>
 
 #include <linux/io.h>
+#include <asm-generic/int-ll64.h>
 
 #ifndef readq
 static inline __u64 readq(const volatile void __iomem *addr)
@@ -71,7 +73,6 @@ static inline void writeq(__u64 val, volatile void __iomem *addr)
 #define wr64(a, reg, value)	writeq((value), ((a)->hw_addr + (reg)))
 #define rd64(a, reg)		readq((a)->hw_addr + (reg))
 #define i40e_flush(a)		readl((a)->hw_addr + I40E_VFGEN_RSTAT)
-
 /* memory allocation tracking */
 struct i40e_dma_mem {
 	void *va;
@@ -80,20 +81,21 @@ struct i40e_dma_mem {
 } __packed;
 
 #define i40e_allocate_dma_mem(h, m, unused, s, a) \
-	i40evf_allocate_dma_mem_d(h, m, s, a)
-#define i40e_free_dma_mem(h, m) i40evf_free_dma_mem_d(h, m)
+			i40e_allocate_dma_mem_d(h, m, s, a)
+#define i40e_free_dma_mem(h, m) i40e_free_dma_mem_d(h, m)
 
 struct i40e_virt_mem {
 	void *va;
 	u32 size;
 } __packed;
-#define i40e_allocate_virt_mem(h, m, s) i40evf_allocate_virt_mem_d(h, m, s)
-#define i40e_free_virt_mem(h, m) i40evf_free_virt_mem_d(h, m)
+
+#define i40e_allocate_virt_mem(h, m, s) i40e_allocate_virt_mem_d(h, m, s)
+#define i40e_free_virt_mem(h, m) i40e_free_virt_mem_d(h, m)
 
 #define i40e_debug(h, m, s, ...)                                \
 do {                                                            \
 	if (((m) & (h)->debug_mask))                            \
-		pr_info("i40evf %02x.%x " s,                      \
+		pr_info("i40evf %02x.%x " s,                    \
 			(h)->bus.device, (h)->bus.func,         \
 			##__VA_ARGS__);                         \
 } while (0)
@@ -114,14 +116,15 @@ struct i40e_spinlock {
 	struct mutex spinlock;
 };
 
-#define i40e_init_spinlock(_sp) i40evf_init_spinlock_d(_sp)
-#define i40e_acquire_spinlock(_sp) i40evf_acquire_spinlock_d(_sp)
-#define i40e_release_spinlock(_sp) i40evf_release_spinlock_d(_sp)
-#define i40e_destroy_spinlock(_sp) i40evf_destroy_spinlock_d(_sp)
+#define i40e_init_spinlock(_sp) i40e_init_spinlock_d(_sp)
+#define i40e_acquire_spinlock(_sp) i40e_acquire_spinlock_d(_sp)
+#define i40e_release_spinlock(_sp) i40e_release_spinlock_d(_sp)
+#define i40e_destroy_spinlock(_sp) i40e_destroy_spinlock_d(_sp)
 
 #define I40E_HTONL(a)		htonl(a)
 
 #define i40e_memset(a, b, c, d)  memset((a), (b), (c))
 #define i40e_memcpy(a, b, c, d)  memcpy((a), (b), (c))
+
 typedef enum i40e_status_code i40e_status;
 #endif /* _I40E_OSDEP_H_ */
