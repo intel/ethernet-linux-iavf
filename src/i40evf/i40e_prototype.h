@@ -70,19 +70,6 @@ void i40e_idle_aq(struct i40e_hw *hw);
 void i40e_resume_aq(struct i40e_hw *hw);
 bool i40e_check_asq_alive(struct i40e_hw *hw);
 i40e_status i40e_aq_queue_shutdown(struct i40e_hw *hw, bool unloading);
-#ifdef X722_SUPPORT
-
-i40e_status i40e_aq_get_rss_lut(struct i40e_hw *hw, u16 seid,
-					  bool pf_lut, u8 *lut, u16 lut_size);
-i40e_status i40e_aq_set_rss_lut(struct i40e_hw *hw, u16 seid,
-					  bool pf_lut, u8 *lut, u16 lut_size);
-i40e_status i40e_aq_get_rss_key(struct i40e_hw *hw,
-				     u16 seid,
-				     struct i40e_aqc_get_set_rss_key_data *key);
-i40e_status i40e_aq_set_rss_key(struct i40e_hw *hw,
-				     u16 seid,
-				     struct i40e_aqc_get_set_rss_key_data *key);
-#endif
 const char *i40e_aq_str(struct i40e_hw *hw, enum i40e_admin_queue_err aq_err);
 const char *i40e_stat_str(struct i40e_hw *hw, i40e_status stat_err);
 
@@ -122,4 +109,6 @@ i40e_status i40e_aq_debug_dump(struct i40e_hw *hw, u8 cluster_id,
 				void *buff, u16 *ret_buff_size,
 				u8 *ret_next_table, u32 *ret_next_index,
 				struct i40e_asq_cmd_details *cmd_details);
+void i40e_add_filter_to_drop_tx_flow_control_frames(struct i40e_hw *hw,
+						    u16 vsi_seid);
 #endif /* _I40E_PROTOTYPE_H_ */

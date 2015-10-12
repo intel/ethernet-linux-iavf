@@ -235,20 +235,12 @@ struct i40evf_adapter {
 #define I40EVF_FLAG_PF_COMMS_FAILED              BIT(8)
 #define I40EVF_FLAG_RESET_PENDING                BIT(9)
 #define I40EVF_FLAG_RESET_NEEDED                 BIT(10)
-#ifdef X722_SUPPORT
-#define I40EVF_FLAG_WB_ON_ITR_CAPABLE            BIT(11)
-#define I40EVF_FLAG_OUTER_UDP_CSUM_CAPABLE       BIT(12)
-#endif
 #define I40EVF_FLAG_ADDR_SET_BY_PF               BIT(13)
 /* duplicates for common code */
 #define I40E_FLAG_FDIR_ATR_ENABLED		 0
 #define I40E_FLAG_DCB_ENABLED			 0
 #define I40E_FLAG_IN_NETPOLL			 I40EVF_FLAG_IN_NETPOLL
 #define I40E_FLAG_RX_CSUM_ENABLED                I40EVF_FLAG_RX_CSUM_ENABLED
-#ifdef X722_SUPPORT
-#define I40E_FLAG_WB_ON_ITR_CAPABLE           I40EVF_FLAG_WB_ON_ITR_CAPABLE
-#define I40E_FLAG_OUTER_UDP_CSUM_CAPABLE      I40EVF_FLAG_OUTER_UDP_CSUM_CAPABLE
-#endif
 	/* flags for admin queue service task */
 	u32 aq_required;
 #define I40EVF_FLAG_AQ_ENABLE_QUEUES		BIT(0)
@@ -260,9 +252,6 @@ struct i40evf_adapter {
 #define I40EVF_FLAG_AQ_CONFIGURE_QUEUES		BIT(6)
 #define I40EVF_FLAG_AQ_MAP_VECTORS		BIT(7)
 #define I40EVF_FLAG_AQ_HANDLE_RESET		BIT(8)
-#ifdef X722_SUPPORT
-#define I40EVF_FLAG_AQ_CONFIGURE_RSS		BIT(9)
-#endif
 #define I40EVF_FLAG_AQ_GET_CONFIG		BIT(10)
 
 	/* OS defined structs */

@@ -36,7 +36,7 @@ static const char i40evf_driver_string[] =
 	"Intel(R) XL710/X710 Virtual Function Network Driver";
 
 #define DRV_HW_PERF
-#define DRV_VERSION "1.3.25"DRV_HW_PERF
+#define DRV_VERSION "1.3.33"DRV_HW_PERF
 const char i40evf_driver_version[] = DRV_VERSION;
 static const char i40evf_copyright[] =
 	"Copyright (c) 2013 - 2015 Intel Corporation.";
@@ -51,9 +51,6 @@ static const char i40evf_copyright[] =
  */
 static const struct pci_device_id i40evf_pci_tbl[] = {
 	{PCI_VDEVICE(INTEL, I40E_DEV_ID_VF), 0},
-#ifdef X722_SUPPORT
-	{PCI_VDEVICE(INTEL, I40E_DEV_ID_X722_VF), 0},
-#endif /* X722_SUPPORT */
 	/* required last entry */
 	{0, }
 };
@@ -1114,10 +1111,6 @@ static int i40evf_alloc_queues(struct i40evf_adapter *adapter)
 		tx_ring->netdev = adapter->netdev;
 		tx_ring->dev = pci_dev_to_dev(adapter->pdev);
 		tx_ring->count = adapter->tx_desc_count;
-#ifdef X722_SUPPORT
-		if (adapter->flags & I40E_FLAG_WB_ON_ITR_CAPABLE)
-			tx_ring->flags |= I40E_TXR_FLAGS_WB_ON_ITR;
-#endif
 		adapter->tx_rings[i] = tx_ring;
 
 		rx_ring = &tx_ring[1];
@@ -1304,60 +1297,6 @@ err_alloc_q_vectors:
 err_set_interrupt:
 	return err;
 }
-#ifdef X722_SUPPORT
-
-/**
- * i40e_configure_rss_aq - Prepare for RSS using AQ commands
- * @vsi: vsi structure
- * @seed: RSS hash seed
- **/
-static void i40evf_configure_rss_aq(struct i40e_vsi *vsi, const u8 *seed)
-{
-	struct i40e_aqc_get_set_rss_key_data rss_key;
-	struct i40evf_adapter *adapter = vsi->back;
-	struct i40e_hw *hw = &adapter->hw;
-	int ret = 0, i;
-	u8 *rss_lut;
-
-	if (!vsi->id)
-		return;
-
-	if (adapter->current_op != I40E_VIRTCHNL_OP_UNKNOWN) {
-		/* bail because we already have a command pending */
-		dev_err(&adapter->pdev->dev, "Cannot confiure RSS, command %d pending\n",
-			adapter->current_op);
-		return;
-	}
-
-	memset(&rss_key, 0, sizeof(rss_key));
-	memcpy(&rss_key, seed, sizeof(rss_key));
-
-	rss_lut = kzalloc(((I40E_VFQF_HLUT_MAX_INDEX + 1) * 4), GFP_KERNEL);
-	if (!rss_lut)
-		return;
-
-	/* Populate the LUT with max no. of queues in round robin fashion */
-	for (i = 0; i <= (I40E_VFQF_HLUT_MAX_INDEX * 4); i++)
-		rss_lut[i] = i % adapter->num_active_queues;
-
-	ret = i40e_aq_set_rss_key(hw, vsi->id, &rss_key);
-	if (ret) {
-		dev_err(&adapter->pdev->dev,
-			"Cannot set RSS key, err %s aq_err %s\n",
-			i40e_stat_str(hw, ret),
-			i40e_aq_str(hw, hw->aq.asq_last_status));
-		return;
-	}
-
-	ret = i40e_aq_set_rss_lut(hw, vsi->id, FALSE, rss_lut,
-					  (I40E_VFQF_HLUT_MAX_INDEX + 1) * 4);
-	if (ret)
-		dev_err(&adapter->pdev->dev,
-			"Cannot set RSS lut, err %s aq_err %s\n",
-			i40e_stat_str(hw, ret),
-			i40e_aq_str(hw, hw->aq.asq_last_status));
-}
-#endif
 
 /**
  * i40e_configure_rss_reg - Prepare for RSS if used
@@ -1408,14 +1347,7 @@ static void i40evf_configure_rss(struct i40evf_adapter *adapter)
 	wr32(hw, I40E_VFQF_HENA(0), (u32)hena);
 	wr32(hw, I40E_VFQF_HENA(1), (u32)(hena >> 32));
 
-#ifdef X722_SUPPORT
-	if (RSS_AQ(adapter))
-		i40evf_configure_rss_aq(&adapter->vsi, seed);
-	else
-		i40evf_configure_rss_reg(adapter, seed);
-#else
 	i40evf_configure_rss_reg(adapter, seed);
-#endif
 }
 
 /**
@@ -1540,18 +1472,6 @@ static void i40evf_watchdog_task(struct work_struct *work)
 		goto watchdog_done;
 	}
 
-#ifdef X722_SUPPORT
-	if (adapter->aq_required & I40EVF_FLAG_AQ_CONFIGURE_RSS) {
-		/* This message goes straight to the firmware, not the
-		 * PF, so we don't have to set current_op as we will
-		 * not get a response through the ARQ.
-		 */
-		i40evf_configure_rss(adapter);
-		adapter->aq_required &= ~I40EVF_FLAG_AQ_CONFIGURE_RSS;
-		goto watchdog_done;
-	}
-
-#endif
 	if (adapter->state == __I40EVF_RUNNING)
 		i40evf_request_stats(adapter);
 watchdog_done:
@@ -1591,6 +1511,7 @@ static void i40evf_reset_task(struct work_struct *work)
 						      reset_task);
 	struct net_device *netdev = adapter->netdev;
 	struct i40e_hw *hw = &adapter->hw;
+	struct i40evf_vlan_filter *vlf;
 	struct i40evf_mac_filter *f;
 	uint32_t reg_val;
 	int i = 0, err;
@@ -1713,8 +1634,8 @@ continue_reset:
 		f->add = true;
 	}
 	/* re-add all VLAN filters */
-	list_for_each_entry(f, &adapter->vlan_filter_list, list) {
-		f->add = true;
+	list_for_each_entry(vlf, &adapter->vlan_filter_list, list) {
+		vlf->add = true;
 	}
 	adapter->aq_required |= I40EVF_FLAG_AQ_ADD_MAC_FILTER;
 	adapter->aq_required |= I40EVF_FLAG_AQ_ADD_VLAN_FILTER;
@@ -2099,6 +2020,9 @@ int i40evf_process_config(struct i40evf_adapter *adapter)
 {
 	struct net_device *netdev = adapter->netdev;
 	int i;
+#ifdef HAVE_RHEL6_NET_DEVICE_OPS_EXT
+	u32 hw_features;
+#endif
 
 	/* got VF config message back from PF, now we can parse it */
 	for (i = 0; i < adapter->vf_res->num_vsis; i++) {
@@ -2128,8 +2052,15 @@ int i40evf_process_config(struct i40evf_adapter *adapter)
 
 #ifdef HAVE_NDO_SET_FEATURES
 	/* copy netdev features into list of user selectable features */
+#ifdef HAVE_RHEL6_NET_DEVICE_OPS_EXT
+	hw_features = get_netdev_hw_features(netdev);
+	hw_features |= netdev->features;
+	hw_features &= ~NETIF_F_RXCSUM;
+	set_netdev_hw_features(netdev, hw_features);
+#else
 	netdev->hw_features |= netdev->features;
 	netdev->hw_features &= ~NETIF_F_RXCSUM;
+#endif
 
 #endif
 	adapter->vsi.id = adapter->vsi_res->vsi_id;
@@ -2294,14 +2225,7 @@ static void i40evf_init_task(struct work_struct *work)
 		goto err_sw_init;
 	i40evf_map_rings_to_vectors(adapter);
 
-#ifdef X722_SUPPORT
-	if (adapter->vf_res->vf_offload_flags &
-		    I40E_VIRTCHNL_VF_OFFLOAD_WB_ON_ITR)
-		adapter->flags |= I40EVF_FLAG_WB_ON_ITR_CAPABLE;
-#endif
-#ifndef X722_SUPPORT
 	i40evf_configure_rss(adapter);
-#endif
 	err = i40evf_request_misc_irq(adapter);
 	if (err)
 		goto err_sw_init;
@@ -2325,15 +2249,6 @@ static void i40evf_init_task(struct work_struct *work)
 	adapter->state = __I40EVF_DOWN;
 	set_bit(__I40E_DOWN, &adapter->vsi.state);
 	i40evf_misc_irq_enable(adapter);
-#ifdef X722_SUPPORT
-
-	if (RSS_AQ(adapter)) {
-		adapter->aq_required |= I40EVF_FLAG_AQ_CONFIGURE_RSS;
-		mod_timer_pending(&adapter->watchdog_timer, jiffies + 1);
-	} else {
-		i40evf_configure_rss(adapter);
-	}
-#endif
 	return;
 restart:
 	schedule_delayed_work(&adapter->init_task, msecs_to_jiffies(30));

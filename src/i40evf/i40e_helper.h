@@ -115,11 +115,7 @@ inline void i40e_init_spinlock_d(struct i40e_spinlock *sp)
  **/
 inline void i40e_acquire_spinlock_d(struct i40e_spinlock *sp)
 {
-	if (!mutex_trylock((struct mutex *)sp)) {
-		WARN_ONCE(1, "i40evf: Failed to get admin queue lock. Possible critical section violation.\n");
-		might_sleep();
-		mutex_lock((struct mutex *)sp);
-	}
+	mutex_lock((struct mutex *)sp);
 }
 
 /**
