@@ -36,7 +36,7 @@ static const char i40evf_driver_string[] =
 	"Intel(R) XL710/X710 Virtual Function Network Driver";
 
 #define DRV_HW_PERF
-#define DRV_VERSION "1.3.33"DRV_HW_PERF
+#define DRV_VERSION "1.3.34"DRV_HW_PERF
 const char i40evf_driver_version[] = DRV_VERSION;
 static const char i40evf_copyright[] =
 	"Copyright (c) 2013 - 2015 Intel Corporation.";
@@ -979,7 +979,7 @@ void i40evf_down(struct i40evf_adapter *adapter)
 	struct net_device *netdev = adapter->netdev;
 	struct i40evf_mac_filter *f;
 
-	if (adapter->state == __I40EVF_DOWN)
+	if (adapter->state <= __I40EVF_DOWN_PENDING)
 		return;
 
 	while (test_and_set_bit(__I40EVF_IN_CRITICAL_TASK,
@@ -1856,7 +1856,8 @@ static int i40evf_open(struct net_device *netdev)
 		dev_err(&adapter->pdev->dev, "Unable to open device due to PF driver failure.\n");
 		return -EIO;
 	}
-	if (adapter->state != __I40EVF_DOWN || adapter->aq_required)
+
+	if (adapter->state != __I40EVF_DOWN)
 		return -EBUSY;
 
 	/* allocate transmit descriptors */
@@ -1911,14 +1912,14 @@ static int i40evf_close(struct net_device *netdev)
 {
 	struct i40evf_adapter *adapter = netdev_priv(netdev);
 
-	if (adapter->state <= __I40EVF_DOWN)
+	if (adapter->state <= __I40EVF_DOWN_PENDING)
 		return 0;
 
 
 	set_bit(__I40E_DOWN, &adapter->vsi.state);
 
 	i40evf_down(adapter);
-	adapter->state = __I40EVF_DOWN;
+	adapter->state = __I40EVF_DOWN_PENDING;
 	i40evf_free_traffic_irqs(adapter);
 
 	return 0;
