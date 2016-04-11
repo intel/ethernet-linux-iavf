@@ -1,3 +1,26 @@
+################################################################################
+#
+# Intel(R) 40-10 Gigabit Ethernet Virtual Function Driver
+# Copyright(c) 2013 - 2016 Intel Corporation.
+#
+# This program is free software; you can redistribute it and/or modify it
+# under the terms and conditions of the GNU General Public License,
+# version 2, as published by the Free Software Foundation.
+#
+# This program is distributed in the hope it will be useful, but WITHOUT
+# ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+# FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
+# more details.
+#
+# The full GNU General Public License is included in this distribution in
+# the file called "COPYING".
+#
+# Contact Information:
+# e1000-devel Mailing List <e1000-devel@lists.sourceforge.net>
+# Intel Corporation, 5200 N.E. Elam Young Parkway, Hillsboro, OR 97124-6497
+#
+################################################################################
+
 # updates for the system pci.ids file
 #
 # IMPORTANT!  Entries in this list must be sorted as they
@@ -6,70 +29,5 @@
 #             (numerical order).
 #
 8086  Intel Corporation
-	1572  Ethernet Controller X710 for 10GbE SFP+
-		1028 0000  Ethernet 10G X710 rNDC
-		1028 1f99  Ethernet 10G 4P X710/I350 rNDC
-		1028 1f9c  Ethernet 10G 4P X710 SFP+ rNDC
-		103c 0000  HPE Ethernet 10Gb 562SFP+ Adapter
-		103c 22fc  HPE Ethernet 10Gb 2-port 562FLR-SFP+ Adapter
-		103c 22fd  HPE Ethernet 10Gb 2-port 562SFP+ Adapter
-		1137 0000  Cisco(R) Ethernet Converged NIC X710-4
-		1137 013b  Cisco(R) Ethernet Converged NIC X710-4
-		17aa 0000  Lenovo ThinkServer X710 AnyFabric for 10GbE SFP+
-		17aa 4001  Lenovo ThinkServer X710-4 AnyFabric for 10GbE SFP+
-		17aa 4002  Lenovo ThinkServer X710-2 AnyFabric for 10GbE SFP+
-		8086 0000  Ethernet Converged Network Adapter X710
-		8086 0001  Ethernet Converged Network Adapter X710-4
-		8086 0002  Ethernet Converged Network Adapter X710-4
-		8086 0004  Ethernet Converged Network Adapter X710-4
-		8086 0005  Ethernet Converged Network Adapter X710
-		8086 0006  Ethernet Converged Network Adapter X710
-		8086 0007  Ethernet Converged Network Adapter X710-2
-		8086 0008  Ethernet Converged Network Adapter X710-2
-		8086 0009  Ethernet Controller X710 for 10GbE SFP+
-		8086 000a  Ethernet Controller X710 for 10GbE SFP+
-		8086 000d  Ethernet Controller X710 for 10GbE SFP+
-		8086 4005  Ethernet Controller X710 for 10GbE SFP+
-		8086 4006  Ethernet Controller X710 for 10GbE SFP+
-	1574  Ethernet Controller XL710 Emulation
-	1580  Ethernet Controller XL710 for 40GbE backplane
-	1581  Ethernet Controller X710 for 10GbE backplane
-		1028 0000  Ethernet 10G X710-k bNDC
-		1028 1f98  Ethernet 10G 4P X710-k bNDC
-		1028 1f9e  Ethernet 10G 2P X710-k bNDC
-		8086 0000  Ethernet Converged Network Adapter XL710-Q2
-	1583  Ethernet Controller XL710 for 40GbE QSFP+
-		1028 0000  Ethernet 40G 2P XL710 QSFP+ rNDC
-		1028 1f9f  Ethernet 40G 2P XL710 QSFP+ rNDC
-		108e 0000  Oracle 10Gb/40Gb Ethernet Adapter
-		108e 7b1d  Oracle 10Gb/40Gb Ethernet Adapter
-		1137 0000  Cisco(R) Ethernet Converged NIC XL710-Q2
-		1137 013c  Cisco(R) Ethernet Converged NIC XL710-Q2
-		8086 0000  Ethernet Converged Network Adapter XL710-Q2
-		8086 0001  Ethernet Converged Network Adapter XL710-Q2
-		8086 0002  Ethernet Converged Network Adapter XL710-Q2
-		8086 0003  Ethernet I/O Module XL710-Q2
-		8086 0004  Ethernet Server Adapter XL710-Q2OCP
-		8086 0006  Ethernet Converged Network Adapter XL710-Q2
-	1584  Ethernet Controller XL710 for 40GbE QSFP+
-		8086 0000  Ethernet Converged Network Adapter XL710-Q1
-		8086 0001  Ethernet Converged Network Adapter XL710-Q1
-		8086 0002  Ethernet Converged Network Adapter XL710-Q1
-		8086 0003  Ethernet I/O Module XL710-Q1
-		8086 0004  Ethernet Server Adapter XL710-Q1OCP
-	1585  Ethernet Controller X710 for 10GbE QSFP+
-	1586  Ethernet Controller X710 for 10GBASE-T
-		108e 0000  Ethernet Controller X710 for 10GBASE-T
-		108e 4857  Ethernet Controller X710 for 10GBASE-T
-	1587  Ethernet Controller XL710 for 20GbE backplane
-		103c 0000  HPE Flex-20 20Gb 2-port 660FLB Adapter
-		103c 22fe  HPE Flex-20 20Gb 2-port 660FLB Adapter
-	1588  Ethernet Controller XL710 for 20GbE backplane
-		103c 0000  HPE Flex-20 20Gb 2-port 660M Adapter
-		103c 22ff  HPE Flex-20 20Gb 2-port 660M Adapter
-	1589  Ethernet Controller X710/X557-AT 10GBASE-T
-		8086 0000  Ethernet Converged Network Adapter X710-T
-		8086 0001  Ethernet Converged Network Adapter X710-T4
-		8086 0002  Ethernet Converged Network Adapter X710-T4
-	37d1  Ethernet Connection X722 for 1GbE
-	37d2  Ethernet Connection X722 for 10GBASE-T
+	154c  XL710/X710 Virtual Function
+	37cd  X722 Virtual Function

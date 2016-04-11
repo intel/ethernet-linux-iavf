@@ -1,7 +1,7 @@
 /*******************************************************************************
  *
- * Intel Ethernet Controller XL710 Family Linux Virtual Function Driver
- * Copyright(c) 2013 - 2015 Intel Corporation.
+ * Intel(R) 40-10 Gigabit Ethernet Virtual Function Driver
+ * Copyright(c) 2013 - 2016 Intel Corporation.
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms and conditions of the GNU General Public License,
@@ -12,9 +12,6 @@
  * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
  * more details.
  *
- * You should have received a copy of the GNU General Public License along
- * with this program.  If not, see <http://www.gnu.org/licenses/>.
- *
  * The full GNU General Public License is included in this distribution in
  * the file called "COPYING".
  *
@@ -24,7 +21,6 @@
  *
  ******************************************************************************/
 
-#include "i40evf.h"
 #include "kcompat.h"
 
 /*****************************************************************************/
@@ -721,7 +717,8 @@ free_skb:
 #if (!(RHEL_RELEASE_CODE && RHEL_RELEASE_CODE >= RHEL_RELEASE_VERSION(5,4)))
 int _kc_pci_save_state(struct pci_dev *pdev)
 {
-	struct adapter_struct *adapter = pci_get_drvdata(pdev);
+	struct net_device *netdev = pci_get_drvdata(pdev);
+	struct adapter_struct *adapter = netdev_priv(netdev);
 	int size = PCI_CONFIG_SPACE_LEN, i;
 	u16 pcie_cap_offset, pcie_link_status;
 
@@ -754,7 +751,8 @@ int _kc_pci_save_state(struct pci_dev *pdev)
 
 void _kc_pci_restore_state(struct pci_dev *pdev)
 {
-	struct adapter_struct *adapter = pci_get_drvdata(pdev);
+	struct net_device *netdev = pci_get_drvdata(pdev);
+	struct adapter_struct *adapter = netdev_priv(netdev);
 	int size = PCI_CONFIG_SPACE_LEN, i;
 	u16 pcie_cap_offset;
 	u16 pcie_link_status;
@@ -938,20 +936,13 @@ void _kc_print_hex_dump(const char *level,
 /*****************************************************************************/
 #if ( LINUX_VERSION_CODE < KERNEL_VERSION(2,6,24) )
 #ifdef NAPI
-struct net_device *napi_to_poll_dev(const struct napi_struct *napi)
-{
-	struct adapter_q_vector *q_vector = container_of(napi,
-	                                                struct adapter_q_vector,
-	                                                napi);
-	return &q_vector->poll_dev;
-}
 
 int __kc_adapter_clean(struct net_device *netdev, int *budget)
 {
 	int work_done;
 	int work_to_do = min(*budget, netdev->quota);
-	/* kcompat.h netif_napi_add puts napi struct in "fake netdev->priv" */
-	struct napi_struct *napi = netdev->priv;
+	struct adapter_struct *adapter = netdev_priv(netdev);
+	struct napi_struct *napi = &adapter->rx_ring[0].napi;
 	work_done = napi->poll(napi, work_to_do);
 	*budget -= work_done;
 	netdev->quota -= work_done;
@@ -1117,58 +1108,6 @@ int _kc_pci_num_vf(struct pci_dev __maybe_unused *dev)
 #endif /* < 2.6.34 */
 
 #if ( LINUX_VERSION_CODE < KERNEL_VERSION(2,6,35) )
-#ifdef HAVE_TX_MQ
-#if (!(RHEL_RELEASE_CODE && RHEL_RELEASE_CODE >= RHEL_RELEASE_VERSION(6,0)))
-#ifndef CONFIG_NETDEVICES_MULTIQUEUE
-int _kc_netif_set_real_num_tx_queues(struct net_device *dev, unsigned int txq)
-{
-	unsigned int real_num = dev->real_num_tx_queues;
-	struct Qdisc *qdisc;
-	int i;
-
-	if (txq < 1 || txq > dev->num_tx_queues)
-		return -EINVAL;
-
-	else if (txq > real_num)
-		dev->real_num_tx_queues = txq;
-	else if (txq < real_num) {
-		dev->real_num_tx_queues = txq;
-		for (i = txq; i < dev->num_tx_queues; i++) {
-			qdisc = netdev_get_tx_queue(dev, i)->qdisc;
-			if (qdisc) {
-				spin_lock_bh(qdisc_lock(qdisc));
-				qdisc_reset(qdisc);
-				spin_unlock_bh(qdisc_lock(qdisc));
-			}
-		}
-	}
-
-	return 0;
-}
-#endif /* CONFIG_NETDEVICES_MULTIQUEUE */
-#endif /* !(RHEL_RELEASE_CODE >= RHEL_RELEASE_VERSION(6,0)) */
-#endif /* HAVE_TX_MQ */
-
-ssize_t _kc_simple_write_to_buffer(void *to, size_t available, loff_t *ppos,
-				   const void __user *from, size_t count)
-{
-        loff_t pos = *ppos;
-        size_t res;
-
-        if (pos < 0)
-                return -EINVAL;
-        if (pos >= available || !count)
-                return 0;
-        if (count > available - pos)
-                count = available - pos;
-        res = copy_from_user(to + pos, from, count);
-        if (res == count)
-                return -EFAULT;
-        count -= res;
-        *ppos = pos + count;
-        return count;
-}
-
 #endif /* < 2.6.35 */
 
 /*****************************************************************************/
@@ -1195,38 +1134,6 @@ int _kc_ethtool_op_set_flags(struct net_device *dev, u32 data, u32 supported)
 /******************************************************************************/
 #if ( LINUX_VERSION_CODE < KERNEL_VERSION(2,6,39) )
 #if (!(RHEL_RELEASE_CODE && RHEL_RELEASE_CODE > RHEL_RELEASE_VERSION(6,0)))
-#ifdef HAVE_NETDEV_SELECT_QUEUE
-#include <net/ip.h>
-#include <linux/pkt_sched.h>
-
-u16 ___kc_skb_tx_hash(struct net_device *dev, const struct sk_buff *skb,
-		      u16 num_tx_queues)
-{
-	u32 hash;
-	u16 qoffset = 0;
-	u16 qcount = num_tx_queues;
-
-	if (skb_rx_queue_recorded(skb)) {
-		hash = skb_get_rx_queue(skb);
-		while (unlikely(hash >= num_tx_queues))
-			hash -= num_tx_queues;
-		return hash;
-	}
-
-	if (skb->sk && skb->sk->sk_hash)
-		hash = skb->sk->sk_hash;
-	else
-#ifdef NETIF_F_RXHASH
-		hash = (__force u16) skb->protocol ^ skb->rxhash;
-#else
-		hash = skb->protocol;
-#endif
-
-	hash = jhash_1word(hash, _kc_hashrnd);
-
-	return (u16) (((u64) hash * qcount) >> 32) + qoffset;
-}
-#endif /* HAVE_NETDEV_SELECT_QUEUE */
 
 #endif /* !(RHEL_RELEASE_CODE > RHEL_RELEASE_VERSION(6,0)) */
 #endif /* < 2.6.39 */
@@ -1418,149 +1325,114 @@ int __kc_pcie_capability_clear_word(struct pci_dev *dev, int pos,
 }
 #endif /* < 3.7.0 */
 
+/******************************************************************************
+ * ripped from linux/net/ipv6/exthdrs_core.c, GPL2, no direct copyright,
+ * inferred copyright from kernel
+ */
+#if ( LINUX_VERSION_CODE < KERNEL_VERSION(3,8,0) )
+int __kc_ipv6_find_hdr(const struct sk_buff *skb, unsigned int *offset,
+		       int target, unsigned short *fragoff, int *flags)
+{
+	unsigned int start = skb_network_offset(skb) + sizeof(struct ipv6hdr);
+	u8 nexthdr = ipv6_hdr(skb)->nexthdr;
+	unsigned int len;
+	bool found;
+
+#define __KC_IP6_FH_F_FRAG	BIT(0)
+#define __KC_IP6_FH_F_AUTH	BIT(1)
+#define __KC_IP6_FH_F_SKIP_RH	BIT(2)
+
+	if (fragoff)
+		*fragoff = 0;
+
+	if (*offset) {
+		struct ipv6hdr _ip6, *ip6;
+
+		ip6 = skb_header_pointer(skb, *offset, sizeof(_ip6), &_ip6);
+		if (!ip6 || (ip6->version != 6)) {
+			printk(KERN_ERR "IPv6 header not found\n");
+			return -EBADMSG;
+		}
+		start = *offset + sizeof(struct ipv6hdr);
+		nexthdr = ip6->nexthdr;
+	}
+	len = skb->len - start;
+
+	do {
+		struct ipv6_opt_hdr _hdr, *hp;
+		unsigned int hdrlen;
+		found = (nexthdr == target);
+
+		if ((!ipv6_ext_hdr(nexthdr)) || nexthdr == NEXTHDR_NONE) {
+			if (target < 0 || found)
+				break;
+			return -ENOENT;
+		}
+
+		hp = skb_header_pointer(skb, start, sizeof(_hdr), &_hdr);
+		if (!hp)
+			return -EBADMSG;
+
+		if (nexthdr == NEXTHDR_ROUTING) {
+			struct ipv6_rt_hdr _rh, *rh;
+
+			rh = skb_header_pointer(skb, start, sizeof(_rh),
+						&_rh);
+			if (!rh)
+				return -EBADMSG;
+
+			if (flags && (*flags & __KC_IP6_FH_F_SKIP_RH) &&
+			    rh->segments_left == 0)
+				found = false;
+		}
+
+		if (nexthdr == NEXTHDR_FRAGMENT) {
+			unsigned short _frag_off;
+			__be16 *fp;
+
+			if (flags)	/* Indicate that this is a fragment */
+				*flags |= __KC_IP6_FH_F_FRAG;
+			fp = skb_header_pointer(skb,
+						start+offsetof(struct frag_hdr,
+							       frag_off),
+						sizeof(_frag_off),
+						&_frag_off);
+			if (!fp)
+				return -EBADMSG;
+
+			_frag_off = ntohs(*fp) & ~0x7;
+			if (_frag_off) {
+				if (target < 0 &&
+				    ((!ipv6_ext_hdr(hp->nexthdr)) ||
+				     hp->nexthdr == NEXTHDR_NONE)) {
+					if (fragoff)
+						*fragoff = _frag_off;
+					return hp->nexthdr;
+				}
+				return -ENOENT;
+			}
+			hdrlen = 8;
+		} else if (nexthdr == NEXTHDR_AUTH) {
+			if (flags && (*flags & __KC_IP6_FH_F_AUTH) && (target < 0))
+				break;
+			hdrlen = (hp->hdrlen + 2) << 2;
+		} else
+			hdrlen = ipv6_optlen(hp);
+
+		if (!found) {
+			nexthdr = hp->nexthdr;
+			len -= hdrlen;
+			start += hdrlen;
+		}
+	} while (!found);
+
+	*offset = start;
+	return nexthdr;
+}
+#endif /* < 3.8.0 */
+
 /******************************************************************************/
 #if ( LINUX_VERSION_CODE < KERNEL_VERSION(3,9,0) )
-#ifdef CONFIG_XPS
-#if NR_CPUS < 64
-#define _KC_MAX_XPS_CPUS	NR_CPUS
-#else
-#define _KC_MAX_XPS_CPUS	64
-#endif
-
-/*
- * netdev_queue sysfs structures and functions.
- */
-struct _kc_netdev_queue_attribute {
-	struct attribute attr;
-	ssize_t (*show)(struct netdev_queue *queue,
-	    struct _kc_netdev_queue_attribute *attr, char *buf);
-	ssize_t (*store)(struct netdev_queue *queue,
-	    struct _kc_netdev_queue_attribute *attr, const char *buf, size_t len);
-};
-
-#define to_kc_netdev_queue_attr(_attr) container_of(_attr,		\
-    struct _kc_netdev_queue_attribute, attr)
-
-int __kc_netif_set_xps_queue(struct net_device *dev, struct cpumask *mask,
-			     u16 index)
-{
-	struct netdev_queue *txq = netdev_get_tx_queue(dev, index);
-#if ( LINUX_VERSION_CODE < KERNEL_VERSION(2,6,38) )
-	/* Redhat requires some odd extended netdev structures */
-	struct netdev_tx_queue_extended *txq_ext =
-					netdev_extended(dev)->_tx_ext + index;
-	struct kobj_type *ktype = txq_ext->kobj.ktype;
-#else
-	struct kobj_type *ktype = txq->kobj.ktype;
-#endif
-	struct _kc_netdev_queue_attribute *xps_attr;
-	struct attribute *attr = NULL;
-	int i, len, err;
-#define _KC_XPS_BUFLEN	(DIV_ROUND_UP(_KC_MAX_XPS_CPUS, 32) * 9)
-	char buf[_KC_XPS_BUFLEN];
-
-	if (!ktype)
-		return -ENOMEM;
-
-	/* attempt to locate the XPS attribute in the Tx queue */
-	for (i = 0; (attr = ktype->default_attrs[i]); i++) {
-		if (!strcmp("xps_cpus", attr->name))
-			break;
-	}
-
-	/* if we did not find it return an error */
-	if (!attr)
-		return -EINVAL;
-
-	/* copy the mask into a string */
-	len = bitmap_scnprintf(buf, _KC_XPS_BUFLEN,
-			       cpumask_bits(mask), _KC_MAX_XPS_CPUS);
-	if (!len)
-		return -ENOMEM;
-
-	xps_attr = to_kc_netdev_queue_attr(attr);
-
-	/* Store the XPS value using the SYSFS store call */
-	err = xps_attr->store(txq, xps_attr, buf, len);
-
-	/* we only had an error on err < 0 */
-	return (err < 0) ? err : 0;
-}
-#endif /* CONFIG_XPS */
-#ifdef HAVE_NETDEV_SELECT_QUEUE
-static inline int kc_get_xps_queue(struct net_device *dev, struct sk_buff *skb)
-{
-#ifdef CONFIG_XPS
-	struct xps_dev_maps *dev_maps;
-	struct xps_map *map;
-	int queue_index = -1;
-
-	rcu_read_lock();
-#if ( LINUX_VERSION_CODE < KERNEL_VERSION(2,6,38) )
-	/* Redhat requires some odd extended netdev structures */
-	dev_maps = rcu_dereference(netdev_extended(dev)->xps_maps);
-#else
-	dev_maps = rcu_dereference(dev->xps_maps);
-#endif
-	if (dev_maps) {
-		map = rcu_dereference(
-		    dev_maps->cpu_map[raw_smp_processor_id()]);
-		if (map) {
-			if (map->len == 1)
-				queue_index = map->queues[0];
-			else {
-				u32 hash;
-				if (skb->sk && skb->sk->sk_hash)
-					hash = skb->sk->sk_hash;
-				else
-					hash = (__force u16) skb->protocol ^
-					    skb->rxhash;
-				hash = jhash_1word(hash, _kc_hashrnd);
-				queue_index = map->queues[
-				    ((u64)hash * map->len) >> 32];
-			}
-			if (unlikely(queue_index >= dev->real_num_tx_queues))
-				queue_index = -1;
-		}
-	}
-	rcu_read_unlock();
-
-	return queue_index;
-#else
-	return -1;
-#endif
-}
-
-u16 __kc_netdev_pick_tx(struct net_device *dev, struct sk_buff *skb)
-{
-	struct sock *sk = skb->sk;
-	int queue_index = sk_tx_queue_get(sk);
-	int new_index;
-
-	if (queue_index >= 0 && queue_index < dev->real_num_tx_queues) {
-#ifdef CONFIG_XPS
-		if (!skb->ooo_okay)
-#endif
-			return queue_index;
-	}
-
-	new_index = kc_get_xps_queue(dev, skb);
-	if (new_index < 0)
-		new_index = skb_tx_hash(dev, skb);
-
-	if (queue_index != new_index && sk) {
-		struct dst_entry *dst =
-			    rcu_dereference(sk->sk_dst_cache);
-
-		if (dst && skb_dst(skb) == dst)
-			sk_tx_queue_set(sk, new_index);
-
-	}
-
-	return new_index;
-}
-
-#endif /* HAVE_NETDEV_SELECT_QUEUE */
 #endif /* 3.9.0 */
 
 /*****************************************************************************/

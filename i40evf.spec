@@ -1,6 +1,6 @@
 Name: i40evf
 Summary: Intel(R) Ethernet Connection XL710 Virtual Function
-Version: 1.4.15
+Version: 1.5.14
 Release: 1
 Source: %{name}-%{version}.tar.gz
 Vendor: Intel Corporation
