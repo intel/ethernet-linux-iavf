@@ -1,7 +1,7 @@
 /*******************************************************************************
  *
  * Intel(R) 40-10 Gigabit Ethernet Virtual Function Driver
- * Copyright(c) 2013 - 2016 Intel Corporation.
+ * Copyright(c) 2013 - 2017 Intel Corporation.
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms and conditions of the GNU General Public License,
@@ -38,16 +38,6 @@
 /* adminq functions */
 i40e_status i40e_init_adminq(struct i40e_hw *hw);
 i40e_status i40e_shutdown_adminq(struct i40e_hw *hw);
-i40e_status i40e_init_asq(struct i40e_hw *hw);
-i40e_status i40e_init_arq(struct i40e_hw *hw);
-i40e_status i40e_alloc_adminq_asq_ring(struct i40e_hw *hw);
-i40e_status i40e_alloc_adminq_arq_ring(struct i40e_hw *hw);
-i40e_status i40e_shutdown_asq(struct i40e_hw *hw);
-i40e_status i40e_shutdown_arq(struct i40e_hw *hw);
-u16 i40e_clean_asq(struct i40e_hw *hw);
-void i40e_free_adminq_asq(struct i40e_hw *hw);
-void i40e_free_adminq_arq(struct i40e_hw *hw);
-i40e_status i40e_validate_mac_addr(u8 *mac_addr);
 void i40e_adminq_init_ring_data(struct i40e_hw *hw);
 i40e_status i40e_clean_arq_element(struct i40e_hw *hw,
 					     struct i40e_arq_event_info *e,
@@ -82,11 +72,11 @@ const char *i40e_stat_str(struct i40e_hw *hw, i40e_status stat_err);
 
 i40e_status i40e_set_mac_type(struct i40e_hw *hw);
 
-extern struct i40e_rx_ptype_decoded i40e_ptype_lookup[];
+extern struct i40e_rx_ptype_decoded i40evf_ptype_lookup[];
 
 static INLINE struct i40e_rx_ptype_decoded decode_rx_desc_ptype(u8 ptype)
 {
-	return i40e_ptype_lookup[ptype];
+	return i40evf_ptype_lookup[ptype];
 }
 
 /* prototype for functions used for SW spinlocks */
@@ -141,10 +131,20 @@ i40e_status i40e_aq_set_clear_wol_filter(struct i40e_hw *hw,
 i40e_status i40e_aq_get_wake_event_reason(struct i40e_hw *hw,
 			u16 *wake_reason,
 			struct i40e_asq_cmd_details *cmd_details);
-i40e_status i40e_read_phy_register(struct i40e_hw *hw, u8 page,
-					     u16 reg, u8 phy_addr, u16 *value);
-i40e_status i40e_write_phy_register(struct i40e_hw *hw, u8 page,
-					      u16 reg, u8 phy_addr, u16 value);
+i40e_status i40e_aq_clear_all_wol_filters(struct i40e_hw *hw,
+			struct i40e_asq_cmd_details *cmd_details);
+i40e_status i40e_read_phy_register_clause22(struct i40e_hw *hw,
+					u16 reg, u8 phy_addr, u16 *value);
+i40e_status i40e_write_phy_register_clause22(struct i40e_hw *hw,
+					u16 reg, u8 phy_addr, u16 value);
+i40e_status i40e_read_phy_register_clause45(struct i40e_hw *hw,
+				u8 page, u16 reg, u8 phy_addr, u16 *value);
+i40e_status i40e_write_phy_register_clause45(struct i40e_hw *hw,
+				u8 page, u16 reg, u8 phy_addr, u16 value);
+i40e_status i40e_read_phy_register(struct i40e_hw *hw,
+				u8 page, u16 reg, u8 phy_addr, u16 *value);
+i40e_status i40e_write_phy_register(struct i40e_hw *hw,
+				u8 page, u16 reg, u8 phy_addr, u16 value);
 u8 i40e_get_phy_address(struct i40e_hw *hw, u8 dev_num);
 i40e_status i40e_blink_phy_link_led(struct i40e_hw *hw,
 					      u32 time, u32 interval);

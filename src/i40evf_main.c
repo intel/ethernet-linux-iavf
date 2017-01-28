@@ -1,7 +1,7 @@
 /*******************************************************************************
  *
  * Intel(R) 40-10 Gigabit Ethernet Virtual Function Driver
- * Copyright(c) 2013 - 2016 Intel Corporation.
+ * Copyright(c) 2013 - 2017 Intel Corporation.
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms and conditions of the GNU General Public License,
@@ -39,15 +39,15 @@ static const char i40evf_driver_string[] =
 #define DRV_VF_VERSION_DESC ""
 
 #define DRV_VERSION_MAJOR 1
-#define DRV_VERSION_MINOR 5
-#define DRV_VERSION_BUILD 14
+#define DRV_VERSION_MINOR 6
+#define DRV_VERSION_BUILD 41
 #define DRV_VERSION __stringify(DRV_VERSION_MAJOR) "." \
 	     __stringify(DRV_VERSION_MINOR) "." \
 	     __stringify(DRV_VERSION_BUILD) \
 	     DRV_VF_VERSION_DESC __stringify(DRV_VERSION_LOCAL)
 const char i40evf_driver_version[] = DRV_VERSION;
 static const char i40evf_copyright[] =
-	"Copyright(c) 2013 - 2016 Intel Corporation.";
+	"Copyright(c) 2013 - 2017 Intel Corporation.";
 
 /* i40evf_pci_tbl - PCI Device ID Table
  *
@@ -59,6 +59,7 @@ static const char i40evf_copyright[] =
  */
 static const struct pci_device_id i40evf_pci_tbl[] = {
 	{PCI_VDEVICE(INTEL, I40E_DEV_ID_VF), 0},
+	{PCI_VDEVICE(INTEL, I40E_DEV_ID_VF_HV), 0},
 #ifdef X722_DEV_SUPPORT
 	{PCI_VDEVICE(INTEL, I40E_DEV_ID_X722_VF), 0},
 #endif /* X722_DEV_SUPPORT */
@@ -107,6 +108,9 @@ static void i40evf_tx_timeout(struct net_device *netdev)
 static void i40evf_misc_irq_disable(struct i40evf_adapter *adapter)
 {
 	struct i40e_hw *hw = &adapter->hw;
+
+	if (!adapter->msix_entries)
+		return;
 
 	wr32(hw, I40E_VFINT_DYN_CTL01, 0);
 
@@ -271,7 +275,6 @@ i40evf_map_vector_to_rxq(struct i40evf_adapter *adapter, int v_idx, int r_idx)
 {
 	struct i40e_q_vector *q_vector = &adapter->q_vectors[v_idx];
 	struct i40e_ring *rx_ring = &adapter->rx_rings[r_idx];
-	struct i40e_vsi *vsi = &adapter->vsi;
 	struct i40e_hw *hw = &adapter->hw;
 
 	rx_ring->q_vector = q_vector;
@@ -280,7 +283,7 @@ i40evf_map_vector_to_rxq(struct i40evf_adapter *adapter, int v_idx, int r_idx)
 	q_vector->rx.ring = rx_ring;
 	q_vector->rx.count++;
 	q_vector->rx.latency_range = I40E_LOW_LATENCY;
-	q_vector->rx.itr = ITR_TO_REG(vsi->rx_itr_setting);
+	q_vector->rx.itr = ITR_TO_REG(rx_ring->rx_itr_setting);
 	q_vector->ring_mask |= BIT(r_idx);
 	q_vector->itr_countdown = ITR_COUNTDOWN_START;
 	wr32(hw, I40E_VFINT_ITRN1(I40E_RX_ITR, v_idx - 1), q_vector->rx.itr);
@@ -297,7 +300,6 @@ i40evf_map_vector_to_txq(struct i40evf_adapter *adapter, int v_idx, int t_idx)
 {
 	struct i40e_q_vector *q_vector = &adapter->q_vectors[v_idx];
 	struct i40e_ring *tx_ring = &adapter->tx_rings[t_idx];
-	struct i40e_vsi *vsi = &adapter->vsi;
 	struct i40e_hw *hw = &adapter->hw;
 
 	tx_ring->q_vector = q_vector;
@@ -306,7 +308,7 @@ i40evf_map_vector_to_txq(struct i40evf_adapter *adapter, int v_idx, int t_idx)
 	q_vector->tx.ring = tx_ring;
 	q_vector->tx.count++;
 	q_vector->tx.latency_range = I40E_LOW_LATENCY;
-	q_vector->tx.itr = ITR_TO_REG(vsi->tx_itr_setting);
+	q_vector->tx.itr = ITR_TO_REG(tx_ring->tx_itr_setting);
 	q_vector->itr_countdown = ITR_COUNTDOWN_START;
 	q_vector->num_ringpairs++;
 	wr32(hw, I40E_VFINT_ITRN1(I40E_TX_ITR, v_idx - 1), q_vector->tx.itr);
@@ -375,6 +377,35 @@ out:
 	return err;
 }
 
+#ifdef HAVE_IRQ_AFFINITY_NOTIFY
+/**
+ * i40evf_irq_affinity_notify - Callback for affinity changes
+ * @notify: context as to what irq was changed
+ * @mask: the new affinity mask
+ *
+ * This is a callback function used by the irq_set_affinity_notifier function
+ * so that we may register to receive changes to the irq affinity masks.
+ **/
+static void i40evf_irq_affinity_notify(struct irq_affinity_notify *notify,
+				       const cpumask_t *mask)
+{
+	struct i40e_q_vector *q_vector =
+		container_of(notify, struct i40e_q_vector, affinity_notify);
+
+	q_vector->affinity_mask = *mask;
+}
+
+/**
+ * i40evf_irq_affinity_release - Callback for affinity notifier release
+ * @ref: internal core kernel usage
+ *
+ * This is a callback function used by the irq_set_affinity_notifier function
+ * to inform the current notification subscriber that they will no longer
+ * receive notifications.
+ **/
+static void i40evf_irq_affinity_release(struct kref *ref) {}
+#endif /* HAVE_IRQ_AFFINITY_NOTIFY */
+
 /**
  * i40evf_request_traffic_irqs - Initialize MSI-X interrupts
  * @adapter: board private structure
@@ -387,6 +418,7 @@ i40evf_request_traffic_irqs(struct i40evf_adapter *adapter, char *basename)
 {
 	int vector, err, q_vectors;
 	int rx_int_idx = 0, tx_int_idx = 0;
+	int irq_num;
 
 	i40evf_irq_disable(adapter);
 	/* Decrement for Other and TCP Timer vectors */
@@ -394,6 +426,7 @@ i40evf_request_traffic_irqs(struct i40evf_adapter *adapter, char *basename)
 
 	for (vector = 0; vector < q_vectors; vector++) {
 		struct i40e_q_vector *q_vector = &adapter->q_vectors[vector];
+		irq_num = adapter->msix_entries[vector + NONQ_VECS].vector;
 
 		if (q_vector->tx.ring && q_vector->rx.ring) {
 			snprintf(q_vector->name, sizeof(q_vector->name) - 1,
@@ -412,23 +445,27 @@ i40evf_request_traffic_irqs(struct i40evf_adapter *adapter, char *basename)
 			/* skip this unused q_vector */
 			continue;
 		}
-		err = request_irq(
-			adapter->msix_entries[vector + NONQ_VECS].vector,
-			i40evf_msix_clean_rings,
-			0,
-			q_vector->name,
-			q_vector);
+		err = request_irq(irq_num,
+				  i40evf_msix_clean_rings,
+				  0,
+				  q_vector->name,
+				  q_vector);
 		if (err) {
 			dev_info(&adapter->pdev->dev,
 				 "Request_irq failed, error: %d\n", err);
 			goto free_queue_irqs;
 		}
+#ifdef HAVE_IRQ_AFFINITY_NOTIFY
+		/* register for affinity change notifications */
+		q_vector->affinity_notify.notify = i40evf_irq_affinity_notify;
+		q_vector->affinity_notify.release =
+						   i40evf_irq_affinity_release;
+		irq_set_affinity_notifier(irq_num, &q_vector->affinity_notify);
+#endif
 #ifdef HAVE_IRQ_AFFINITY_HINT
 		/* assign the mask for this irq */
-		irq_set_affinity_hint(
-			adapter->msix_entries[vector + NONQ_VECS].vector,
-			q_vector->affinity_mask);
-#endif /* HAVE_IRQ_AFFINITY_HINT */
+		irq_set_affinity_hint(irq_num, &q_vector->affinity_mask);
+#endif
 	}
 
 	return 0;
@@ -436,13 +473,14 @@ i40evf_request_traffic_irqs(struct i40evf_adapter *adapter, char *basename)
 free_queue_irqs:
 	while (vector) {
 		vector--;
-#ifdef HAVE_IRQ_AFFINITY_HINT
-		irq_set_affinity_hint(
-			adapter->msix_entries[vector + NONQ_VECS].vector,
-			NULL);
+		irq_num = adapter->msix_entries[vector + NONQ_VECS].vector;
+#ifdef HAVE_IRQ_AFFINITY_NOTIFY
+		irq_set_affinity_notifier(irq_num, NULL);
 #endif
-		free_irq(adapter->msix_entries[vector + NONQ_VECS].vector,
-			 &adapter->q_vectors[vector]);
+#ifdef HAVE_IRQ_AFFINITY_HINT
+		irq_set_affinity_hint(irq_num, NULL);
+#endif
+		free_irq(irq_num, &adapter->q_vectors[vector]);
 	}
 	return err;
 }
@@ -483,18 +521,22 @@ static int i40evf_request_misc_irq(struct i40evf_adapter *adapter)
  **/
 static void i40evf_free_traffic_irqs(struct i40evf_adapter *adapter)
 {
-	int i;
-	int q_vectors;
+	int vector, irq_num, q_vectors;
+
+	if (!adapter->msix_entries)
+		return;
 
 	q_vectors = adapter->num_msix_vectors - NONQ_VECS;
 
-	for (i = 0; i < q_vectors; i++) {
-#ifdef HAVE_IRQ_AFFINITY_HINT
-		irq_set_affinity_hint(adapter->msix_entries[i+1].vector,
-				      NULL);
+	for (vector = 0; vector < q_vectors; vector++) {
+		irq_num = adapter->msix_entries[vector + NONQ_VECS].vector;
+#ifdef HAVE_IRQ_AFFINITY_NOTIFY
+		irq_set_affinity_notifier(irq_num, NULL);
 #endif
-		free_irq(adapter->msix_entries[i+1].vector,
-			 &adapter->q_vectors[i]);
+#ifdef HAVE_IRQ_AFFINITY_HINT
+		irq_set_affinity_hint(irq_num, NULL);
+#endif
+		free_irq(irq_num, &adapter->q_vectors[vector]);
 	}
 }
 
@@ -507,6 +549,9 @@ static void i40evf_free_traffic_irqs(struct i40evf_adapter *adapter)
 static void i40evf_free_misc_irq(struct i40evf_adapter *adapter)
 {
 	struct net_device *netdev = adapter->netdev;
+
+	if (!adapter->msix_entries)
+		return;
 
 	free_irq(adapter->msix_entries[0].vector, netdev);
 }
@@ -764,7 +809,7 @@ i40evf_mac_filter *i40evf_add_filter(struct i40evf_adapter *adapter,
 
 		ether_addr_copy(f->macaddr, macaddr);
 
-		list_add(&f->list, &adapter->mac_filter_list);
+		list_add_tail(&f->list, &adapter->mac_filter_list);
 		f->add = true;
 		adapter->aq_required |= I40EVF_FLAG_AQ_ADD_MAC_FILTER;
 	}
@@ -957,7 +1002,7 @@ static void i40evf_configure(struct i40evf_adapter *adapter)
  * i40evf_up_complete - Finish the last steps of bringing up a connection
  * @adapter: board private structure
  **/
-static int i40evf_up_complete(struct i40evf_adapter *adapter)
+static void i40evf_up_complete(struct i40evf_adapter *adapter)
 {
 #ifdef CONFIG_NETDEVICES_MULTIQUEUE
 	if (adapter->num_active_queues > 1)
@@ -971,7 +1016,6 @@ static int i40evf_up_complete(struct i40evf_adapter *adapter)
 
 	adapter->aq_required |= I40EVF_FLAG_AQ_ENABLE_QUEUES;
 	mod_timer_pending(&adapter->watchdog_timer, jiffies + 1);
-	return 0;
 }
 
 /**
@@ -1011,7 +1055,7 @@ void i40evf_down(struct i40evf_adapter *adapter)
 		 * here for this to complete. The watchdog is still running
 		 * and it will take care of this.
 		 */
-		adapter->aq_required = I40EVF_FLAG_AQ_DEL_MAC_FILTER;
+		adapter->aq_required |= I40EVF_FLAG_AQ_DEL_MAC_FILTER;
 		adapter->aq_required |= I40EVF_FLAG_AQ_DEL_VLAN_FILTER;
 		adapter->aq_required |= I40EVF_FLAG_AQ_DISABLE_QUEUES;
 	}
@@ -1031,44 +1075,31 @@ void i40evf_down(struct i40evf_adapter *adapter)
 static int
 i40evf_acquire_msix_vectors(struct i40evf_adapter *adapter, int vectors)
 {
-	int err, vector_threshold;
+	int v_actual;
 
 	/* We'll want at least 3 (vector_threshold):
 	 * 0) Other (Admin Queue and link, mostly)
 	 * 1) TxQ[0] Cleanup
 	 * 2) RxQ[0] Cleanup
-	 */
-	vector_threshold = MIN_MSIX_COUNT;
-
-	/* The more we get, the more we will assign to Tx/Rx Cleanup
+	 *
+	 * The more we get, the more we will assign to Tx/Rx Cleanup
 	 * for the separate queues...where Rx Cleanup >= Tx Cleanup.
 	 * Right now, we simply care about how many we'll get; we'll
 	 * set them up later while requesting irq's.
 	 */
-	while (vectors >= vector_threshold) {
-		err = pci_enable_msix(adapter->pdev, adapter->msix_entries,
-				      vectors);
-		if (!err) /* Success in acquiring all requested vectors. */
-			break;
-		else if (err < 0)
-			vectors = 0; /* Nasty failure, quit now */
-		else /* err == number of vectors we should try again with */
-			vectors = err;
-	}
-
-	if (vectors < vector_threshold) {
-		dev_err(&adapter->pdev->dev, "Unable to allocate MSI-X interrupts\n");
+	v_actual = pci_enable_msix_range(adapter->pdev, adapter->msix_entries,
+					 MIN_MSIX_COUNT, vectors);
+	if (v_actual < 0) {
+		dev_err(&adapter->pdev->dev, "Unable to allocate MSI-X interrupts: %d\n",
+			v_actual);
 		kfree(adapter->msix_entries);
 		adapter->msix_entries = NULL;
-		err = -EIO;
-	} else {
-		/* Adjust for only the vectors we'll use, which is minimum
-		 * of max_msix_q_vectors + NONQ_VECS, or the number of
-		 * vectors we were allocated.
-		 */
-		adapter->num_msix_vectors = vectors;
+		return v_actual;
 	}
-	return err;
+
+	adapter->num_msix_vectors = v_actual;
+
+	return 0;
 }
 
 /**
@@ -1118,6 +1149,7 @@ static int i40evf_alloc_queues(struct i40evf_adapter *adapter)
 		tx_ring->netdev = adapter->netdev;
 		tx_ring->dev = pci_dev_to_dev(adapter->pdev);
 		tx_ring->count = adapter->tx_desc_count;
+		tx_ring->tx_itr_setting = (I40E_ITR_DYNAMIC | I40E_ITR_TX_DEF);
 
 		if (adapter->flags & I40E_FLAG_WB_ON_ITR_CAPABLE)
 			tx_ring->flags |= I40E_TXR_FLAGS_WB_ON_ITR;
@@ -1127,6 +1159,7 @@ static int i40evf_alloc_queues(struct i40evf_adapter *adapter)
 		rx_ring->netdev = adapter->netdev;
 		rx_ring->dev = pci_dev_to_dev(adapter->pdev);
 		rx_ring->count = adapter->rx_desc_count;
+		rx_ring->rx_itr_setting = (I40E_ITR_DYNAMIC | I40E_ITR_RX_DEF);
 	}
 
 	return 0;
@@ -1201,7 +1234,7 @@ static int i40evf_alloc_q_vectors(struct i40evf_adapter *adapter)
 	adapter->q_vectors = kcalloc(num_q_vectors, sizeof(*q_vector),
 				     GFP_KERNEL);
 	if (!adapter->q_vectors)
-		goto err_out;
+		return -ENOMEM;
 	for (q_idx = 0; q_idx < num_q_vectors; q_idx++) {
 		q_vector = &adapter->q_vectors[q_idx];
 		q_vector->adapter = adapter;
@@ -1212,15 +1245,6 @@ static int i40evf_alloc_q_vectors(struct i40evf_adapter *adapter)
 	}
 
 	return 0;
-
-err_out:
-	while (q_idx) {
-		q_idx--;
-		q_vector = &adapter->q_vectors[q_idx];
-		netif_napi_del(&q_vector->napi);
-	}
-	kfree(adapter->q_vectors);
-	return -ENOMEM;
 }
 
 /**
@@ -1236,6 +1260,9 @@ static void i40evf_free_q_vectors(struct i40evf_adapter *adapter)
 	int q_idx, num_q_vectors;
 	int napi_vectors;
 
+	if (!adapter->q_vectors)
+		return;
+
 	num_q_vectors = adapter->num_msix_vectors - NONQ_VECS;
 	napi_vectors = adapter->num_active_queues;
 
@@ -1245,6 +1272,7 @@ static void i40evf_free_q_vectors(struct i40evf_adapter *adapter)
 			netif_napi_del(&q_vector->napi);
 	}
 	kfree(adapter->q_vectors);
+	adapter->q_vectors = NULL;
 }
 
 /**
@@ -1254,6 +1282,9 @@ static void i40evf_free_q_vectors(struct i40evf_adapter *adapter)
  **/
 void i40evf_reset_interrupt_capability(struct i40evf_adapter *adapter)
 {
+	if (!adapter->msix_entries)
+		return;
+
 	pci_disable_msix(adapter->pdev);
 	kfree(adapter->msix_entries);
 	adapter->msix_entries = NULL;
@@ -1268,7 +1299,9 @@ int i40evf_init_interrupt_scheme(struct i40evf_adapter *adapter)
 {
 	int err;
 
+	rtnl_lock();
 	err = i40evf_set_interrupt_capability(adapter);
+	rtnl_unlock();
 	if (err) {
 		dev_err(&adapter->pdev->dev,
 			"Unable to setup interrupt capabilities\n");
@@ -1684,15 +1717,17 @@ static void i40evf_reset_task(struct work_struct *work)
 
 	/* wait until the reset is complete and the PF is responding to us */
 	for (i = 0; i < I40EVF_RESET_WAIT_COUNT; i++) {
+		/* sleep first to make sure a minimum wait time is met */
+		msleep(I40EVF_RESET_WAIT_MS);
+
 		reg_val = rd32(hw, I40E_VFGEN_RSTAT) &
 			  I40E_VFGEN_RSTAT_VFR_STATE_MASK;
 		if (reg_val == I40E_VFR_VFACTIVE)
 			break;
-		msleep(I40EVF_RESET_WAIT_MS);
 	}
+
 	pci_set_master(adapter->pdev);
-	/* extra wait to make sure minimum wait is met */
-	msleep(I40EVF_RESET_WAIT_MS);
+
 	if (i == I40EVF_RESET_WAIT_COUNT) {
 		struct i40evf_mac_filter *ftmp;
 		struct i40evf_vlan_filter *fv, *fvtmp;
@@ -1731,6 +1766,7 @@ static void i40evf_reset_task(struct work_struct *work)
 		i40evf_free_queues(adapter);
 		i40evf_free_q_vectors(adapter);
 		kfree(adapter->vf_res);
+		adapter->vf_res = NULL;
 		i40e_shutdown_adminq(hw);
 		adapter->netdev->flags &= ~IFF_UP;
 		clear_bit(__I40EVF_IN_CRITICAL_TASK, &adapter->crit_section);
@@ -1751,15 +1787,14 @@ continue_reset:
 	adapter->state = __I40EVF_RESETTING;
 	adapter->flags &= ~I40EVF_FLAG_RESET_PENDING;
 
-	/* free the tx/rx rings and descriptors, might be better to just
+	/* free the Tx/Rx rings and descriptors, might be better to just
 	 * re-use them sometime in the future
 	 */
 	i40evf_free_all_rx_resources(adapter);
 	i40evf_free_all_tx_resources(adapter);
 
 	/* kill and reinit the admin queue */
-	if (i40e_shutdown_adminq(hw))
-		dev_warn(&adapter->pdev->dev, "Failed to shut down adminq\n");
+	i40e_shutdown_adminq(hw);
 	adapter->current_op = I40E_VIRTCHNL_OP_UNKNOWN;
 	err = i40e_init_adminq(hw);
 	if (err)
@@ -1797,9 +1832,8 @@ continue_reset:
 
 		i40evf_configure(adapter);
 
-		err = i40evf_up_complete(adapter);
-		if (err)
-			goto reset_err;
+		i40evf_up_complete(adapter);
+
 	} else {
 		adapter->state = __I40EVF_DOWN;
 	}
@@ -2026,9 +2060,7 @@ static int i40evf_open(struct net_device *netdev)
 	i40evf_add_filter(adapter, adapter->hw.mac.addr);
 	i40evf_configure(adapter);
 
-	err = i40evf_up_complete(adapter);
-	if (err)
-		goto err_req_irq;
+	i40evf_up_complete(adapter);
 
 	i40evf_irq_enable(adapter, true);
 
@@ -2070,6 +2102,11 @@ static int i40evf_close(struct net_device *netdev)
 	adapter->state = __I40EVF_DOWN_PENDING;
 	i40evf_free_traffic_irqs(adapter);
 
+	/* We explicitly don't free resources here because the hardware is
+	 * still active and can DMA into memory. Resources are cleared in
+	 * i40evf_virtchnl_completion() after we get confirmation from the PF
+	 * driver that the rings have been stopped.
+	 */
 	return 0;
 }
 
@@ -2103,6 +2140,33 @@ static int i40evf_change_mtu(struct net_device *netdev, int new_mtu)
 	if ((new_mtu < 68) || (max_frame > I40E_MAX_RXBUFFER))
 		return -EINVAL;
 
+#ifndef HAVE_NDO_FEATURES_CHECK
+	/* MTU < 576 causes problems with TSO */
+	if (new_mtu < 576) {
+		netdev->features &= ~NETIF_F_TSO;
+		netdev->features &= ~NETIF_F_TSO6;
+	} else {
+#ifdef HAVE_NDO_SET_FEATURES
+#ifndef HAVE_RHEL6_NET_DEVICE_OPS_EXT
+		if (netdev->wanted_features & NETIF_F_TSO)
+			netdev->features |= NETIF_F_TSO;
+		if (netdev->wanted_features & NETIF_F_TSO6)
+			netdev->features |= NETIF_F_TSO6;
+#else
+		if (netdev_extended(netdev)->wanted_features & NETIF_F_TSO)
+			netdev->features |= NETIF_F_TSO;
+		if (netdev_extended(netdev)->wanted_features & NETIF_F_TSO6)
+			netdev->features |= NETIF_F_TSO6;
+#endif /* HAVE_RHEL6_NET_DEVICE_OPS_EXT */
+#else
+		netdev->features |= NETIF_F_TSO;
+		netdev->features |= NETIF_F_TSO6;
+#endif /* HAVE_NDO_SET_FEATURES */
+	}
+#else
+	netdev->features |= NETIF_F_TSO;
+	netdev->features |= NETIF_F_TSO6;
+#endif /* !HAVE_NDO_FEATURES_CHECK */
 	netdev->mtu = new_mtu;
 	adapter->flags |= I40EVF_FLAG_RESET_NEEDED;
 	schedule_work(&adapter->reset_task);
@@ -2110,6 +2174,66 @@ static int i40evf_change_mtu(struct net_device *netdev, int new_mtu)
 	return 0;
 }
 
+#ifdef HAVE_NDO_FEATURES_CHECK
+/**
+ * i40evf_features_check - Validate encapsulated packet conforms to limits
+ * @skb: skb buff
+ * @netdev: This physical port's netdev
+ * @features: Offload features that the stack believes apply
+ **/
+static netdev_features_t i40evf_features_check(struct sk_buff *skb,
+					       struct net_device *dev,
+					       netdev_features_t features)
+{
+	size_t len;
+
+	/* No point in doing any of this if neither checksum nor GSO are
+	 * being requested for this frame.  We can rule out both by just
+	 * checking for CHECKSUM_PARTIAL
+	 */
+	if (skb->ip_summed != CHECKSUM_PARTIAL)
+		return features;
+
+	/* We cannot support GSO if the MSS is going to be less than
+	 * 64 bytes.  If it is then we need to drop support for GSO.
+	 */
+	if (skb_is_gso(skb) && (skb_shinfo(skb)->gso_size < 64))
+		features &= ~NETIF_F_GSO_MASK;
+
+	/* MACLEN can support at most 63 words */
+	len = skb_network_header(skb) - skb->data;
+	if (len & ~(63 * 2))
+		goto out_err;
+
+	/* IPLEN and EIPLEN can support at most 127 dwords */
+	len = skb_transport_header(skb) - skb_network_header(skb);
+	if (len & ~(127 * 4))
+		goto out_err;
+
+	if (skb->encapsulation) {
+		/* L4TUNLEN can support 127 words */
+		len = skb_inner_network_header(skb) - skb_transport_header(skb);
+		if (len & ~(127 * 2))
+			goto out_err;
+
+		/* IPLEN can support at most 127 dwords */
+		len = skb_inner_transport_header(skb) -
+		      skb_inner_network_header(skb);
+		if (len & ~(127 * 4))
+			goto out_err;
+	}
+
+	/* No need to validate L4LEN as TCP is the only protocol with a
+	 * a flexible value and we support all possible values supported
+	 * by TCP, which is at most 15 dwords
+	 */
+
+	return features;
+out_err:
+	return features & ~(NETIF_F_CSUM_MASK | NETIF_F_GSO_MASK);
+}
+
+#endif /* HAVE_NDO_FEATURES_CHECK */
 #ifdef NETIF_F_HW_VLAN_CTAG_RX
 #define I40EVF_VLAN_FEATURES (NETIF_F_HW_VLAN_CTAG_TX |\
 			      NETIF_F_HW_VLAN_CTAG_RX |\
@@ -2135,6 +2259,9 @@ static const struct net_device_ops i40evf_netdev_ops = {
 #endif
 	.ndo_vlan_rx_add_vid	= i40evf_vlan_rx_add_vid,
 	.ndo_vlan_rx_kill_vid	= i40evf_vlan_rx_kill_vid,
+#ifdef HAVE_NDO_FEATURES_CHECK
+	.ndo_features_check     = i40evf_features_check,
+#endif /* HAVE_NDO_FEATURES_CHECK */
 };
 
 /**
@@ -2172,9 +2299,8 @@ int i40evf_process_config(struct i40evf_adapter *adapter)
 	struct net_device *netdev = adapter->netdev;
 	struct i40e_vsi *vsi = &adapter->vsi;
 	int i;
-#ifdef HAVE_RHEL6_NET_DEVICE_OPS_EXT
-	u32 hw_features;
-#endif
+	netdev_features_t hw_enc_features;
+	netdev_features_t hw_features;
 
 	/* got VF config message back from PF, now we can parse it */
 	for (i = 0; i < vfres->num_vsis; i++) {
@@ -2186,71 +2312,81 @@ int i40evf_process_config(struct i40evf_adapter *adapter)
 		return -ENODEV;
 	}
 
-	netdev->features |= NETIF_F_HIGHDMA |
-			    NETIF_F_SG |
-			    NETIF_F_IP_CSUM |
-			    NETIF_F_SCTP_CRC |
-			    NETIF_F_IPV6_CSUM |
-			    NETIF_F_TSO |
-#ifdef HAVE_ENCAP_TSO_OFFLOAD
-			    NETIF_F_TSO6 |
-			    NETIF_F_TSO_ECN |
-#ifdef HAVE_GRE_ENCAP_OFFLOAD
-			    NETIF_F_GSO_GRE |
+	hw_enc_features = NETIF_F_SG			|
+			  NETIF_F_IP_CSUM		|
+#ifdef NETIF_F_IPV6_CSUM
+			  NETIF_F_IPV6_CSUM		|
 #endif
-			    NETIF_F_GSO_UDP_TUNNEL |
-#endif /* HAVE_ENCAP_CSUM_OFFLOAD */
-			    NETIF_F_RXCSUM |
-			    NETIF_F_GRO;
+			  NETIF_F_HIGHDMA		|
+#ifdef NETIF_F_SOFT_FEATURES
+			  NETIF_F_SOFT_FEATURES	|
+#endif
+			  NETIF_F_TSO			|
+#ifdef HAVE_ENCAP_TSO_OFFLOAD
+			  NETIF_F_TSO_ECN		|
+			  NETIF_F_TSO6			|
+#ifdef HAVE_GRE_ENCAP_OFFLOAD
+			  NETIF_F_GSO_GRE		|
+#ifdef NETIF_F_GSO_IPXIP4
+			  NETIF_F_GSO_IPXIP4		|
+#else
+			  NETIF_F_GSO_IPIP		|
+			  NETIF_F_GSO_SIT		|
+#endif
+#endif
+			  NETIF_F_GSO_UDP_TUNNEL	|
+			  NETIF_F_GSO_UDP_TUNNEL_CSUM	|
+#endif /* HAVE_ENCAP_TSO_OFFLOAD */
+			  NETIF_F_SCTP_CRC		|
+#ifdef NETIF_F_RXHASH
+			  NETIF_F_RXHASH		|
+#endif
+#ifdef HAVE_NDO_SET_FEATURES
+			  NETIF_F_RXCSUM		|
+#endif
+			  0;
+
+	if (!(adapter->flags & I40EVF_FLAG_OUTER_UDP_CSUM_CAPABLE))
+		hw_enc_features ^= NETIF_F_GSO_UDP_TUNNEL_CSUM;
 
 #ifdef HAVE_ENCAP_CSUM_OFFLOAD
-	netdev->hw_enc_features |= NETIF_F_IP_CSUM |
-				   NETIF_F_IPV6_CSUM |
-				   NETIF_F_TSO |
-#ifdef HAVE_ENCAP_TSO_OFFLOAD
-				   NETIF_F_TSO6 |
-				   NETIF_F_TSO_ECN |
-#ifdef HAVE_GRE_ENCAP_OFFLOAD
-				   NETIF_F_GSO_GRE |
+	/* advertise to stack only if checksum offload for encapsulated
+	 * packets is supported
+	 */
+	if (vfres->vf_offload_flags & I40E_VIRTCHNL_VF_OFFLOAD_ENCAP_CSUM)
+		netdev->hw_enc_features |= hw_enc_features;
 #endif
-				   NETIF_F_GSO_UDP_TUNNEL |
-				   NETIF_F_GSO_UDP_TUNNEL_CSUM |
-				   0;
-#else /* HAVE_ENCAP_TSO_OFFLOAD */
-				   NETIF_F_SG;
-#endif /* HAVE_ENCAP_TSO_OFFLOAD */
-#endif /* HAVE_ENCAP_CSUM_OFFLOAD */
-	if (adapter->flags & I40EVF_FLAG_OUTER_UDP_CSUM_CAPABLE)
-		netdev->features |= NETIF_F_GSO_UDP_TUNNEL_CSUM;
+
+#ifdef HAVE_NETDEV_VLAN_FEATURES
+	/* record features VLANs can make use of */
+	netdev->vlan_features |= hw_enc_features;
+#endif
+
+	/* Write features and hw_features separately to avoid polluting
+	 * with, or dropping, features that are set when we registered.
+	 */
+	hw_features = hw_enc_features;
 
 #ifdef HAVE_NDO_SET_FEATURES
-	/* copy netdev features into list of user selectable features */
 #ifdef HAVE_RHEL6_NET_DEVICE_OPS_EXT
-	hw_features = get_netdev_hw_features(netdev);
-	hw_features |= netdev->features;
-	hw_features &= ~NETIF_F_RXCSUM;
-	hw_features &= ~(I40EVF_VLAN_FEATURES);
+	hw_features |= get_netdev_hw_features(netdev);
 	set_netdev_hw_features(netdev, hw_features);
 #else
-	netdev->hw_features |= netdev->features;
-	netdev->hw_features &= ~NETIF_F_RXCSUM;
-	netdev->hw_features &= ~(I40EVF_VLAN_FEATURES);
-#endif /* HAVE_RHEL6_NET_DEVICE_OPS_EXT */
+	netdev->hw_features |= hw_features;
+#endif
 #endif /* HAVE_NDO_SET_FEATURES */
 
-	netdev->features &= ~(I40EVF_VLAN_FEATURES);
-	if (vfres->vf_offload_flags & I40E_VIRTCHNL_VF_OFFLOAD_VLAN) {
-		netdev->vlan_features = netdev->features;
-		netdev->features |= I40EVF_VLAN_FEATURES;
-	}
+	netdev->features |= hw_features | I40EVF_VLAN_FEATURES;
+
+	/* disable VLAN features if not supported */
+	if (!(vfres->vf_offload_flags & I40E_VIRTCHNL_VF_OFFLOAD_VLAN))
+		netdev->features ^= I40EVF_VLAN_FEATURES;
 
 	adapter->vsi.id = adapter->vsi_res->vsi_id;
 
 	adapter->vsi.back = adapter;
 	adapter->vsi.base_vector = 1;
 	adapter->vsi.work_limit = I40E_DEFAULT_IRQ_WORK;
-	adapter->vsi.rx_itr_setting = (I40E_ITR_DYNAMIC | I40E_ITR_RX_DEF);
-	adapter->vsi.tx_itr_setting = (I40E_ITR_DYNAMIC | I40E_ITR_TX_DEF);
 	vsi->netdev = adapter->netdev;
 	vsi->qs_handle = adapter->vsi_res->qset_handle;
 	if (vfres->vf_offload_flags & I40E_VIRTCHNL_VF_OFFLOAD_RSS_PF) {
@@ -2596,6 +2732,7 @@ static int i40evf_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 	hw->subsystem_device_id = pdev->subsystem_device;
 	hw->bus.device = PCI_SLOT(pdev->devfn);
 	hw->bus.func = PCI_FUNC(pdev->devfn);
+	hw->bus.bus_id = pdev->bus->number;
 
 	/* set up the spinlocks for the AQ, do this only once in probe
 	 * and destroy them only once in remove
@@ -2727,8 +2864,8 @@ static void i40evf_remove(struct pci_dev *pdev)
 
 	cancel_delayed_work_sync(&adapter->init_task);
 	cancel_work_sync(&adapter->reset_task);
-
 	if (adapter->netdev_registered) {
+		/* will call i40evf_close if the device was open previously */
 		unregister_netdev(netdev);
 		adapter->netdev_registered = false;
 	}
@@ -2743,13 +2880,12 @@ static void i40evf_remove(struct pci_dev *pdev)
 		i40evf_request_reset(adapter);
 		msleep(50);
 	}
-
-	if (adapter->msix_entries) {
-		i40evf_misc_irq_disable(adapter);
-		i40evf_free_misc_irq(adapter);
-		i40evf_reset_interrupt_capability(adapter);
-		i40evf_free_q_vectors(adapter);
-	}
+	i40evf_free_all_tx_resources(adapter);
+	i40evf_free_all_rx_resources(adapter);
+	i40evf_misc_irq_disable(adapter);
+	i40evf_free_misc_irq(adapter);
+	i40evf_reset_interrupt_capability(adapter);
+	i40evf_free_q_vectors(adapter);
 
 	if (adapter->watchdog_timer.function)
 		del_timer_sync(&adapter->watchdog_timer);
@@ -2767,10 +2903,11 @@ static void i40evf_remove(struct pci_dev *pdev)
 
 	iounmap(hw->hw_addr);
 	pci_release_regions(pdev);
-	i40evf_free_all_tx_resources(adapter);
-	i40evf_free_all_rx_resources(adapter);
+
 	i40evf_free_queues(adapter);
 	kfree(adapter->vf_res);
+	adapter->vf_res = NULL;
+
 	/* If we got removed before an up/down sequence, we've got a filter
 	 * hanging out there that we need to get rid of.
 	 */
@@ -2821,7 +2958,8 @@ static int __init i40evf_init_module(void)
 
 	pr_info("%s\n", i40evf_copyright);
 
-	i40evf_wq = create_singlethread_workqueue(i40evf_driver_name);
+	i40evf_wq = alloc_workqueue("%s", WQ_MEM_RECLAIM, 0,
+				    i40evf_driver_name);
 	if (!i40evf_wq) {
 		pr_err("%s: Failed to create workqueue\n", i40evf_driver_name);
 		return -ENOMEM;

@@ -1,7 +1,7 @@
 /*******************************************************************************
  *
  * Intel(R) 40-10 Gigabit Ethernet Virtual Function Driver
- * Copyright(c) 2013 - 2016 Intel Corporation.
+ * Copyright(c) 2013 - 2017 Intel Corporation.
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms and conditions of the GNU General Public License,
@@ -37,7 +37,7 @@ i40e_status i40e_set_mac_type(struct i40e_hw *hw)
 {
 	i40e_status status = I40E_SUCCESS;
 
-	if (hw->vendor_id == I40E_INTEL_VENDOR_ID) {
+	if (hw->vendor_id == PCI_VENDOR_ID_INTEL) {
 		switch (hw->device_id) {
 		case I40E_DEV_ID_SFP_XL710:
 		case I40E_DEV_ID_QEMU:
@@ -60,11 +60,9 @@ i40e_status i40e_set_mac_type(struct i40e_hw *hw)
 		case I40E_DEV_ID_1G_BASE_T_X722:
 		case I40E_DEV_ID_10G_BASE_T_X722:
 		case I40E_DEV_ID_SFP_I_X722:
-		case I40E_DEV_ID_QSFP_I_X722:
 			hw->mac.type = I40E_MAC_X722;
 			break;
 		case I40E_DEV_ID_X722_VF:
-		case I40E_DEV_ID_X722_VF_HV:
 			hw->mac.type = I40E_MAC_X722_VF;
 			break;
 		case I40E_DEV_ID_VF:
@@ -333,28 +331,11 @@ void i40e_debug_aq(struct i40e_hw *hw, enum i40e_debug_mask mask, void *desc,
 			len = buf_len;
 		/* write the full 16-byte chunks */
 		for (i = 0; i < (len - 16); i += 16)
-			i40e_debug(hw, mask,
-				   "\t0x%04X  %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X\n",
-				   i, buf[i], buf[i+1], buf[i+2], buf[i+3],
-				   buf[i+4], buf[i+5], buf[i+6], buf[i+7],
-				   buf[i+8], buf[i+9], buf[i+10], buf[i+11],
-				   buf[i+12], buf[i+13], buf[i+14], buf[i+15]);
-		/* the most we could have left is 16 bytes, pad with zeros */
-		if (i < len) {
-			char d_buf[16];
-			int j, i_sav;
-
-			i_sav = i;
-			memset(d_buf, 0, sizeof(d_buf));
-			for (j = 0; i < len; j++, i++)
-				d_buf[j] = buf[i];
-			i40e_debug(hw, mask,
-				   "\t0x%04X  %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X\n",
-				   i_sav, d_buf[0], d_buf[1], d_buf[2], d_buf[3],
-				   d_buf[4], d_buf[5], d_buf[6], d_buf[7],
-				   d_buf[8], d_buf[9], d_buf[10], d_buf[11],
-				   d_buf[12], d_buf[13], d_buf[14], d_buf[15]);
-		}
+			i40e_debug(hw, mask, "\t0x%04X  %16ph\n", i, buf + i);
+		/* write whatever's left over without overrunning the buffer */
+		if (i < len)
+			i40e_debug(hw, mask, "\t0x%04X  %*ph\n",
+					     i, len - i, buf + i);
 	}
 }
 
@@ -556,7 +537,7 @@ i40e_status i40e_aq_set_rss_key(struct i40e_hw *hw,
 	return i40e_aq_get_set_rss_key(hw, vsi_id, key, true);
 }
 
-/* The i40e_ptype_lookup table is used to convert from the 8-bit ptype in the
+/* The i40evf_ptype_lookup table is used to convert from the 8-bit ptype in the
  * hardware to a bit-field that can be used by SW to more easily determine the
  * packet type.
  *
@@ -569,10 +550,10 @@ i40e_status i40e_aq_set_rss_key(struct i40e_hw *hw,
  *
  * Typical work flow:
  *
- * IF NOT i40e_ptype_lookup[ptype].known
+ * IF NOT i40evf_ptype_lookup[ptype].known
  * THEN
  *      Packet is unknown
- * ELSE IF i40e_ptype_lookup[ptype].outer_ip == I40E_RX_PTYPE_OUTER_IP
+ * ELSE IF i40evf_ptype_lookup[ptype].outer_ip == I40E_RX_PTYPE_OUTER_IP
  *      Use the rest of the fields to look at the tunnels, inner protocols, etc
  * ELSE
  *      Use the enum i40e_rx_l2_ptype to decode the packet type
@@ -601,7 +582,7 @@ i40e_status i40e_aq_set_rss_key(struct i40e_hw *hw,
 #define I40E_RX_PTYPE_INNER_PROT_TS	I40E_RX_PTYPE_INNER_PROT_TIMESYNC
 
 /* Lookup table mapping the HW PTYPE to the bit field for decoding */
-struct i40e_rx_ptype_decoded i40e_ptype_lookup[] = {
+struct i40e_rx_ptype_decoded i40evf_ptype_lookup[] = {
 	/* L2 Packet types */
 	I40E_PTT_UNUSED_ENTRY(0),
 	I40E_PTT(1,  L2, NONE, NOF, NONE, NONE, NOF, NONE, PAY2),
@@ -719,7 +700,7 @@ struct i40e_rx_ptype_decoded i40e_ptype_lookup[] = {
 	/* Non Tunneled IPv6 */
 	I40E_PTT(88, IP, IPV6, FRG, NONE, NONE, NOF, NONE, PAY3),
 	I40E_PTT(89, IP, IPV6, NOF, NONE, NONE, NOF, NONE, PAY3),
-	I40E_PTT(90, IP, IPV6, NOF, NONE, NONE, NOF, UDP,  PAY3),
+	I40E_PTT(90, IP, IPV6, NOF, NONE, NONE, NOF, UDP,  PAY4),
 	I40E_PTT_UNUSED_ENTRY(91),
 	I40E_PTT(92, IP, IPV6, NOF, NONE, NONE, NOF, TCP,  PAY4),
 	I40E_PTT(93, IP, IPV6, NOF, NONE, NONE, NOF, SCTP, PAY4),
@@ -922,28 +903,6 @@ struct i40e_rx_ptype_decoded i40e_ptype_lookup[] = {
 };
 
 /**
- * i40e_validate_mac_addr - Validate unicast MAC address
- * @mac_addr: pointer to MAC address
- *
- * Tests a MAC address to ensure it is a valid Individual Address
- **/
-i40e_status i40e_validate_mac_addr(u8 *mac_addr)
-{
-	i40e_status status = I40E_SUCCESS;
-
-	/* Broadcast addresses ARE multicast addresses
-	 * Make sure it is not a multicast address
-	 * Reject the zero address
-	 */
-	if (is_multicast_ether_addr(mac_addr) ||
-	    (mac_addr[0] == 0 && mac_addr[1] == 0 && mac_addr[2] == 0 &&
-	      mac_addr[3] == 0 && mac_addr[4] == 0 && mac_addr[5] == 0))
-		status = I40E_ERR_INVALID_MAC_ADDR;
-
-	return status;
-}
-
-/**
  * i40e_aq_rx_ctl_read_register - use FW to read from an Rx control register
  * @hw: pointer to the hw struct
  * @reg_addr: register address
@@ -1133,17 +1092,12 @@ void i40e_vf_parse_hw_config(struct i40e_hw *hw,
 			   I40E_VIRTCHNL_VF_OFFLOAD_L2;
 	hw->dev_caps.fcoe = (msg->vf_offload_flags &
 			     I40E_VIRTCHNL_VF_OFFLOAD_FCOE) ? 1 : 0;
-	hw->dev_caps.iwarp = (msg->vf_offload_flags &
-			      I40E_VIRTCHNL_VF_OFFLOAD_IWARP) ? 1 : 0;
 	for (i = 0; i < msg->num_vsis; i++) {
 		if (vsi_res->vsi_type == I40E_VSI_SRIOV) {
-			i40e_memcpy(hw->mac.perm_addr,
-				    vsi_res->default_mac_addr,
-				    ETH_ALEN,
-				    I40E_NONDMA_TO_NONDMA);
-			i40e_memcpy(hw->mac.addr, vsi_res->default_mac_addr,
-				    ETH_ALEN,
-				    I40E_NONDMA_TO_NONDMA);
+			ether_addr_copy(hw->mac.perm_addr,
+					vsi_res->default_mac_addr);
+			ether_addr_copy(hw->mac.addr,
+					vsi_res->default_mac_addr);
 		}
 		vsi_res++;
 	}
@@ -1184,10 +1138,13 @@ i40e_status i40e_aq_set_arp_proxy_config(struct i40e_hw *hw,
 
 	i40e_fill_default_direct_cmd_desc(&desc, i40e_aqc_opc_set_proxy_config);
 
+	desc.flags |= CPU_TO_LE16((u16)I40E_AQ_FLAG_BUF);
+	desc.flags |= CPU_TO_LE16((u16)I40E_AQ_FLAG_RD);
 	desc.params.external.addr_high =
 				  CPU_TO_LE32(upper_32_bits((u64)proxy_config));
 	desc.params.external.addr_low =
 				  CPU_TO_LE32(lower_32_bits((u64)proxy_config));
+	desc.datalen = sizeof(struct i40e_aqc_arp_proxy_data);
 
 	status = i40e_asq_send_command(hw, &desc, proxy_config,
 				       sizeof(struct i40e_aqc_arp_proxy_data),
@@ -1218,10 +1175,13 @@ i40e_status i40e_aq_set_ns_proxy_table_entry(struct i40e_hw *hw,
 	i40e_fill_default_direct_cmd_desc(&desc,
 				i40e_aqc_opc_set_ns_proxy_table_entry);
 
+	desc.flags |= CPU_TO_LE16((u16)I40E_AQ_FLAG_BUF);
+	desc.flags |= CPU_TO_LE16((u16)I40E_AQ_FLAG_RD);
 	desc.params.external.addr_high =
 		CPU_TO_LE32(upper_32_bits((u64)ns_proxy_table_entry));
 	desc.params.external.addr_low =
 		CPU_TO_LE32(lower_32_bits((u64)ns_proxy_table_entry));
+	desc.datalen = sizeof(struct i40e_aqc_ns_proxy_data);
 
 	status = i40e_asq_send_command(hw, &desc, ns_proxy_table_entry,
 				       sizeof(struct i40e_aqc_ns_proxy_data),
@@ -1268,9 +1228,11 @@ i40e_status i40e_aq_set_clear_wol_filter(struct i40e_hw *hw,
 	if (set_filter) {
 		if (!filter)
 			return  I40E_ERR_PARAM;
+
 		cmd_flags |= I40E_AQC_SET_WOL_FILTER;
-		buff_len = sizeof(*filter);
+		cmd_flags |= I40E_AQC_SET_WOL_FILTER_WOL_PRESERVE_ON_PFR;
 	}
+
 	if (no_wol_tco)
 		cmd_flags |= I40E_AQC_SET_WOL_FILTER_NO_TCO_WOL;
 	cmd->cmd_flags = CPU_TO_LE16(cmd_flags);
@@ -1280,6 +1242,12 @@ i40e_status i40e_aq_set_clear_wol_filter(struct i40e_hw *hw,
 	if (no_wol_tco_valid)
 		valid_flags |= I40E_AQC_SET_WOL_FILTER_NO_TCO_ACTION_VALID;
 	cmd->valid_flags = CPU_TO_LE16(valid_flags);
+
+	buff_len = sizeof(*filter);
+	desc.datalen = buff_len;
+
+	desc.flags |= CPU_TO_LE16((u16)I40E_AQ_FLAG_BUF);
+	desc.flags |= CPU_TO_LE16((u16)I40E_AQ_FLAG_RD);
 
 	cmd->address_high = CPU_TO_LE32(upper_32_bits((u64)filter));
 	cmd->address_low = CPU_TO_LE32(lower_32_bits((u64)filter));
@@ -1313,6 +1281,27 @@ i40e_status i40e_aq_get_wake_event_reason(struct i40e_hw *hw,
 
 	if (status == I40E_SUCCESS)
 		*wake_reason = LE16_TO_CPU(resp->wake_reason);
+
+	return status;
+}
+
+/**
+* i40e_aq_clear_all_wol_filters
+* @hw: pointer to the hw struct
+* @cmd_details: pointer to command details structure or NULL
+*
+* Get information for the reason of a Wake Up event
+**/
+i40e_status i40e_aq_clear_all_wol_filters(struct i40e_hw *hw,
+	struct i40e_asq_cmd_details *cmd_details)
+{
+	struct i40e_aq_desc desc;
+	i40e_status status;
+
+	i40e_fill_default_direct_cmd_desc(&desc,
+					  i40e_aqc_opc_clear_all_wol_filters);
+
+	status = i40e_asq_send_command(hw, &desc, NULL, 0, cmd_details);
 
 	return status;
 }

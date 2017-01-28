@@ -1,7 +1,7 @@
 ################################################################################
 #
 # Intel(R) 40-10 Gigabit Ethernet Virtual Function Driver
-# Copyright(c) 2013 - 2016 Intel Corporation.
+# Copyright(c) 2013 - 2017 Intel Corporation.
 #
 # This program is free software; you can redistribute it and/or modify it
 # under the terms and conditions of the GNU General Public License,
@@ -22,6 +22,14 @@
 ################################################################################
 
 # common Makefile rules useful for out-of-tree Linux driver builds
+#
+# Usage: include common.mk
+#
+# After including, you probably want to add a minimum_kver_check call
+#
+# Required Variables:
+# DRIVER
+#   -- Set to the lowercase driver name
 
 #####################
 # Helpful functions #
@@ -45,14 +53,12 @@ cmd_depmod = /sbin/depmod $(if ${SYSTEM_MAP_FILE},-e -F ${SYSTEM_MAP_FILE}) \
                           -a ${KVER}
 
 ################
-# initrd Macro #
+# dracut Macro #
 ################
 
 cmd_initrd := $(shell \
                 if which dracut > /dev/null 2>&1 ; then \
                     echo "dracut --force"; \
-                elif which mkinitrd > /dev/null 2>&1 ; then \
-                    echo "mkinitrd"; \
                 elif which update-initramfs > /dev/null 2>&1 ; then \
                     echo "update-initramfs -u"; \
                 fi )
@@ -174,6 +180,30 @@ ifneq (${LINUX_VERSION_CODE},)
   EXTRA_CFLAGS += -DLINUX_VERSION_CODE=${LINUX_VERSION_CODE}
 endif
 
+# Determine SLE_LOCALVERSION_CODE for SuSE SLE >= 11 (needed by kcompat)
+# This assumes SuSE will continue setting CONFIG_LOCALVERSION to the string
+# appended to the stable kernel version on which their kernel is based with
+# additional versioning information (up to 3 numbers), a possible abbreviated
+# git SHA1 commit id and a kernel type, e.g. CONFIG_LOCALVERSION=-1.2.3-default
+# or CONFIG_LOCALVERSION=-999.gdeadbee-default
+ifeq (1,$(shell ${CC} -E -dM ${CONFIG_FILE} 2> /dev/null |\
+          grep -m 1 CONFIG_SUSE_KERNEL | awk '{ print $$3 }'))
+
+ifneq (10,$(shell ${CC} -E -dM ${CONFIG_FILE} 2> /dev/null |\
+	  grep -m 1 CONFIG_SLE_VERSION | awk '{ print $$3 }'))
+
+  LOCALVERSION := $(shell ${CC} -E -dM ${CONFIG_FILE} 2> /dev/null |\
+                    grep -m 1 CONFIG_LOCALVERSION | awk '{ print $$3 }' |\
+                    cut -d'-' -f2 | sed 's/\.g[[:xdigit:]]\{7\}//')
+  LOCALVER_A := $(shell echo ${LOCALVERSION} | cut -d'.' -f1)
+  LOCALVER_B := $(shell echo ${LOCALVERSION} | cut -s -d'.' -f2)
+  LOCALVER_C := $(shell echo ${LOCALVERSION} | cut -s -d'.' -f3)
+  SLE_LOCALVERSION_CODE := $(shell expr ${LOCALVER_A} \* 65536 + \
+                                        0${LOCALVER_B} \* 256 + 0${LOCALVER_C})
+  EXTRA_CFLAGS += -DSLE_LOCALVERSION_CODE=${SLE_LOCALVERSION_CODE}
+endif
+endif
+
 EXTRA_CFLAGS += ${CFLAGS_EXTRA}
 
 # get the kernel version - we use this to find the correct install path
@@ -230,3 +260,59 @@ ifeq (,${MANDIR})
   # fallback to /usr/man
   MANDIR := /usr/man
 endif
+
+####################
+# CCFLAGS variable #
+####################
+
+# set correct CCFLAGS variable for kernels older than 2.6.24
+ifeq (0,$(shell [ ${KVER_CODE} -lt $(call get_kvercode,2,6,24) ]; echo $$?))
+CCFLAGS_VAR := EXTRA_CFLAGS
+else
+CCFLAGS_VAR := ccflags-y
+endif
+
+#################
+# KBUILD_OUTPUT #
+#################
+
+# Only set KBUILD_OUTPUT if KOBJ differs from KSRC
+ifneq (${KSRC},${KOBJ})
+export KBUILD_OUTPUT ?= ${KOBJ}
+endif
+
+############################
+# Module Install Directory #
+############################
+
+# Default to using updates/drivers/net/ethernet/intel/ path, since depmod since
+# v3.1 defaults to checking updates folder first, and only checking kernels/
+# and extra afterwards. We use updates instead of kernel/* due to desire to
+# prevent over-writing built-in modules files.
+export INSTALL_MOD_DIR ?= updates/drivers/net/ethernet/intel/${DRIVER}
+
+######################
+# Kernel Build Macro #
+######################
+
+# kernel build function
+# ${1} is the kernel build target
+# ${2} may contain any extra rules to pass directly to the sub-make process
+#
+# This function is expected to be executed by
+#   @+$(call kernelbuild,<target>,<extra parameters>)
+# from within a Makefile recipe.
+#
+# The following variables are expected to be defined for its use:
+# GCC_I_SYS -- if set it will enable use of gcc-i-sys.sh wrapper to use -isystem
+# CCFLAGS_VAR -- the CCFLAGS variable to set extra CFLAGS
+# EXTRA_CFLAGS -- a set of extra CFLAGS to pass into the ccflags-y variable
+# KSRC -- the location of the kernel source tree to build against
+# DRIVER_UPPERCASE -- the uppercase name of the kernel module, set from DRIVER
+#
+kernelbuild = ${MAKE} $(if ${GCC_I_SYS},CC="${GCC_I_SYS}") \
+                      ${CCFLAGS_VAR}="${EXTRA_CFLAGS}" \
+                      -C "${KSRC}" \
+                      CONFIG_${DRIVER_UPPERCASE}=m \
+                      M="${CURDIR}" \
+                      ${2} ${1}

@@ -1,7 +1,7 @@
 /*******************************************************************************
  *
  * Intel(R) 40-10 Gigabit Ethernet Virtual Function Driver
- * Copyright(c) 2013 - 2016 Intel Corporation.
+ * Copyright(c) 2013 - 2017 Intel Corporation.
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms and conditions of the GNU General Public License,
@@ -80,7 +80,7 @@ int i40evf_send_api_ver(struct i40evf_adapter *adapter)
  * Compare API versions with the PF. Must be called after admin queue is
  * initialized. Returns 0 if API versions match, -EIO if they do not,
  * I40E_ERR_ADMIN_QUEUE_NO_WORK if the admin queue is empty, and any errors
- * from the firmware are propogated.
+ * from the firmware are propagated.
  **/
 int i40evf_verify_api_ver(struct i40evf_adapter *adapter)
 {
@@ -104,8 +104,8 @@ int i40evf_verify_api_ver(struct i40evf_adapter *adapter)
 		 */
 		if (err != I40E_SUCCESS)
 			goto out_alloc;
-		op = (enum i40e_virtchnl_ops)
-		     le32_to_cpu(event.desc.cookie_high);
+		op =
+		    (enum i40e_virtchnl_ops)le32_to_cpu(event.desc.cookie_high);
 		if (op == I40E_VIRTCHNL_OP_VERSION)
 			break;
 	}
@@ -114,20 +114,12 @@ int i40evf_verify_api_ver(struct i40evf_adapter *adapter)
 	if (err)
 		goto out_alloc;
 
-
-	if (op != I40E_VIRTCHNL_OP_VERSION) {
-		dev_info(&adapter->pdev->dev, "Invalid reply type %d from PF\n",
-			 op);
-		err = -EIO;
-		goto out_alloc;
-	}
-
 	pf_vvi = (struct i40e_virtchnl_version_info *)event.msg_buf;
 	adapter->pf_version = *pf_vvi;
 
 	if ((pf_vvi->major > I40E_VIRTCHNL_VERSION_MAJOR) ||
-	     ((pf_vvi->major == I40E_VIRTCHNL_VERSION_MAJOR) &&
-	      (pf_vvi->minor > I40E_VIRTCHNL_VERSION_MINOR)))
+	    ((pf_vvi->major == I40E_VIRTCHNL_VERSION_MAJOR) &&
+	     (pf_vvi->minor > I40E_VIRTCHNL_VERSION_MINOR)))
 		err = -EIO;
 
 out_alloc:
@@ -152,7 +144,8 @@ int i40evf_send_vf_config_msg(struct i40evf_adapter *adapter)
 		   I40E_VIRTCHNL_VF_OFFLOAD_RSS_REG |
 		   I40E_VIRTCHNL_VF_OFFLOAD_VLAN |
 		   I40E_VIRTCHNL_VF_OFFLOAD_WB_ON_ITR |
-		   I40E_VIRTCHNL_VF_OFFLOAD_RSS_PCTYPE_V2;
+		   I40E_VIRTCHNL_VF_OFFLOAD_RSS_PCTYPE_V2 |
+		   I40E_VIRTCHNL_VF_OFFLOAD_ENCAP_CSUM;
 
 	adapter->current_op = I40E_VIRTCHNL_OP_GET_VF_RESOURCES;
 	adapter->aq_required &= ~I40EVF_FLAG_AQ_GET_CONFIG;
@@ -200,8 +193,8 @@ int i40evf_get_vf_config(struct i40evf_adapter *adapter)
 		err = i40e_clean_arq_element(hw, &event, NULL);
 		if (err != I40E_SUCCESS)
 			goto out_alloc;
-		op = (enum i40e_virtchnl_ops)
-		     le32_to_cpu(event.desc.cookie_high);
+		op =
+		    (enum i40e_virtchnl_ops)le32_to_cpu(event.desc.cookie_high);
 		if (op == I40E_VIRTCHNL_OP_GET_VF_RESOURCES)
 			break;
 	}
@@ -253,10 +246,6 @@ void i40evf_configure_queues(struct i40evf_adapter *adapter)
 		vqpi->txq.queue_id = i;
 		vqpi->txq.ring_len = adapter->tx_rings[i].count;
 		vqpi->txq.dma_ring_addr = adapter->tx_rings[i].dma;
-		vqpi->txq.headwb_enabled = 1;
-		vqpi->txq.dma_headwb_addr = vqpi->txq.dma_ring_addr +
-		    (vqpi->txq.ring_len * sizeof(struct i40e_tx_desc));
-
 		vqpi->rxq.vsi_id = vqci->vsi_id;
 		vqpi->rxq.queue_id = i;
 		vqpi->rxq.ring_len = adapter->rx_rings[i].count;
@@ -428,6 +417,8 @@ void i40evf_add_ether_addrs(struct i40evf_adapter *adapter)
 			ether_addr_copy(veal->list[i].addr, f->macaddr);
 			i++;
 			f->add = false;
+			if (i == count)
+				break;
 		}
 	}
 	if (!more)
@@ -491,6 +482,8 @@ void i40evf_del_ether_addrs(struct i40evf_adapter *adapter)
 			i++;
 			list_del(&f->list);
 			kfree(f);
+			if (i == count)
+				break;
 		}
 	}
 	if (!more)
@@ -554,6 +547,8 @@ void i40evf_add_vlans(struct i40evf_adapter *adapter)
 			vvfl->vlan_id[i] = f->vlan;
 			i++;
 			f->add = false;
+			if (i == count)
+				break;
 		}
 	}
 	if (!more)
@@ -617,6 +612,8 @@ void i40evf_del_vlans(struct i40evf_adapter *adapter)
 			i++;
 			list_del(&f->list);
 			kfree(f);
+			if (i == count)
+				break;
 		}
 	}
 	if (!more)
@@ -821,6 +818,9 @@ static void i40evf_print_link_message(struct i40evf_adapter *adapter)
 	switch (adapter->link_speed) {
 	case I40E_LINK_SPEED_40GB:
 		speed = "40 G";
+		break;
+	case I40E_LINK_SPEED_25GB:
+		speed = "25 G";
 		break;
 	case I40E_LINK_SPEED_20GB:
 		speed = "20 G";

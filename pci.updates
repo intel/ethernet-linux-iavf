@@ -1,7 +1,7 @@
 ################################################################################
 #
 # Intel(R) 40-10 Gigabit Ethernet Virtual Function Driver
-# Copyright(c) 2013 - 2016 Intel Corporation.
+# Copyright(c) 2013 - 2017 Intel Corporation.
 #
 # This program is free software; you can redistribute it and/or modify it
 # under the terms and conditions of the GNU General Public License,
@@ -26,8 +26,12 @@
 # IMPORTANT!  Entries in this list must be sorted as they
 #             would appear in the system pci.ids file.  Entries
 #             are sorted by ven, dev, subven, subdev
-#             (numerical order).
+#             (numerical order). Also, no OEM names in strings.
+#             The oem vendor id will sub into the name when
+#             the string is consumed by the tools using it.
 #
 8086  Intel Corporation
 	154c  XL710/X710 Virtual Function
+	1571  XL710/X710 Virtual Function
 	37cd  X722 Virtual Function
+	37d9  X722 Virtual Function

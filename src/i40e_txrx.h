@@ -1,7 +1,7 @@
 /*******************************************************************************
  *
  * Intel(R) 40-10 Gigabit Ethernet Virtual Function Driver
- * Copyright(c) 2013 - 2016 Intel Corporation.
+ * Copyright(c) 2013 - 2017 Intel Corporation.
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms and conditions of the GNU General Public License,
@@ -49,7 +49,20 @@
  */
 #define INTRL_ENA                  BIT(6)
 #define INTRL_REG_TO_USEC(intrl) ((intrl & ~INTRL_ENA) << 2)
-#define INTRL_USEC_TO_REG(set) ((set) ? ((set) >> 2) | INTRL_ENA : 0)
+/**
+ * i40e_intrl_usec_to_reg - convert interrupt rate limit to register
+ * @intrl: interrupt rate limit to convert
+ *
+ * This function converts a decimal interrupt rate limit to the appropriate
+ * register format expected by the firmware when setting interrupt rate limit.
+ */
+static inline u16 i40e_intrl_usec_to_reg(int intrl)
+{
+	if (intrl >> 2)
+		return ((intrl >> 2) | INTRL_ENA);
+	else
+		return 0;
+}
 #define I40E_INTRL_8K              125     /* 8000 ints/sec */
 #define I40E_INTRL_62K             16      /* 62500 ints/sec */
 #define I40E_INTRL_83K             12      /* 83333 ints/sec */
@@ -170,26 +183,37 @@ static inline bool i40e_test_staterr(union i40e_rx_desc *rx_desc,
 #define I40E_MAX_DATA_PER_TXD_ALIGNED \
 	(I40E_MAX_DATA_PER_TXD & ~(I40E_MAX_READ_REQ_SIZE - 1))
 
-/* This ugly bit of math is equivalent to DIV_ROUNDUP(size, X) where X is
- * the value I40E_MAX_DATA_PER_TXD_ALIGNED.  It is needed due to the fact
- * that 12K is not a power of 2 and division is expensive.  It is used to
- * approximate the number of descriptors used per linear buffer.  Note
- * that this will overestimate in some cases as it doesn't account for the
- * fact that we will add up to 4K - 1 in aligning the 12K buffer, however
- * the error should not impact things much as large buffers usually mean
- * we will use fewer descriptors then there are frags in an skb.
+/**
+ * i40e_txd_use_count  - estimate the number of descriptors needed for Tx
+ * @size: transmit request size in bytes
+ *
+ * Due to hardware alignment restrictions (4K alignment), we need to
+ * assume that we can have no more than 12K of data per descriptor, even
+ * though each descriptor can take up to 16K - 1 bytes of aligned memory.
+ * Thus, we need to divide by 12K. But division is slow! Instead,
+ * we decompose the operation into shifts and one relatively cheap
+ * multiply operation.
+ *
+ * To divide by 12K, we first divide by 4K, then divide by 3:
+ *     To divide by 4K, shift right by 12 bits
+ *     To divide by 3, multiply by 85, then divide by 256
+ *     (Divide by 256 is done by shifting right by 8 bits)
+ * Finally, we add one to round up. Because 256 isn't an exact multiple of
+ * 3, we'll underestimate near each multiple of 12K. This is actually more
+ * accurate as we have 4K - 1 of wiggle room that we can fit into the last
+ * segment.  For our purposes this is accurate out to 1M which is orders of
+ * magnitude greater than our largest possible GSO size.
+ *
+ * This would then be implemented as:
+ *     return (((size >> 12) * 85) >> 8) + 1;
+ *
+ * Since multiplication and division are commutative, we can reorder
+ * operations into:
+ *     return ((size * 85) >> 20) + 1;
  */
 static inline unsigned int i40e_txd_use_count(unsigned int size)
 {
-	const unsigned int max = I40E_MAX_DATA_PER_TXD_ALIGNED;
-	const unsigned int reciprocal = ((1ull << 32) - 1 + (max / 2)) / max;
-	unsigned int adjust = ~(u32)0;
-
-	/* if we rounded up on the reciprocal pull down the adjustment */
-	if ((max * reciprocal) > adjust)
-		adjust = ~(u32)(reciprocal - 1);
-
-	return (u32)((((u64)size * reciprocal) + adjust) >> 32);
+	return ((size * 85) >> 20) + 1;
 }
 
 /* Tx Descriptors needed, worst case */
@@ -284,6 +308,14 @@ struct i40e_ring {
 	u8 dcb_tc;			/* Traffic class of ring */
 	u8 __iomem *tail;
 
+	/* high bit set means dynamic, use accessor routines to read/write.
+	 * hardware only supports 2us resolution for the ITR registers.
+	 * these values always store the USER setting, and must be converted
+	 * before programming to a register.
+	 */
+	u16 rx_itr_setting;
+	u16 tx_itr_setting;
+
 	u16 count;			/* Number of descriptors */
 	u16 reg_idx;			/* HW register index of the ring */
 	u16 rx_buf_len;
@@ -301,7 +333,6 @@ struct i40e_ring {
 
 	u16 flags;
 #define I40E_TXR_FLAGS_WB_ON_ITR	BIT(0)
-#define I40E_TXR_FLAGS_LAST_XMIT_MORE_SET BIT(2)
 
 	/* stats structs */
 	struct i40e_queue_stats	stats;
@@ -366,20 +397,6 @@ int __i40e_maybe_stop_tx(struct i40e_ring *tx_ring, int size);
 bool __i40e_chk_linearize(struct sk_buff *skb);
 
 /**
- * i40e_get_head - Retrieve head from head writeback
- * @tx_ring:  tx ring to fetch head of
- *
- * Returns value of Tx ring head based on value stored
- * in head write-back location
- **/
-static inline u32 i40e_get_head(struct i40e_ring *tx_ring)
-{
-	void *head = (struct i40e_tx_desc *)tx_ring->desc + tx_ring->count;
-
-	return le32_to_cpu(*(volatile __le32 *)head);
-}
-
-/**
  * i40e_rx_is_fcoe - returns true if the rx packet type is FCoE
  * @ptype: the packet type field from rx descriptor write-back
  **/
@@ -390,7 +407,7 @@ static inline bool i40e_rx_is_fcoe(u16 ptype)
 }
 
 /**
- * i40e_xmit_descriptor_count - calculate number of tx descriptors needed
+ * i40e_xmit_descriptor_count - calculate number of Tx descriptors needed
  * @skb:     send buffer
  * @tx_ring: ring to send buffer on
  *
@@ -417,7 +434,7 @@ static inline int i40e_xmit_descriptor_count(struct sk_buff *skb)
 }
 
 /**
- * i40e_maybe_stop_tx - 1st level check for tx stop conditions
+ * i40e_maybe_stop_tx - 1st level check for Tx stop conditions
  * @tx_ring: the ring to be checked
  * @size:    the size buffer we want to assure is available
  *
@@ -441,10 +458,23 @@ static inline int i40e_maybe_stop_tx(struct i40e_ring *tx_ring, int size)
  **/
 static inline bool i40e_chk_linearize(struct sk_buff *skb, int count)
 {
-	/* we can only support up to 8 data buffers for a single send */
-	if (likely(count <= I40E_MAX_BUFFER_TXD))
+	/* Both TSO and single send will work if count is less than 8 */
+	if (likely(count < I40E_MAX_BUFFER_TXD))
 		return false;
 
-	return __i40e_chk_linearize(skb);
+	if (skb_is_gso(skb))
+		return __i40e_chk_linearize(skb);
+
+	/* we can support up to 8 data buffers for a single send */
+	return count != I40E_MAX_BUFFER_TXD;
+}
+
+/**
+ * txring_txq - Find the netdev Tx ring based on the i40e Tx ring
+ * @ring: Tx ring to find the netdev equivalent of
+ **/
+static inline struct netdev_queue *txring_txq(const struct i40e_ring *ring)
+{
+	return netdev_get_tx_queue(ring->netdev, ring->queue_index);
 }
 #endif /* _I40E_TXRX_H_ */

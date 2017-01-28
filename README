@@ -1,7 +1,7 @@
 Linux* Driver for Intel(R) XL710/X710 Virtual Function
 ======================================================
 
-February 1, 2016
+January 7, 2017
 
 ======================================================
 
@@ -53,7 +53,9 @@ Identifying Your Adapter
 The driver in this release is compatible with devices based on the following:
   * Intel(R) Ethernet Controller X710
   * Intel(R) Ethernet Controller XL710
-  * Intel(R) Ethernet Controller X722
+  * Intel(R) Ethernet Controller XXV710
+
+
 
 For information on how to identify your adapter, go to the Adapter &
 Driver ID Guide at:
@@ -100,7 +102,7 @@ NOTES:
    for various Linux distributions.
 
 5. Load the module using the modprobe command:
-   modprobe <i40evf> [parameter=port1_value,port2_value]
+   modprobe <i40evf>
 
    Make sure that any older i40evf drivers are removed from the kernel before
    loading the new module:
@@ -116,6 +118,15 @@ NOTES:
    that is being tested:
    ping <IP_address>
 
+NOTE:
+   For certain distributions like (but not limited to) RedHat Enterprise
+   Linux 7 and Ubuntu, once the driver is installed the initrd/initramfs
+   file may need to be updated to prevent the OS loading old versions
+   of the i40evf driver. The dracut utility may be used on RedHat
+   distributions:
+	# dracut --force
+   For Ubuntu:
+	# update-initramfs -u
 
 
 Command Line Parameters
@@ -152,6 +163,18 @@ http://ftp.kernel.org/pub/software/network/ethtool/
 
 Known Issues/Troubleshooting
 ----------------------------
+
+
+Traffic Is Not Being Passed Between VM and Client
+-------------------------------------------------
+You may not be able to pass traffic between a client system and a
+Virtual Machine (VM) running on a separate host if the Virtual Function
+(VF, or Virtual NIC) is not in trusted mode and spoof checking is enabled
+on the VF. Note that this situation can occur in any combination of client,
+host, and guest operating system. For information on how to set the VF to
+trusted mode, refer to the section "VLAN Tag Packet Steering" in this
+readme document. For information on setting spoof checking, refer to the
+section "MAC and VLAN anti-spoofing feature" in this readme document.
 
 
 Multiple log error messages on i40evf driver removal
@@ -201,6 +224,14 @@ Software Issues
 
 NOTE: After installing the driver, if your Intel Ethernet Network Connection
 is not working, verify that you have installed the correct driver.
+
+
+Driver Buffer Overflow Fix
+--------------------------
+
+The fix to resolve CVE-2016-8105, referenced in Intel SA-00069
+https://security-center.intel.com/advisory.aspx?intelid=INTEL-SA-00069
+&languageid=en-fr, is included in this and future versions of the driver.
 
 
 Compiling the Driver
@@ -268,9 +299,11 @@ www.intel.com/support/
 
 or the Intel Wired Networking project hosted by Sourceforge at:
 http://sourceforge.net/projects/e1000
+
 If an issue is identified with the released source code on a supported
 kernel with a supported adapter, email the specific information related to the
 issue to e1000-devel@lists.sf.net.
+
 
 
 ================================================================================
@@ -294,7 +327,7 @@ St - Fifth Floor, Boston, MA 02110-1301 USA.
 The full GNU General Public License is included in this distribution in the
 file called "COPYING".
 
-Copyright(c) 2014-2016 Intel Corporation.
+Copyright(c) 2014-2017 Intel Corporation.
 ================================================================================
 
 
