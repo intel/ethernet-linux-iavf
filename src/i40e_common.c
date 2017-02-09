@@ -54,6 +54,7 @@ i40e_status i40e_set_mac_type(struct i40e_hw *hw)
 		case I40E_DEV_ID_25G_SFP28:
 			hw->mac.type = I40E_MAC_XL710;
 			break;
+		case I40E_DEV_ID_X722_A0:
 		case I40E_DEV_ID_KX_X722:
 		case I40E_DEV_ID_QSFP_X722:
 		case I40E_DEV_ID_SFP_X722:
@@ -63,6 +64,7 @@ i40e_status i40e_set_mac_type(struct i40e_hw *hw)
 			hw->mac.type = I40E_MAC_X722;
 			break;
 		case I40E_DEV_ID_X722_VF:
+		case I40E_DEV_ID_X722_A0_VF:
 			hw->mac.type = I40E_MAC_X722_VF;
 			break;
 		case I40E_DEV_ID_VF:

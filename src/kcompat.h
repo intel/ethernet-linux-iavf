@@ -54,6 +54,9 @@
 #include <linux/ethtool.h>
 #include <linux/if_vlan.h>
 
+#ifndef NSEC_PER_MSEC
+#define NSEC_PER_MSEC 1000000L
+#endif
 #include <net/ipv6.h>
 /* UTS_RELEASE is in a different header starting in kernel 2.6.18 */
 #ifndef UTS_RELEASE
@@ -2632,6 +2635,10 @@ static inline __u32 _kc_ethtool_cmd_speed(struct ethtool_cmd *ep)
 #endif
 #define dma_mapping_error(dev, dma_addr) pci_dma_mapping_error(dma_addr)
 
+#ifndef DMA_ATTR_WEAK_ORDERING
+#define DMA_ATTR_WEAK_ORDERING 0
+#endif
+
 #ifdef HAVE_TX_MQ
 extern void _kc_netif_tx_stop_all_queues(struct net_device *);
 extern void _kc_netif_tx_wake_all_queues(struct net_device *);
@@ -3049,6 +3056,10 @@ extern int _kc_pci_num_vf(struct pci_dev *dev);
 #endif
 #endif /* RHEL_RELEASE_CODE */
 
+#ifndef dev_is_pci
+#define dev_is_pci(d) ((d)->bus == &pci_bus_type)
+#endif
+
 #ifndef ETH_FLAG_NTUPLE
 #define ETH_FLAG_NTUPLE NETIF_F_NTUPLE
 #endif
@@ -3303,9 +3314,12 @@ static inline int _kc_netif_set_real_num_tx_queues(struct net_device __always_un
 #if (RHEL_RELEASE_CODE && RHEL_RELEASE_CODE >= RHEL_RELEASE_VERSION(6,0))
 #define HAVE_IRQ_AFFINITY_HINT
 #endif
+struct device_node;
 #else /* < 2.6.35 */
+#define HAVE_STRUCT_DEVICE_OF_NODE
 #define HAVE_PM_QOS_REQUEST_LIST
 #define HAVE_IRQ_AFFINITY_HINT
+#include <linux/of.h>
 #endif /* < 2.6.35 */
 
 /*****************************************************************************/
@@ -3677,6 +3691,19 @@ static inline int _kc_kstrtol_from_user(const char __user *s, size_t count,
 #ifndef ETH_P_8021AD
 #define ETH_P_8021AD	0x88A8
 #endif
+
+/* Stub definition for !CONFIG_OF is introduced later */
+#ifdef CONFIG_OF
+static inline struct device_node *
+pci_device_to_OF_node(struct pci_dev __maybe_unused *pdev)
+{
+#ifdef HAVE_STRUCT_DEVICE_OF_NODE
+	return pdev ? pdev->dev.of_node : NULL;
+#else
+	return NULL;
+#endif /* !HAVE_STRUCT_DEVICE_OF_NODE */
+}
+#endif /* CONFIG_OF */
 #else /* < 3.1.0 */
 #ifndef HAVE_DCBNL_IEEE_DELAPP
 #define HAVE_DCBNL_IEEE_DELAPP
@@ -3922,6 +3949,10 @@ extern void _kc_skb_add_rx_frag(struct sk_buff *, int, struct page *,
 /*****************************************************************************/
 #if ( LINUX_VERSION_CODE < KERNEL_VERSION(3,5,0) )
 
+#ifndef BITS_PER_LONG_LONG
+#define BITS_PER_LONG_LONG 64
+#endif
+
 #ifndef ether_addr_equal
 static inline bool __kc_ether_addr_equal(const u8 *addr1, const u8 *addr2)
 {
@@ -3930,12 +3961,8 @@ static inline bool __kc_ether_addr_equal(const u8 *addr1, const u8 *addr2)
 #define ether_addr_equal(_addr1, _addr2) __kc_ether_addr_equal((_addr1),(_addr2))
 #endif
 
-static inline struct device_node *
-pci_device_to_OF_node(struct pci_dev __always_unused *pdev)
-{
-	return NULL;
-}
-
+/* Definitions for !CONFIG_OF_NET are introduced in 3.10 */
+#ifdef CONFIG_OF_NET
 static inline int of_get_phy_mode(struct device_node __always_unused *np)
 {
 	return -ENODEV;
@@ -3946,12 +3973,7 @@ of_get_mac_address(struct device_node __always_unused *np)
 {
 	return NULL;
 }
-
-static inline struct net_device *
-of_find_net_device_by_node(struct device_node __always_unused *np)
-{
-	return NULL;
-}
+#endif
 #else
 #include <linux/of_net.h>
 #define HAVE_FDB_OPS
@@ -4002,6 +4024,10 @@ static inline void _kc_eth_random_addr(u8 *addr)
         addr[0] |= 0x02; /* set local assignment */
 }
 #endif /* eth_random_addr */
+
+#ifndef DMA_ATTR_SKIP_CPU_SYNC
+#define DMA_ATTR_SKIP_CPU_SYNC 0
+#endif
 #else /* < 3.6.0 */
 #define HAVE_STRUCT_PAGE_PFMEMALLOC
 #endif /* < 3.6.0 */
@@ -4280,6 +4306,10 @@ int __kc_ipv6_find_hdr(const struct sk_buff *skb, unsigned int *offset,
 #define FLOW_MAC_EXT	0x40000000
 #endif /* FLOW_MAC_EXT */
 
+#if (SLE_VERSION_CODE && SLE_VERSION_CODE >= SLE_VERSION(11,4,0))
+#define HAVE_SRIOV_CONFIGURE
+#endif
+
 #else /* >= 3.8.0 */
 #ifndef __devinit
 #define __devinit
@@ -4489,6 +4519,28 @@ extern int __kc_ndo_dflt_fdb_del(struct ndmsg *ndm, struct net_device *dev,
 #ifndef PCI_DEVID
 #define PCI_DEVID(bus, devfn)  ((((u16)(bus)) << 8) | (devfn))
 #endif
+
+/* The definitions for these functions when CONFIG_OF_NET is defined are
+ * pulled in from <linux/of_net.h>. For kernels older than 3.5 we already have
+ * backports for when CONFIG_OF_NET is true. These are separated and
+ * duplicated in order to cover all cases so that all kernels get either the
+ * real definitions (when CONFIG_OF_NET is defined) or the stub definitions
+ * (when CONFIG_OF_NET is not defined, or the kernel is too old to have real
+ * definitions).
+ */
+#ifndef CONFIG_OF_NET
+static inline int of_get_phy_mode(struct device_node __always_unused *np)
+{
+	return -ENODEV;
+}
+
+static inline const void *
+of_get_mac_address(struct device_node __always_unused *np)
+{
+	return NULL;
+}
+#endif
+
 #else /* >= 3.10.0 */
 #define HAVE_ENCAP_TSO_OFFLOAD
 #define USE_DEFAULT_FDB_DEL_DUMP
@@ -4557,6 +4609,10 @@ extern int __kc_dma_set_mask_and_coherent(struct device *dev, u64 mask);
 #define list_next_entry(pos, member) \
 	list_entry((pos)->member.next, typeof(*(pos)), member)
 #endif
+#ifndef list_prev_entry
+#define list_prev_entry(pos, member) \
+	list_entry((pos)->member.prev, typeof(*(pos)), member)
+#endif
 
 #if ( LINUX_VERSION_CODE > KERNEL_VERSION(2,6,20) )
 #define devm_kcalloc(dev, cnt, size, flags) \
@@ -4597,6 +4653,14 @@ extern int __kc_dma_set_mask_and_coherent(struct device *dev, u64 mask);
 #define PKT_HASH_TYPE_L2	1
 #define PKT_HASH_TYPE_L3	2
 #define PKT_HASH_TYPE_L4	3
+
+enum _kc_pkt_hash_types {
+	_KC_PKT_HASH_TYPE_NONE = PKT_HASH_TYPE_NONE,
+	_KC_PKT_HASH_TYPE_L2 = PKT_HASH_TYPE_L2,
+	_KC_PKT_HASH_TYPE_L3 = PKT_HASH_TYPE_L3,
+	_KC_PKT_HASH_TYPE_L4 = PKT_HASH_TYPE_L4,
+};
+#define pkt_hash_types         _kc_pkt_hash_types
 
 #define skb_set_hash __kc_skb_set_hash
 static inline void __kc_skb_set_hash(struct sk_buff __maybe_unused *skb,
@@ -4809,6 +4873,7 @@ static inline struct timespec timespec64_to_timespec(const struct timespec64 ts6
 
 #else
 #define HAVE_DCBNL_OPS_SETAPP_RETURN_INT
+#include <linux/time64.h>
 #endif /* 3.17.0 */
 
 /*****************************************************************************/
@@ -4967,6 +5032,16 @@ static inline struct sk_buff *__kc_napi_alloc_skb(struct napi_struct *napi, unsi
 #endif /* 3.20.0 */
 
 /*****************************************************************************/
+#if ( LINUX_VERSION_CODE < KERNEL_VERSION(4,0,0) )
+/* Definition for CONFIG_OF was introduced earlier */
+#if !defined(CONFIG_OF) && \
+    !(RHEL_RELEASE_CODE && RHEL_RELEASE_CODE > RHEL_RELEASE_VERSION(7,2))
+static inline struct device_node *
+pci_device_to_OF_node(const struct pci_dev __always_unused *pdev) { return NULL; }
+#endif /* !CONFIG_OF && RHEL < 7.3 */
+#endif /* < 4.0 */
+
+/*****************************************************************************/
 #if ( LINUX_VERSION_CODE < KERNEL_VERSION(4,1,0) )
 #ifndef NO_PTP_SUPPORT
 #ifdef HAVE_INCLUDE_LINUX_TIMECOUNTER_H
@@ -4978,6 +5053,13 @@ static inline void __kc_timecounter_adjtime(struct timecounter *tc, s64 delta)
 {
 	tc->nsec += delta;
 }
+
+static inline struct net_device *
+of_find_net_device_by_node(struct device_node __always_unused *np)
+{
+	return NULL;
+}
+
 #define timecounter_adjtime __kc_timecounter_adjtime
 #endif
 #if RHEL_RELEASE_CODE && (RHEL_RELEASE_CODE > RHEL_RELEASE_VERSION(7,2))
@@ -5083,7 +5165,11 @@ static inline void writeq(__u64 val, volatile void __iomem *addr)
 #ifndef NETIF_F_SCTP_CRC
 #define NETIF_F_SCTP_CRC NETIF_F_SCTP_CSUM
 #endif /* NETIF_F_SCTP_CRC */
-#else
+#if (!(RHEL_RELEASE_CODE >= RHEL_RELEASE_VERSION(7,3)))
+#define eth_platform_get_mac_address _kc_eth_platform_get_mac_address
+extern int _kc_eth_platform_get_mac_address(struct device *dev, u8 *mac_addr);
+#endif /* !(RHEL_RELEASE >= 7.3) */
+#else /* 4.5.0 */
 #if ( LINUX_VERSION_CODE < KERNEL_VERSION(4,8,0) )
 #define HAVE_GENEVE_RX_OFFLOAD
 #endif /* < 4.8.0 */
@@ -5184,8 +5270,37 @@ pci_release_mem_regions(struct pci_dev *pdev)
 
 /*****************************************************************************/
 #if (LINUX_VERSION_CODE < KERNEL_VERSION(4,10,0))
+#ifndef dma_map_page_attrs
+#define dma_map_page_attrs __kc_dma_map_page_attrs
+static inline dma_addr_t __kc_dma_map_page_attrs(struct device *dev,
+						 struct page *page,
+						 size_t offset, size_t size,
+						 enum dma_data_direction dir,
+						 unsigned long __always_unused attrs)
+{
+	return dma_map_page(dev, page, offset, size, dir);
+}
+#endif
+
+#ifndef dma_unmap_page_attrs
+#define dma_unmap_page_attrs __kc_dma_unmap_page_attrs
+static inline void __kc_dma_unmap_page_attrs(struct device *dev,
+					     dma_addr_t addr, size_t size,
+					     enum dma_data_direction dir,
+					     unsigned long __always_unused attrs)
+{
+	dma_unmap_page(dev, addr, size, dir);
+}
+#endif
 #else
 #define HAVE_NETDEVICE_MIN_MAX_MTU
+#define HAVE_SWIOTLB_SKIP_CPU_SYNC
 #endif /* 4.10.0 */
+
+/*****************************************************************************/
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(4,11,0))
+#else
+#define HAVE_VOID_NDO_GET_STATS64
+#endif /* 4.11.0 */
 
 #endif /* _KCOMPAT_H_ */

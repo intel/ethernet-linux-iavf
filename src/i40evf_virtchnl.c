@@ -23,6 +23,7 @@
 
 #include "i40evf.h"
 #include "i40e_prototype.h"
+#include "i40evf_client.h"
 
 /* busy wait delay in msec */
 #define I40EVF_BUSY_WAIT_DELAY 10
@@ -139,6 +140,7 @@ out:
 int i40evf_send_vf_config_msg(struct i40evf_adapter *adapter)
 {
 	u32 caps = I40E_VIRTCHNL_VF_OFFLOAD_L2 |
+		   I40E_VIRTCHNL_VF_OFFLOAD_IWARP |
 		   I40E_VIRTCHNL_VF_OFFLOAD_RSS_PF |
 		   I40E_VIRTCHNL_VF_OFFLOAD_RSS_AQ |
 		   I40E_VIRTCHNL_VF_OFFLOAD_RSS_REG |
@@ -890,6 +892,7 @@ void i40evf_virtchnl_completion(struct i40evf_adapter *adapter,
 				else
 					netif_carrier_off(netdev);
 			}
+			adapter->flags |= I40EVF_FLAG_CLIENT_NEEDS_L2_PARAMS;
 			break;
 		case I40E_VIRTCHNL_EVENT_RESET_IMPENDING:
 			dev_info(&adapter->pdev->dev, "PF reset warning received\n");
@@ -980,6 +983,19 @@ void i40evf_virtchnl_completion(struct i40evf_adapter *adapter,
 		 */
 		if (v_opcode != adapter->current_op)
 			return;
+		break;
+	case I40E_VIRTCHNL_OP_IWARP:
+		/* Gobble zero-length replies from the PF. They indicate that
+		 * a previous message was received OK, and the client doesn't
+		 * care about that.
+		 */
+		if (msglen && CLIENT_ENABLED(adapter))
+			i40evf_notify_client_message(&adapter->vsi,
+							msg, msglen);
+		break;
+	case I40E_VIRTCHNL_OP_CONFIG_IWARP_IRQ_MAP:
+		adapter->client_pending &=
+				~(BIT(I40E_VIRTCHNL_OP_CONFIG_IWARP_IRQ_MAP));
 		break;
 	case I40E_VIRTCHNL_OP_GET_RSS_HENA_CAPS: {
 		struct i40e_virtchnl_rss_hena *vrh =
