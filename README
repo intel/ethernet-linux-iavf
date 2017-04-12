@@ -53,6 +53,8 @@ Identifying Your Adapter
 The driver in this release is compatible with devices based on the following:
   * Intel(R) Ethernet Controller X710
   * Intel(R) Ethernet Controller XL710
+  * Intel(R) Ethernet Controller X722
+
   * Intel(R) Ethernet Controller XXV710
 
 
@@ -336,7 +338,7 @@ Trademarks
 ----------
 
 Intel, Itanium, and Pentium are trademarks or registered trademarks of Intel
-Corporation or its subsidiaries in the United States and other countries.
+Corporation or its subsidiaries in the United States and/or other countries.
 
 * Other names and brands may be claimed as the property of others.
 
