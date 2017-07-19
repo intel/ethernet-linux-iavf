@@ -253,7 +253,7 @@ void i40evf_configure_queues(struct i40evf_adapter *adapter)
 		vqpi->rxq.ring_len = adapter->rx_rings[i].count;
 		vqpi->rxq.dma_ring_addr = adapter->rx_rings[i].dma;
 		vqpi->rxq.max_pkt_size = adapter->netdev->mtu
-					+ ETH_HLEN + VLAN_HLEN + ETH_FCS_LEN;
+					+ I40E_PACKET_HDR_PAD;
 		vqpi->rxq.databuffer_size = adapter->rx_rings[i].rx_buf_len;
 		vqpi++;
 	}
@@ -658,8 +658,10 @@ void i40evf_set_promiscuous(struct i40evf_adapter *adapter, int flags)
 	}
 
 	if (!flags) {
-		adapter->flags &= ~I40EVF_FLAG_PROMISC_ON;
-		adapter->aq_required &= ~I40EVF_FLAG_AQ_RELEASE_PROMISC;
+		adapter->flags &= ~(I40EVF_FLAG_PROMISC_ON |
+				    I40EVF_FLAG_ALLMULTI_ON);
+		adapter->aq_required &= ~(I40EVF_FLAG_AQ_RELEASE_PROMISC |
+					  I40EVF_FLAG_AQ_RELEASE_ALLMULTI);
 		dev_info(&adapter->pdev->dev, "Leaving promiscuous mode\n");
 	}
 
@@ -972,8 +974,10 @@ void i40evf_virtchnl_completion(struct i40evf_adapter *adapter,
 	case I40E_VIRTCHNL_OP_DISABLE_QUEUES:
 		i40evf_free_all_tx_resources(adapter);
 		i40evf_free_all_rx_resources(adapter);
-		if (adapter->state == __I40EVF_DOWN_PENDING)
+		if (adapter->state == __I40EVF_DOWN_PENDING) {
 			adapter->state = __I40EVF_DOWN;
+			wake_up(&adapter->down_waitqueue);
+		}
 		break;
 	case I40E_VIRTCHNL_OP_VERSION:
 	case I40E_VIRTCHNL_OP_CONFIG_IRQ_MAP:

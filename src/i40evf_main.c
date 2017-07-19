@@ -41,7 +41,7 @@ static const char i40evf_driver_string[] =
 
 #define DRV_VERSION_MAJOR 2
 #define DRV_VERSION_MINOR 0
-#define DRV_VERSION_BUILD 22
+#define DRV_VERSION_BUILD 30
 #define DRV_VERSION __stringify(DRV_VERSION_MAJOR) "." \
 	     __stringify(DRV_VERSION_MINOR) "." \
 	     __stringify(DRV_VERSION_BUILD) \
@@ -170,37 +170,7 @@ void i40evf_irq_enable_queues(struct i40evf_adapter *adapter, u32 mask)
 		if (mask & BIT(i - 1)) {
 			wr32(hw, I40E_VFINT_DYN_CTLN1(i - 1),
 			     I40E_VFINT_DYN_CTLN1_INTENA_MASK |
-			     I40E_VFINT_DYN_CTLN1_ITR_INDX_MASK |
-			     I40E_VFINT_DYN_CTLN1_CLEARPBA_MASK);
-		}
-	}
-}
-
-/**
- * i40evf_fire_sw_int - Generate SW interrupt for specified vectors
- * @adapter: board private structure
- * @mask: bitmap of vectors to trigger
- **/
-static void i40evf_fire_sw_int(struct i40evf_adapter *adapter, u32 mask)
-{
-	struct i40e_hw *hw = &adapter->hw;
-	int i;
-	u32 dyn_ctl;
-
-	if (mask & 1) {
-		dyn_ctl = rd32(hw, I40E_VFINT_DYN_CTL01);
-		dyn_ctl |= I40E_VFINT_DYN_CTLN1_SWINT_TRIG_MASK |
-			   I40E_VFINT_DYN_CTLN1_ITR_INDX_MASK |
-			   I40E_VFINT_DYN_CTLN1_CLEARPBA_MASK;
-		wr32(hw, I40E_VFINT_DYN_CTL01, dyn_ctl);
-	}
-	for (i = 1; i < adapter->num_msix_vectors; i++) {
-		if (mask & BIT(i)) {
-			dyn_ctl = rd32(hw, I40E_VFINT_DYN_CTLN1(i - 1));
-			dyn_ctl |= I40E_VFINT_DYN_CTLN1_SWINT_TRIG_MASK |
-				   I40E_VFINT_DYN_CTLN1_ITR_INDX_MASK |
-				   I40E_VFINT_DYN_CTLN1_CLEARPBA_MASK;
-			wr32(hw, I40E_VFINT_DYN_CTLN1(i - 1), dyn_ctl);
+			     I40E_VFINT_DYN_CTLN1_ITR_INDX_MASK);
 		}
 	}
 }
@@ -231,15 +201,10 @@ static irqreturn_t i40evf_msix_aq(int irq, void *data)
 	struct net_device *netdev = data;
 	struct i40evf_adapter *adapter = netdev_priv(netdev);
 	struct i40e_hw *hw = &adapter->hw;
-	u32 val;
 
 	/* handle non-queue interrupts */
 	rd32(hw, I40E_VFINT_ICR01);
 	rd32(hw, I40E_VFINT_ICR0_ENA1);
-
-	val = rd32(hw, I40E_VFINT_DYN_CTL01) |
-	      I40E_VFINT_DYN_CTL01_CLEARPBA_MASK;
-	wr32(hw, I40E_VFINT_DYN_CTL01, val);
 
 	/* schedule work on the private workqueue */
 	schedule_work(&adapter->adminq_task);
@@ -416,9 +381,9 @@ static void i40evf_irq_affinity_release(struct kref *ref) {}
 static int
 i40evf_request_traffic_irqs(struct i40evf_adapter *adapter, char *basename)
 {
-	int vector, err, q_vectors;
-	int rx_int_idx = 0, tx_int_idx = 0;
-	int irq_num;
+	unsigned int vector, q_vectors;
+	unsigned int rx_int_idx = 0, tx_int_idx = 0;
+	int irq_num, err;
 
 	i40evf_irq_disable(adapter);
 	/* Decrement for Other and TCP Timer vectors */
@@ -429,18 +394,15 @@ i40evf_request_traffic_irqs(struct i40evf_adapter *adapter, char *basename)
 		irq_num = adapter->msix_entries[vector + NONQ_VECS].vector;
 
 		if (q_vector->tx.ring && q_vector->rx.ring) {
-			snprintf(q_vector->name, sizeof(q_vector->name) - 1,
-				 "i40evf-%s-%s-%d", basename,
-				 "TxRx", rx_int_idx++);
+			snprintf(q_vector->name, sizeof(q_vector->name),
+				 "i40evf-%s-TxRx-%d", basename, rx_int_idx++);
 			tx_int_idx++;
 		} else if (q_vector->rx.ring) {
-			snprintf(q_vector->name, sizeof(q_vector->name) - 1,
-				 "i40evf-%s-%s-%d", basename,
-				 "rx", rx_int_idx++);
+			snprintf(q_vector->name, sizeof(q_vector->name),
+				 "i40evf-%s-rx-%d", basename, rx_int_idx++);
 		} else if (q_vector->tx.ring) {
-			snprintf(q_vector->name, sizeof(q_vector->name) - 1,
-				 "i40evf-%s-%s-%d", basename,
-				 "tx", tx_int_idx++);
+			snprintf(q_vector->name, sizeof(q_vector->name),
+				 "i40evf-%s-tx-%d", basename, tx_int_idx++);
 		} else {
 			/* skip this unused q_vector */
 			continue;
@@ -463,9 +425,11 @@ i40evf_request_traffic_irqs(struct i40evf_adapter *adapter, char *basename)
 		irq_set_affinity_notifier(irq_num, &q_vector->affinity_notify);
 #endif
 #ifdef HAVE_IRQ_AFFINITY_HINT
-		/* assign the mask for this irq */
-		irq_set_affinity_hint(irq_num, &q_vector->affinity_mask);
-#endif
+		/* get_cpu_mask returns a static constant mask with
+		 * a permanent lifetime so it's ok to use here.
+		 */
+		irq_set_affinity_hint(irq_num, get_cpu_mask(q_vector->v_idx));
+#endif /* HAVE_IRQ_AFFINITY_HINT */
 	}
 
 	return 0;
@@ -1063,6 +1027,7 @@ void i40evf_down(struct i40evf_adapter *adapter)
 	}
 
 	clear_bit(__I40EVF_IN_CRITICAL_TASK, &adapter->crit_section);
+	mod_timer_pending(&adapter->watchdog_timer, jiffies + 1);
 }
 
 /**
@@ -1248,6 +1213,9 @@ static int i40evf_alloc_q_vectors(struct i40evf_adapter *adapter)
 		q_vector->adapter = adapter;
 		q_vector->vsi = &adapter->vsi;
 		q_vector->v_idx = q_idx;
+#ifdef HAVE_IRQ_AFFINITY_NOTIFY
+		cpumask_copy(&q_vector->affinity_mask, cpu_possible_mask);
+#endif
 		netif_napi_add(adapter->netdev, &q_vector->napi,
 			       i40e_napi_poll, NAPI_POLL_WEIGHT);
 	}
@@ -1656,13 +1624,6 @@ static void i40evf_watchdog_task(struct work_struct *work)
 	if (adapter->state == __I40EVF_RUNNING)
 		i40evf_request_stats(adapter);
 watchdog_done:
-	if (adapter->state == __I40EVF_RUNNING) {
-		i40evf_irq_enable_queues(adapter, ~0);
-		i40evf_fire_sw_int(adapter, 0xFF);
-	} else {
-		i40evf_fire_sw_int(adapter, 0x1);
-	}
-
 	clear_bit(__I40EVF_IN_CRITICAL_TASK, &adapter->crit_section);
 restart_watchdog:
 	if (adapter->state == __I40EVF_REMOVE)
@@ -1794,6 +1755,7 @@ static void i40evf_reset_task(struct work_struct *work)
 		clear_bit(__I40EVF_IN_CLIENT_TASK, &adapter->crit_section);
 		adapter->flags &= ~I40EVF_FLAG_RESET_PENDING;
 		adapter->state = __I40EVF_DOWN;
+		wake_up(&adapter->down_waitqueue);
 		dev_info(&adapter->pdev->dev, "Reset task did not complete, VF disabled\n");
 		return; /* Do not attempt to reinit. It's dead, Jim. */
 	}
@@ -1859,6 +1821,7 @@ continue_reset:
 
 	} else {
 		adapter->state = __I40EVF_DOWN;
+		wake_up(&adapter->down_waitqueue);
 	}
 	return;
 reset_err:
@@ -2156,6 +2119,7 @@ err_setup_tx:
 static int i40evf_close(struct net_device *netdev)
 {
 	struct i40evf_adapter *adapter = netdev_priv(netdev);
+	int status;
 
 	if (adapter->state <= __I40EVF_DOWN_PENDING)
 		return 0;
@@ -2173,7 +2137,18 @@ static int i40evf_close(struct net_device *netdev)
 	 * still active and can DMA into memory. Resources are cleared in
 	 * i40evf_virtchnl_completion() after we get confirmation from the PF
 	 * driver that the rings have been stopped.
+	 *
+	 * Also, we wait for state to transition to __I40EVF_DOWN before
+	 * returning. State change occurs in i40evf_virtchnl_completion() after
+	 * VF resources are released (which occurs after PF driver processes and
+	 * responds to admin queue commands).
 	 */
+
+	status = wait_event_timeout(adapter->down_waitqueue,
+				    adapter->state == __I40EVF_DOWN,
+				    msecs_to_jiffies(200));
+	if (!status)
+		netdev_warn(netdev, "Device resources not yet released\n");
 	return 0;
 }
 
@@ -2202,7 +2177,7 @@ static struct net_device_stats *i40evf_get_stats(struct net_device *netdev)
 static int i40evf_change_mtu(struct net_device *netdev, int new_mtu)
 {
 	struct i40evf_adapter *adapter = netdev_priv(netdev);
-	int max_frame = new_mtu + ETH_HLEN + ETH_FCS_LEN;
+	int max_frame = new_mtu + I40E_PACKET_HDR_PAD;
 
 	if ((new_mtu < 68) || (max_frame > I40E_MAX_RXBUFFER))
 		return -EINVAL;
@@ -2663,6 +2638,7 @@ static void i40evf_init_task(struct work_struct *work)
 	adapter->state = __I40EVF_DOWN;
 	set_bit(__I40E_DOWN, &adapter->vsi.state);
 	i40evf_misc_irq_enable(adapter);
+	wake_up(&adapter->down_waitqueue);
 
 	adapter->rss_key = kzalloc(adapter->rss_key_size, GFP_KERNEL);
 	adapter->rss_lut = kzalloc(adapter->rss_lut_size, GFP_KERNEL);
@@ -2828,6 +2804,9 @@ static int i40evf_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 	INIT_DELAYED_WORK(&adapter->init_task, i40evf_init_task);
 	schedule_delayed_work(&adapter->init_task,
 			      msecs_to_jiffies(5 * (pdev->devfn & 0x07)));
+
+	/* Setup the wait queue for indicating transition to down status */
+	init_waitqueue_head(&adapter->down_waitqueue);
 
 	return 0;
 

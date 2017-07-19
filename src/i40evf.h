@@ -36,6 +36,7 @@
 #include <linux/tcp.h>
 #include <linux/sctp.h>
 #include <linux/ipv6.h>
+#include <linux/wait.h>
 #include <net/ipv6.h>
 #include <net/ip6_checksum.h>
 #include <net/udp.h>
@@ -113,12 +114,10 @@ struct i40e_q_vector {
 #define ITR_COUNTDOWN_START 100
 	u8 itr_countdown;	/* when 0 or 1 update ITR */
 	int v_idx;	/* vector index in list */
-	char name[IFNAMSIZ + 9];
+	char name[IFNAMSIZ + 15];
 	bool arm_wb_state;
-#ifdef HAVE_IRQ_AFFINITY_HINT
-	cpumask_t affinity_mask;
-#endif
 #ifdef HAVE_IRQ_AFFINITY_NOTIFY
+	cpumask_t affinity_mask;
 	struct irq_affinity_notify affinity_notify;
 #endif
 };
@@ -193,6 +192,7 @@ struct i40evf_adapter {
 	struct work_struct adminq_task;
 	struct delayed_work client_task;
 	struct delayed_work init_task;
+	wait_queue_head_t down_waitqueue;
 	struct i40e_q_vector *q_vectors;
 	struct list_head vlan_filter_list;
 	char misc_vector_name[IFNAMSIZ + 9];
