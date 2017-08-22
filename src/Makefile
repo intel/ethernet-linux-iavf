@@ -27,6 +27,9 @@ ifneq ($(KERNELRELEASE),)
 # Makefile for the Intel(R) 40-10 Gigabit Ethernet Virtual Function Driver
 #
 
+ccflags-y += -I$(src)
+subdir-ccflags-y += -I$(src)
+
 obj-$(CONFIG_I40EVF) += i40evf.o
 
 i40evf-y := i40evf_main.o \

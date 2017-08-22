@@ -84,11 +84,30 @@ static const struct i40evf_stats i40evf_gstrings_stats[] = {
 #define I40EVF_STATS_LEN(_dev) \
 	(I40EVF_GLOBAL_STATS_LEN + I40EVF_QUEUE_STATS_LEN(_dev))
 
-static const char i40evf_priv_flags_strings[][ETH_GSTRING_LEN] = {
-	/* this is now empty but ready for priv flags */
+#ifdef HAVE_SWIOTLB_SKIP_CPU_SYNC
+/* For now we have one and only one private flag and it is only defined
+ * when we have support for the SKIP_CPU_SYNC DMA attribute.  Instead
+ * of leaving all this code sitting around empty we will strip it unless
+ * our one private flag is actually available.
+ */
+struct i40evf_priv_flags {
+	char flag_string[ETH_GSTRING_LEN];
+	u32 flag;
+	bool read_only;
 };
 
-#define I40EVF_PRIV_FLAGS_STR_LEN ARRAY_SIZE(i40evf_priv_flags_strings)
+#define I40EVF_PRIV_FLAG(_name, _flag, _read_only) { \
+	.flag_string = _name, \
+	.flag = _flag, \
+	.read_only = _read_only, \
+}
+
+static const struct i40evf_priv_flags i40evf_gstrings_priv_flags[] = {
+	I40EVF_PRIV_FLAG("legacy-rx", I40EVF_FLAG_LEGACY_RX, 0),
+};
+
+#define I40EVF_PRIV_FLAGS_STR_LEN ARRAY_SIZE(i40evf_gstrings_priv_flags)
+#endif /* HAVE_SWIOTLB_SKIP_CPU_SYNC */
 
 /**
  * i40evf_get_settings - Get Link Speed and Duplex settings
@@ -152,8 +171,10 @@ static int i40evf_get_sset_count(struct net_device *netdev, int sset)
 {
 	if (sset == ETH_SS_STATS)
 		return I40EVF_STATS_LEN(netdev);
+#ifdef HAVE_SWIOTLB_SKIP_CPU_SYNC
 	else if (sset == ETH_SS_PRIV_FLAGS)
 		return I40EVF_PRIV_FLAGS_STR_LEN;
+#endif
 	else
 		return -EINVAL;
 }
@@ -219,14 +240,109 @@ static void i40evf_get_strings(struct net_device *netdev, u32 sset, u8 *data)
 			snprintf(p, ETH_GSTRING_LEN, "rx-%u.bytes", i);
 			p += ETH_GSTRING_LEN;
 		}
-#ifdef HAVE_ETHTOOL_GET_SSET_COUNT
+#ifdef HAVE_SWIOTLB_SKIP_CPU_SYNC
 	} else if (sset == ETH_SS_PRIV_FLAGS) {
-		memcpy(data, i40evf_priv_flags_strings,
-		       I40EVF_PRIV_FLAGS_STR_LEN * ETH_GSTRING_LEN);
-#endif
+		for (i = 0; i < I40EVF_PRIV_FLAGS_STR_LEN; i++) {
+			snprintf(p, ETH_GSTRING_LEN, "%s",
+				 i40evf_gstrings_priv_flags[i].flag_string);
+			p += ETH_GSTRING_LEN;
+		}
+#endif /* HAVE_SWIOTLB_SKIP_CPU_SYNC */
 	}
 }
 
+#ifdef HAVE_SWIOTLB_SKIP_CPU_SYNC
+/**
+ * i40evf_get_priv_flags - report device private flags
+ * @dev: network interface device structure
+ *
+ * The get string set count and the string set should be matched for each
+ * flag returned.  Add new strings for each flag to the i40e_gstrings_priv_flags
+ * array.
+ *
+ * Returns a u32 bitmap of flags.
+ **/
+static u32 i40evf_get_priv_flags(struct net_device *netdev)
+{
+	struct i40evf_adapter *adapter = netdev_priv(netdev);
+	u32 i, ret_flags = 0;
+
+	for (i = 0; i < I40EVF_PRIV_FLAGS_STR_LEN; i++) {
+		const struct i40evf_priv_flags *priv_flags;
+
+		priv_flags = &i40evf_gstrings_priv_flags[i];
+
+		if (priv_flags->flag & adapter->flags)
+			ret_flags |= BIT(i);
+	}
+
+	return ret_flags;
+}
+
+/**
+ * i40evf_set_priv_flags - set private flags
+ * @dev: network interface device structure
+ * @flags: bit flags to be set
+ **/
+static int i40evf_set_priv_flags(struct net_device *netdev, u32 flags)
+{
+	struct i40evf_adapter *adapter = netdev_priv(netdev);
+	u32 orig_flags, new_flags, changed_flags;
+	u32 i;
+
+	orig_flags = READ_ONCE(adapter->flags);
+	new_flags = orig_flags;
+
+	for (i = 0; i < I40EVF_PRIV_FLAGS_STR_LEN; i++) {
+		const struct i40evf_priv_flags *priv_flags;
+
+		priv_flags = &i40evf_gstrings_priv_flags[i];
+
+		if (flags & BIT(i))
+			new_flags |= priv_flags->flag;
+		else
+			new_flags &= ~(priv_flags->flag);
+
+		if (priv_flags->read_only &&
+		    ((orig_flags ^ new_flags) & ~BIT(i)))
+			return -EOPNOTSUPP;
+	}
+
+	/* Before we finalize any flag changes, any checks which we need to
+	 * perform to determine if the new flags will be supported should go
+	 * here...
+	 */
+
+	/* Compare and exchange the new flags into place. If we failed, that
+	 * is if cmpxchg returns anything but the old value, this means
+	 * something else must have modified the flags variable since we
+	 * copied it. We'll just punt with an error and log something in the
+	 * message buffer.
+	 */
+	if (cmpxchg(&adapter->flags, orig_flags, new_flags) != orig_flags) {
+		dev_warn(&adapter->pdev->dev,
+			 "Unable to update adapter->flags as it was modified by another thread...\n");
+		return -EAGAIN;
+	}
+
+	changed_flags = orig_flags ^ new_flags;
+
+	/* Process any additional changes needed as a result of flag changes.
+	 * The changed_flags value reflects the list of bits that were changed
+	 * in the code above.
+	 */
+
+	/* issue a reset to force legacy-rx change to take effect */
+	if (changed_flags & I40EVF_FLAG_LEGACY_RX) {
+		if (netif_running(netdev)) {
+			adapter->flags |= I40EVF_FLAG_RESET_NEEDED;
+			schedule_work(&adapter->reset_task);
+		}
+	}
+
+	return 0;
+}
+#endif /* HAVE_SWIOTLB_SKIP_CPU_SYNC */
 #ifndef HAVE_NDO_SET_FEATURES
 /**
  * i40evf_get_rx_csum - Get RX checksum settings
@@ -372,7 +488,9 @@ static void i40evf_get_drvinfo(struct net_device *netdev,
 	strlcpy(drvinfo->version, i40evf_driver_version, 32);
 	strlcpy(drvinfo->fw_version, "N/A", 4);
 	strlcpy(drvinfo->bus_info, pci_name(adapter->pdev), 32);
+#ifdef HAVE_SWIOTLB_SKIP_CPU_SYNC
 	drvinfo->n_priv_flags = I40EVF_PRIV_FLAGS_STR_LEN;
+#endif
 }
 
 /**
@@ -691,12 +809,47 @@ static void i40evf_get_channels(struct net_device *netdev,
 	struct i40evf_adapter *adapter = netdev_priv(netdev);
 
 	/* Report maximum channels */
-	ch->max_combined = adapter->num_active_queues;
+	ch->max_combined = I40EVF_MAX_REQ_QUEUES;
 
 	ch->max_other = NONQ_VECS;
 	ch->other_count = NONQ_VECS;
 
 	ch->combined_count = adapter->num_active_queues;
+}
+
+/**
+ * i40evf_set_channels: set the new channel count
+ * @netdev: network interface device structure
+ * @ch: channel information structure
+ *
+ * Negotiate a new number of channels with the PF then do a reset.  During
+ * reset we'll realloc queues and fix the RSS table.  Returns 0 on success,
+ * negative on failure.
+ **/
+static int i40evf_set_channels(struct net_device *netdev,
+			       struct ethtool_channels *ch)
+{
+	struct i40evf_adapter *adapter = netdev_priv(netdev);
+	int num_req = ch->combined_count;
+
+	if (num_req != adapter->num_active_queues &&
+	    !(adapter->vf_res->vf_offload_flags &
+	      VIRTCHNL_VF_OFFLOAD_REQ_QUEUES)) {
+		dev_info(&adapter->pdev->dev, "PF is not capable of queue negotiation.\n");
+		return -EINVAL;
+	}
+
+	/* All of these should have already been checked by ethtool before this
+	 * even gets to us, but just to be sure.
+	 */
+	if (num_req <= 0 || num_req > I40EVF_MAX_REQ_QUEUES)
+		return -EINVAL;
+
+	if (ch->rx_count || ch->tx_count || ch->other_count != NONQ_VECS)
+		return -EINVAL;
+
+	adapter->num_req_queues = num_req;
+	return i40evf_request_queues(adapter, num_req);
 }
 
 #endif /* ETHTOOL_GCHANNELS */
@@ -832,6 +985,10 @@ static const struct ethtool_ops i40evf_ethtool_ops = {
 	.get_strings		= i40evf_get_strings,
 	.get_ethtool_stats	= i40evf_get_ethtool_stats,
 	.get_sset_count		= i40evf_get_sset_count,
+#ifdef HAVE_SWIOTLB_SKIP_CPU_SYNC
+	.get_priv_flags		= i40evf_get_priv_flags,
+	.set_priv_flags		= i40evf_set_priv_flags,
+#endif
 	.get_msglevel		= i40evf_get_msglevel,
 	.set_msglevel		= i40evf_set_msglevel,
 	.get_coalesce		= i40evf_get_coalesce,
@@ -852,6 +1009,7 @@ static const struct ethtool_ops i40evf_ethtool_ops = {
 #endif /* ETHTOOL_GRSSH && ETHTOOL_SRSSH */
 #ifdef ETHTOOL_GCHANNELS
 	.get_channels		= i40evf_get_channels,
+	.set_channels		= i40evf_set_channels,
 #endif
 #endif /* HAVE_RHEL6_ETHTOOL_OPS_EXT_STRUCT */
 };
@@ -860,6 +1018,7 @@ static const struct ethtool_ops i40evf_ethtool_ops = {
 static const struct ethtool_ops_ext i40evf_ethtool_ops_ext = {
 	.size			= sizeof(struct ethtool_ops_ext),
 	.get_channels		= i40evf_get_channels,
+	.set_channels		= i40evf_set_channels,
 #if defined(ETHTOOL_GRSSH) && defined(ETHTOOL_SRSSH)
 	.get_rxfh_key_size	= i40evf_get_rxfh_key_size,
 	.get_rxfh_indir_size	= i40evf_get_rxfh_indir_size,

@@ -49,6 +49,26 @@ static struct i40e_ops i40evf_lan_ops = {
 };
 
 /**
+ * i40evf_client_get_params - retrieve relevant client parameters
+ * @vsi: VSI with parameters
+ * @params: client param struct
+ **/
+static
+void i40evf_client_get_params(struct i40e_vsi *vsi, struct i40e_params *params)
+{
+	int i;
+
+	memset(params, 0, sizeof(struct i40e_params));
+	params->mtu = vsi->netdev->mtu;
+	params->link_up = vsi->back->link_up;
+
+	for (i = 0; i < I40E_MAX_USER_PRIORITY; i++) {
+		params->qos.prio_qos[i].tc = 0;
+		params->qos.prio_qos[i].qs_handle = vsi->qs_handle;
+	}
+}
+
+/**
  * i40evf_notify_client_message - call the client message receive callback
  * @vsi: the VSI associated with this client
  * @msg: message buffer
@@ -83,17 +103,15 @@ void i40evf_notify_client_l2_params(struct i40e_vsi *vsi)
 	struct i40e_client_instance *cinst = adapter->cinst;
 	struct i40e_params params;
 
-	memset(&params, 0, sizeof(params));
-	params.mtu = vsi->netdev->mtu;
-	params.link_up = vsi->back->link_up;
-	params.qos.prio_qos[0].qs_handle = vsi->qs_handle;
-
 	if (!cinst || !cinst->client || !cinst->client->ops ||
 	    !cinst->client->ops->l2_param_change) {
 		dev_dbg(&vsi->back->pdev->dev,
 			"Cannot locate client instance l2_param_change function\n");
 		return;
 	}
+
+	i40evf_client_get_params(vsi, &params);
+	memcpy(&cinst->lan_info.params, &params, sizeof(struct i40e_params));
 	cinst->client->ops->l2_param_change(&cinst->lan_info, cinst->client,
 					    &params);
 }
@@ -138,8 +156,8 @@ static int i40evf_client_release_qvlist(struct i40e_info *ldev)
 		return -EAGAIN;
 
 	err = i40e_aq_send_msg_to_pf(&adapter->hw,
-			I40E_VIRTCHNL_OP_RELEASE_IWARP_IRQ_MAP,
-			I40E_SUCCESS, NULL, 0, NULL);
+			VIRTCHNL_OP_RELEASE_IWARP_IRQ_MAP, I40E_SUCCESS, NULL,
+			0, NULL);
 
 	if (err)
 		dev_err(&adapter->pdev->dev,
@@ -183,9 +201,9 @@ static struct i40e_client_instance *
 i40evf_client_add_instance(struct i40evf_adapter *adapter)
 {
 	struct i40e_client_instance *cinst = NULL;
-	struct netdev_hw_addr *mac = NULL;
 	struct i40e_vsi *vsi = &adapter->vsi;
-	int i;
+	struct netdev_hw_addr *mac = NULL;
+	struct i40e_params params;
 
 	if (!vf_registered_client)
 		goto out;
@@ -209,17 +227,13 @@ i40evf_client_add_instance(struct i40evf_adapter *adapter)
 	cinst->lan_info.version.major = I40EVF_CLIENT_VERSION_MAJOR;
 	cinst->lan_info.version.minor = I40EVF_CLIENT_VERSION_MINOR;
 	cinst->lan_info.version.build = I40EVF_CLIENT_VERSION_BUILD;
+	i40evf_client_get_params(vsi, &params);
+	memcpy(&cinst->lan_info.params, &params, sizeof(struct i40e_params));
 	set_bit(__I40E_CLIENT_INSTANCE_NONE, &cinst->state);
 
 	cinst->lan_info.msix_count = adapter->num_iwarp_msix;
 	cinst->lan_info.msix_entries =
 			&adapter->msix_entries[adapter->iwarp_base_vector];
-
-	for (i = 0; i < I40E_MAX_USER_PRIORITY; i++) {
-		cinst->lan_info.params.qos.prio_qos[i].tc = 0;
-		cinst->lan_info.params.qos.prio_qos[i].qs_handle =
-								vsi->qs_handle;
-	}
 
 	mac = list_first_entry(&cinst->lan_info.netdev->dev_addrs.list,
 				struct netdev_hw_addr, list);
@@ -439,7 +453,7 @@ static u32 i40evf_client_virtchnl_send(struct i40e_info *ldev,
 	if (adapter->aq_required)
 		return -EAGAIN;
 
-	err = i40e_aq_send_msg_to_pf(&adapter->hw, I40E_VIRTCHNL_OP_IWARP,
+	err = i40e_aq_send_msg_to_pf(&adapter->hw, VIRTCHNL_OP_IWARP,
 				     I40E_SUCCESS, msg, len, NULL);
 	if (err)
 		dev_err(&adapter->pdev->dev, "Unable to send iWarp message to PF, error %d, aq status %d\n",
@@ -460,7 +474,7 @@ static int i40evf_client_setup_qvlist(struct i40e_info *ldev,
 				      struct i40e_client *client,
 				      struct i40e_qvlist_info *qvlist_info)
 {
-	struct i40e_virtchnl_iwarp_qvlist_info *v_qvlist_info;
+	struct virtchnl_iwarp_qvlist_info *v_qvlist_info;
 	struct i40evf_adapter *adapter = ldev->vf;
 	struct i40e_qv_info *qv_info;
 	i40e_status err;
@@ -482,14 +496,14 @@ static int i40evf_client_setup_qvlist(struct i40e_info *ldev,
 			return -EINVAL;
 	}
 
-	v_qvlist_info = (struct i40e_virtchnl_iwarp_qvlist_info *)qvlist_info;
-	msg_size = sizeof(struct i40e_virtchnl_iwarp_qvlist_info) +
-			(sizeof(struct i40e_virtchnl_iwarp_qv_info) *
+	v_qvlist_info = (struct virtchnl_iwarp_qvlist_info *)qvlist_info;
+	msg_size = sizeof(struct virtchnl_iwarp_qvlist_info) +
+			(sizeof(struct virtchnl_iwarp_qv_info) *
 			(v_qvlist_info->num_vectors - 1));
 
-	adapter->client_pending |= BIT(I40E_VIRTCHNL_OP_CONFIG_IWARP_IRQ_MAP);
+	adapter->client_pending |= BIT(VIRTCHNL_OP_CONFIG_IWARP_IRQ_MAP);
 	err = i40e_aq_send_msg_to_pf(&adapter->hw,
-			I40E_VIRTCHNL_OP_CONFIG_IWARP_IRQ_MAP,
+			VIRTCHNL_OP_CONFIG_IWARP_IRQ_MAP,
 			I40E_SUCCESS, (u8 *)v_qvlist_info, msg_size, NULL);
 
 	if (err) {
@@ -503,7 +517,7 @@ static int i40evf_client_setup_qvlist(struct i40e_info *ldev,
 	for (i = 0; i < 5; i++) {
 		msleep(100);
 		if (!(adapter->client_pending &
-		      BIT(I40E_VIRTCHNL_OP_CONFIG_IWARP_IRQ_MAP))) {
+		      BIT(VIRTCHNL_OP_CONFIG_IWARP_IRQ_MAP))) {
 			err = 0;
 			break;
 		}

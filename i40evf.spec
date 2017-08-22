@@ -1,6 +1,6 @@
 Name: i40evf
 Summary: Intel(R) 40-10 Gigabit Ethernet Virtual Function Driver
-Version: 2.0.30
+Version: 3.0.8
 Release: 1
 Source: %{name}-%{version}.tar.gz
 Vendor: Intel Corporation
