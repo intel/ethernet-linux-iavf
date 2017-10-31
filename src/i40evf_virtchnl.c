@@ -394,6 +394,7 @@ int i40evf_request_queues(struct i40evf_adapter *adapter, int num)
 	vfres.num_queue_pairs = num;
 
 	adapter->current_op = VIRTCHNL_OP_REQUEST_QUEUES;
+	adapter->flags |= I40EVF_FLAG_REINIT_ITR_NEEDED;
 	return i40evf_send_pf_msg(adapter, VIRTCHNL_OP_REQUEST_QUEUES,
 				  (u8 *)&vfres, sizeof(vfres));
 }
@@ -419,12 +420,16 @@ void i40evf_add_ether_addrs(struct i40evf_adapter *adapter)
 			adapter->current_op);
 		return;
 	}
+
+	spin_lock_bh(&adapter->mac_vlan_list_lock);
+
 	list_for_each_entry(f, &adapter->mac_filter_list, list) {
 		if (f->add)
 			count++;
 	}
 	if (!count) {
 		adapter->aq_required &= ~I40EVF_FLAG_AQ_ADD_MAC_FILTER;
+		spin_unlock_bh(&adapter->mac_vlan_list_lock);
 		return;
 	}
 	adapter->current_op = VIRTCHNL_OP_ADD_ETH_ADDR;
@@ -442,8 +447,10 @@ void i40evf_add_ether_addrs(struct i40evf_adapter *adapter)
 	}
 
 	veal = kzalloc(len, GFP_KERNEL);
-	if (!veal)
+	if (!veal) {
+		spin_unlock_bh(&adapter->mac_vlan_list_lock);
 		return;
+	}
 
 	veal->vsi_id = adapter->vsi_res->vsi_id;
 	veal->num_elements = count;
@@ -458,6 +465,9 @@ void i40evf_add_ether_addrs(struct i40evf_adapter *adapter)
 	}
 	if (!more)
 		adapter->aq_required &= ~I40EVF_FLAG_AQ_ADD_MAC_FILTER;
+
+	spin_unlock_bh(&adapter->mac_vlan_list_lock);
+
 	i40evf_send_pf_msg(adapter, VIRTCHNL_OP_ADD_ETH_ADDR,
 			   (u8 *)veal, len);
 	kfree(veal);
@@ -484,12 +494,16 @@ void i40evf_del_ether_addrs(struct i40evf_adapter *adapter)
 			adapter->current_op);
 		return;
 	}
+
+	spin_lock_bh(&adapter->mac_vlan_list_lock);
+
 	list_for_each_entry(f, &adapter->mac_filter_list, list) {
 		if (f->remove)
 			count++;
 	}
 	if (!count) {
 		adapter->aq_required &= ~I40EVF_FLAG_AQ_DEL_MAC_FILTER;
+		spin_unlock_bh(&adapter->mac_vlan_list_lock);
 		return;
 	}
 	adapter->current_op = VIRTCHNL_OP_DEL_ETH_ADDR;
@@ -506,8 +520,10 @@ void i40evf_del_ether_addrs(struct i40evf_adapter *adapter)
 		more = true;
 	}
 	veal = kzalloc(len, GFP_KERNEL);
-	if (!veal)
+	if (!veal) {
+		spin_unlock_bh(&adapter->mac_vlan_list_lock);
 		return;
+	}
 
 	veal->vsi_id = adapter->vsi_res->vsi_id;
 	veal->num_elements = count;
@@ -523,6 +539,9 @@ void i40evf_del_ether_addrs(struct i40evf_adapter *adapter)
 	}
 	if (!more)
 		adapter->aq_required &= ~I40EVF_FLAG_AQ_DEL_MAC_FILTER;
+
+	spin_unlock_bh(&adapter->mac_vlan_list_lock);
+
 	i40evf_send_pf_msg(adapter, VIRTCHNL_OP_DEL_ETH_ADDR,
 			   (u8 *)veal, len);
 	kfree(veal);
@@ -550,12 +569,15 @@ void i40evf_add_vlans(struct i40evf_adapter *adapter)
 		return;
 	}
 
+	spin_lock_bh(&adapter->mac_vlan_list_lock);
+
 	list_for_each_entry(f, &adapter->vlan_filter_list, list) {
 		if (f->add)
 			count++;
 	}
 	if (!count) {
 		adapter->aq_required &= ~I40EVF_FLAG_AQ_ADD_VLAN_FILTER;
+		spin_unlock_bh(&adapter->mac_vlan_list_lock);
 		return;
 	}
 	adapter->current_op = VIRTCHNL_OP_ADD_VLAN;
@@ -572,8 +594,10 @@ void i40evf_add_vlans(struct i40evf_adapter *adapter)
 		more = true;
 	}
 	vvfl = kzalloc(len, GFP_KERNEL);
-	if (!vvfl)
+	if (!vvfl) {
+		spin_unlock_bh(&adapter->mac_vlan_list_lock);
 		return;
+	}
 
 	vvfl->vsi_id = adapter->vsi_res->vsi_id;
 	vvfl->num_elements = count;
@@ -588,6 +612,9 @@ void i40evf_add_vlans(struct i40evf_adapter *adapter)
 	}
 	if (!more)
 		adapter->aq_required &= ~I40EVF_FLAG_AQ_ADD_VLAN_FILTER;
+
+	spin_unlock_bh(&adapter->mac_vlan_list_lock);
+
 	i40evf_send_pf_msg(adapter, VIRTCHNL_OP_ADD_VLAN, (u8 *)vvfl, len);
 	kfree(vvfl);
 }
@@ -614,12 +641,15 @@ void i40evf_del_vlans(struct i40evf_adapter *adapter)
 		return;
 	}
 
+	spin_lock_bh(&adapter->mac_vlan_list_lock);
+
 	list_for_each_entry(f, &adapter->vlan_filter_list, list) {
 		if (f->remove)
 			count++;
 	}
 	if (!count) {
 		adapter->aq_required &= ~I40EVF_FLAG_AQ_DEL_VLAN_FILTER;
+		spin_unlock_bh(&adapter->mac_vlan_list_lock);
 		return;
 	}
 	adapter->current_op = VIRTCHNL_OP_DEL_VLAN;
@@ -636,8 +666,10 @@ void i40evf_del_vlans(struct i40evf_adapter *adapter)
 		more = true;
 	}
 	vvfl = kzalloc(len, GFP_KERNEL);
-	if (!vvfl)
+	if (!vvfl) {
+		spin_unlock_bh(&adapter->mac_vlan_list_lock);
 		return;
+	}
 
 	vvfl->vsi_id = adapter->vsi_res->vsi_id;
 	vvfl->num_elements = count;
@@ -653,6 +685,9 @@ void i40evf_del_vlans(struct i40evf_adapter *adapter)
 	}
 	if (!more)
 		adapter->aq_required &= ~I40EVF_FLAG_AQ_DEL_VLAN_FILTER;
+
+	spin_unlock_bh(&adapter->mac_vlan_list_lock);
+
 	i40evf_send_pf_msg(adapter, VIRTCHNL_OP_DEL_VLAN, (u8 *)vvfl, len);
 	kfree(vvfl);
 }
@@ -954,23 +989,35 @@ void i40evf_virtchnl_completion(struct i40evf_adapter *adapter,
 		struct virtchnl_pf_event *vpe =
 			(struct virtchnl_pf_event *)msg;
 		enum virtchnl_link_speed link_speed;
+		bool link_up = vpe->event_data.link_event.link_status;
+
 		switch (vpe->event) {
 		case VIRTCHNL_EVENT_LINK_CHANGE:
 			link_speed = vpe->event_data.link_event.link_speed;
 			adapter->link_speed = link_speed;
-			if (adapter->link_up !=
-			    vpe->event_data.link_event.link_status) {
-				adapter->link_up =
-					vpe->event_data.link_event.link_status;
-				if (adapter->link_up) {
-					netif_tx_start_all_queues(netdev);
-					netif_carrier_on(netdev);
-				} else {
-					netif_tx_stop_all_queues(netdev);
-					netif_carrier_off(netdev);
-				}
-				i40evf_print_link_message(adapter);
+
+			/* we've already got the right link status, bail */
+			if (adapter->link_up == link_up)
+				break;
+
+			/* If we get link up message and start queues before
+			 * our queues are configured it will trigger a TX hang.
+			 * In that case, just ignore the link status message,
+			 * we'll get another one after we enable queues and
+			 * actually prepared to send traffic.
+			 */
+			if (link_up && adapter->state != __I40EVF_RUNNING)
+				break;
+
+			adapter->link_up = link_up;
+			if (link_up) {
+				netif_tx_start_all_queues(netdev);
+				netif_carrier_on(netdev);
+			} else {
+				netif_tx_stop_all_queues(netdev);
+				netif_carrier_off(netdev);
 			}
+			i40evf_print_link_message(adapter);
 			adapter->flags |= I40EVF_FLAG_CLIENT_NEEDS_L2_PARAMS;
 			break;
 		case VIRTCHNL_EVENT_RESET_IMPENDING:
@@ -1088,15 +1135,13 @@ void i40evf_virtchnl_completion(struct i40evf_adapter *adapter,
 	case VIRTCHNL_OP_REQUEST_QUEUES: {
 		struct virtchnl_vf_res_request *vfres =
 			(struct virtchnl_vf_res_request *)msg;
-		if (vfres->num_queue_pairs == adapter->num_req_queues) {
-			adapter->flags |= I40EVF_FLAG_REINIT_ITR_NEEDED;
-			i40evf_schedule_reset(adapter);
-		} else {
+		if (vfres->num_queue_pairs != adapter->num_req_queues) {
 			dev_info(&adapter->pdev->dev,
 				 "Requested %d queues, PF can support %d\n",
 				 adapter->num_req_queues,
 				 vfres->num_queue_pairs);
 			adapter->num_req_queues = 0;
+			adapter->flags &= ~I40EVF_FLAG_REINIT_ITR_NEEDED;
 		}
 		}
 		break;

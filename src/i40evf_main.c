@@ -47,8 +47,8 @@ static const char i40evf_driver_string[] =
 #define DRV_VF_VERSION_DESC ""
 
 #define DRV_VERSION_MAJOR 3
-#define DRV_VERSION_MINOR 0
-#define DRV_VERSION_BUILD 8
+#define DRV_VERSION_MINOR 2
+#define DRV_VERSION_BUILD 5
 #define DRV_VERSION __stringify(DRV_VERSION_MAJOR) "." \
 	     __stringify(DRV_VERSION_MINOR) "." \
 	     __stringify(DRV_VERSION_BUILD) \
@@ -357,7 +357,6 @@ static void i40evf_irq_affinity_release(struct kref *ref) {}
 static int
 i40evf_request_traffic_irqs(struct i40evf_adapter *adapter, char *basename)
 {
-	int node = dev_to_node(&adapter->pdev->dev);
 	unsigned int vector, q_vectors;
 	unsigned int rx_int_idx = 0, tx_int_idx = 0;
 	int irq_num, err;
@@ -403,12 +402,11 @@ i40evf_request_traffic_irqs(struct i40evf_adapter *adapter, char *basename)
 		irq_set_affinity_notifier(irq_num, &q_vector->affinity_notify);
 #endif
 #ifdef HAVE_IRQ_AFFINITY_HINT
-		/* Spread the IRQ affinity hints across CPUs, first using
-		 * local CPUs and then remote ones. Note that get_cpu_mask
-		 * returns a mask with a permanent lifetime so it's safe to
-		 * use as a hint for irq_set_affinity_hint.
+		/* Spread the IRQ affinity hints across online CPUs. Note that
+		 * get_cpu_mask returns a mask with a permanent lifetime so
+		 * it's safe to use as a hint for irq_set_affinity_hint.
 		 */
-		cpu = cpumask_local_spread(q_vector->v_idx, node);
+		cpu = cpumask_local_spread(q_vector->v_idx, -1);
 		irq_set_affinity_hint(irq_num, get_cpu_mask(cpu));
 #endif /* HAVE_IRQ_AFFINITY_HINT */
 	}
@@ -531,8 +529,8 @@ static void i40evf_configure_rx(struct i40evf_adapter *adapter)
 #ifdef CONFIG_I40E_DISABLE_PACKET_SPLIT
 	/* reset Rx buffer length for an Ethernet packet */
 	rx_buf_len = I40E_RXBUFFER_1536 - NET_IP_ALIGN;
-	if ((netdev->mtu + I40E_PACKET_HDR_PAD) > rx_buf_len)
-		rx_buf_len = netdev->mtu + I40E_PACKET_HDR_PAD;
+	if ((adapter->netdev->mtu + I40E_PACKET_HDR_PAD) > rx_buf_len)
+		rx_buf_len = adapter->netdev->mtu + I40E_PACKET_HDR_PAD;
 #else
 	/* Legacy Rx will always default to a 2048 buffer size. */
 #if (PAGE_SIZE < 8192)
@@ -589,7 +587,8 @@ static void i40evf_vlan_rx_register(struct net_device *netdev,
  * @adapter: board private structure
  * @vlan: vlan tag
  *
- * Returns ptr to the filter object or NULL
+ * Returns ptr to the filter object or NULL. Must be called while holding the
+ * mac_vlan_list_lock.
  **/
 static struct
 i40evf_vlan_filter *i40evf_find_vlan(struct i40evf_adapter *adapter, u16 vlan)
@@ -614,14 +613,8 @@ static struct
 i40evf_vlan_filter *i40evf_add_vlan(struct i40evf_adapter *adapter, u16 vlan)
 {
 	struct i40evf_vlan_filter *f = NULL;
-	int count = 50;
 
-	while (test_and_set_bit(__I40EVF_IN_CRITICAL_TASK,
-				&adapter->crit_section)) {
-		udelay(1);
-		if (--count == 0)
-			goto out;
-	}
+	spin_lock_bh(&adapter->mac_vlan_list_lock);
 
 	f = i40evf_find_vlan(adapter, vlan);
 	if (!f) {
@@ -638,8 +631,7 @@ i40evf_vlan_filter *i40evf_add_vlan(struct i40evf_adapter *adapter, u16 vlan)
 	}
 
 clearout:
-	clear_bit(__I40EVF_IN_CRITICAL_TASK, &adapter->crit_section);
-out:
+	spin_unlock_bh(&adapter->mac_vlan_list_lock);
 	return f;
 }
 
@@ -651,21 +643,16 @@ out:
 static void i40evf_del_vlan(struct i40evf_adapter *adapter, u16 vlan)
 {
 	struct i40evf_vlan_filter *f;
-	int count = 50;
 
-	while (test_and_set_bit(__I40EVF_IN_CRITICAL_TASK,
-				&adapter->crit_section)) {
-		udelay(1);
-		if (--count == 0)
-			return;
-	}
+	spin_lock_bh(&adapter->mac_vlan_list_lock);
 
 	f = i40evf_find_vlan(adapter, vlan);
 	if (f) {
 		f->remove = true;
 		adapter->aq_required |= I40EVF_FLAG_AQ_DEL_VLAN_FILTER;
 	}
-	clear_bit(__I40EVF_IN_CRITICAL_TASK, &adapter->crit_section);
+
+	spin_unlock_bh(&adapter->mac_vlan_list_lock);
 }
 
 /**
@@ -735,7 +722,8 @@ static void i40evf_vlan_rx_kill_vid(struct net_device *netdev, u16 vid)
  * @adapter: board private structure
  * @macaddr: the MAC address
  *
- * Returns ptr to the filter object or NULL
+ * Returns ptr to the filter object or NULL. Must be called while holding the
+ * mac_vlan_list_lock.
  **/
 static struct
 i40evf_mac_filter *i40evf_find_filter(struct i40evf_adapter *adapter,
@@ -765,26 +753,17 @@ i40evf_mac_filter *i40evf_add_filter(struct i40evf_adapter *adapter,
 				     u8 *macaddr)
 {
 	struct i40evf_mac_filter *f;
-	int count = 50;
 
 	if (!macaddr)
 		return NULL;
 
-	while (test_and_set_bit(__I40EVF_IN_CRITICAL_TASK,
-				&adapter->crit_section)) {
-		udelay(1);
-		if (--count == 0)
-			return NULL;
-	}
+	spin_lock_bh(&adapter->mac_vlan_list_lock);
 
 	f = i40evf_find_filter(adapter, macaddr);
 	if (!f) {
 		f = kzalloc(sizeof(*f), GFP_ATOMIC);
-		if (!f) {
-			clear_bit(__I40EVF_IN_CRITICAL_TASK,
-				  &adapter->crit_section);
-			return NULL;
-		}
+		if (!f)
+			goto clearout;
 
 		ether_addr_copy(f->macaddr, macaddr);
 
@@ -795,7 +774,8 @@ i40evf_mac_filter *i40evf_add_filter(struct i40evf_adapter *adapter,
 		f->remove = false;
 	}
 
-	clear_bit(__I40EVF_IN_CRITICAL_TASK, &adapter->crit_section);
+clearout:
+	spin_unlock_bh(&adapter->mac_vlan_list_lock);
 	return f;
 }
 
@@ -822,11 +802,15 @@ static int i40evf_set_mac(struct net_device *netdev, void *p)
 	if (adapter->flags & I40EVF_FLAG_ADDR_SET_BY_PF)
 		return -EPERM;
 
+	spin_lock_bh(&adapter->mac_vlan_list_lock);
+
 	f = i40evf_find_filter(adapter, hw->mac.addr);
 	if (f) {
 		f->remove = true;
 		adapter->aq_required |= I40EVF_FLAG_AQ_DEL_MAC_FILTER;
 	}
+
+	spin_unlock_bh(&adapter->mac_vlan_list_lock);
 
 	f = i40evf_add_filter(adapter, addr->sa_data);
 	if (f) {
@@ -852,7 +836,6 @@ static void i40evf_set_rx_mode(struct net_device *netdev)
 	struct dev_mc_list *mca;
 #endif /* NETDEV_HW_ADDR_T_MULTICAST */
 	struct netdev_hw_addr *ha;
-	int count = 50;
 
 	/* add addr if not already in the filter list */
 	netdev_for_each_uc_addr(uca, netdev) {
@@ -866,16 +849,8 @@ static void i40evf_set_rx_mode(struct net_device *netdev)
 #endif /* NETDEV_HW_ADDR_T_MULTICAST */
 	}
 
-	while (test_and_set_bit(__I40EVF_IN_CRITICAL_TASK,
-				&adapter->crit_section)) {
-		udelay(1);
-		if (--count == 0) {
-			dev_err(&adapter->pdev->dev,
-				"Failed to get lock in %s\n", __func__);
-			return;
-		}
-	}
-	/* remove filter if not in netdev list */
+	spin_lock_bh(&adapter->mac_vlan_list_lock);
+
 	list_for_each_entry_safe(f, ftmp, &adapter->mac_filter_list, list) {
 
 		netdev_for_each_mc_addr(mca, netdev)
@@ -919,7 +894,7 @@ bottom_of_search_loop:
 		 adapter->flags & I40EVF_FLAG_ALLMULTI_ON)
 		adapter->aq_required |= I40EVF_FLAG_AQ_RELEASE_ALLMULTI;
 
-	clear_bit(__I40EVF_IN_CRITICAL_TASK, &adapter->crit_section);
+	spin_unlock_bh(&adapter->mac_vlan_list_lock);
 }
 
 /**
@@ -982,6 +957,8 @@ static void i40evf_configure(struct i40evf_adapter *adapter)
 /**
  * i40evf_up_complete - Finish the last steps of bringing up a connection
  * @adapter: board private structure
+ *
+ * Expects to be called while holding the __I40EVF_IN_CRITICAL_TASK bit lock.
  **/
 static void i40evf_up_complete(struct i40evf_adapter *adapter)
 {
@@ -1004,6 +981,8 @@ static void i40evf_up_complete(struct i40evf_adapter *adapter)
 /**
  * i40e_down - Shutdown the connection processing
  * @adapter: board private structure
+ *
+ * Expects to be called while holding the __I40EVF_IN_CRITICAL_TASK bit lock.
  **/
 void i40evf_down(struct i40evf_adapter *adapter)
 {
@@ -1013,15 +992,13 @@ void i40evf_down(struct i40evf_adapter *adapter)
 	if (adapter->state <= __I40EVF_DOWN_PENDING)
 		return;
 
-	while (test_and_set_bit(__I40EVF_IN_CRITICAL_TASK,
-				&adapter->crit_section))
-		usleep_range(500, 1000);
-
 	netif_carrier_off(netdev);
 	netif_tx_disable(netdev);
 	adapter->link_up = false;
 	i40evf_napi_disable_all(adapter);
 	i40evf_irq_disable(adapter);
+
+	spin_lock_bh(&adapter->mac_vlan_list_lock);
 
 	/* remove all MAC filters */
 	list_for_each_entry(f, &adapter->mac_filter_list, list) {
@@ -1031,6 +1008,9 @@ void i40evf_down(struct i40evf_adapter *adapter)
 	list_for_each_entry(f, &adapter->vlan_filter_list, list) {
 		f->remove = true;
 	}
+
+	spin_unlock_bh(&adapter->mac_vlan_list_lock);
+
 	if (!(adapter->flags & I40EVF_FLAG_PF_COMMS_FAILED) &&
 	    adapter->state != __I40EVF_RESETTING) {
 		/* cancel any current operation */
@@ -1044,7 +1024,6 @@ void i40evf_down(struct i40evf_adapter *adapter)
 		adapter->aq_required |= I40EVF_FLAG_AQ_DISABLE_QUEUES;
 	}
 
-	clear_bit(__I40EVF_IN_CRITICAL_TASK, &adapter->crit_section);
 	mod_timer_pending(&adapter->watchdog_timer, jiffies + 1);
 }
 
@@ -1154,7 +1133,7 @@ static int i40evf_alloc_queues(struct i40evf_adapter *adapter)
 		tx_ring->netdev = adapter->netdev;
 		tx_ring->dev = pci_dev_to_dev(adapter->pdev);
 		tx_ring->count = adapter->tx_desc_count;
-		tx_ring->tx_itr_setting = (I40E_ITR_DYNAMIC | I40E_ITR_TX_DEF);
+		tx_ring->tx_itr_setting = I40E_ITR_TX_DEF;
 
 		if (adapter->flags & I40EVF_FLAG_WB_ON_ITR_CAPABLE)
 			tx_ring->flags |= I40E_TXR_FLAGS_WB_ON_ITR;
@@ -1164,7 +1143,7 @@ static int i40evf_alloc_queues(struct i40evf_adapter *adapter)
 		rx_ring->netdev = adapter->netdev;
 		rx_ring->dev = pci_dev_to_dev(adapter->pdev);
 		rx_ring->count = adapter->rx_desc_count;
-		rx_ring->rx_itr_setting = (I40E_ITR_DYNAMIC | I40E_ITR_RX_DEF);
+		rx_ring->rx_itr_setting = I40E_ITR_RX_DEF;
 	}
 
 	adapter->num_active_queues = num_active_queues;
@@ -1708,6 +1687,8 @@ static void i40evf_watchdog_task(struct work_struct *work)
 	if (adapter->state == __I40EVF_RUNNING)
 		i40evf_request_stats(adapter);
 watchdog_done:
+	if (adapter->state == __I40EVF_RUNNING)
+		i40e_detect_recover_hung(&adapter->vsi);
 	clear_bit(__I40EVF_IN_CRITICAL_TASK, &adapter->crit_section);
 restart_watchdog:
 	if (adapter->state == __I40EVF_REMOVE)
@@ -1720,54 +1701,68 @@ restart_watchdog:
 	schedule_work(&adapter->adminq_task);
 }
 
+/**
+ * i40evf_disable_vf - disable a VF that failed to reset
+ * @adapter: private adapter structure
+ *
+ * Helper function to shut down the VF when a reset never finishes.
+ **/
 static void i40evf_disable_vf(struct i40evf_adapter *adapter)
 {
-		struct net_device *netdev = adapter->netdev;
-		struct i40evf_mac_filter *f, *ftmp;
-		struct i40evf_vlan_filter *fv, *fvtmp;
-		/* reset never finished */
+	struct net_device *netdev = adapter->netdev;
+	struct i40evf_mac_filter *f, *ftmp;
+	struct i40evf_vlan_filter *fv, *fvtmp;
+	/* reset never finished */
 
-		adapter->flags |= I40EVF_FLAG_PF_COMMS_FAILED;
+	adapter->flags |= I40EVF_FLAG_PF_COMMS_FAILED;
 
-		if (netif_running(adapter->netdev)) {
-			set_bit(__I40E_VSI_DOWN, adapter->vsi.state);
-			netif_carrier_off(netdev);
-			netif_tx_disable(netdev);
-			adapter->link_up = false;
-			i40evf_napi_disable_all(adapter);
-			i40evf_irq_disable(adapter);
-			i40evf_free_traffic_irqs(adapter);
-			i40evf_free_all_tx_resources(adapter);
-			i40evf_free_all_rx_resources(adapter);
-		}
+	/* We don't use netif_running() because it may be true prior to
+	 * ndo_open() returning, so we can't assume it means all our open
+	 * tasks have finished, since we're not holding the rtnl_lock here.
+	 */
+	if (adapter->state == __I40EVF_RUNNING) {
+		set_bit(__I40E_VSI_DOWN, adapter->vsi.state);
+		netif_carrier_off(netdev);
+		netif_tx_disable(netdev);
+		adapter->link_up = false;
+		i40evf_napi_disable_all(adapter);
+		i40evf_irq_disable(adapter);
+		i40evf_free_traffic_irqs(adapter);
+		i40evf_free_all_tx_resources(adapter);
+		i40evf_free_all_rx_resources(adapter);
+	}
 
-		/* Delete all of the filters, both MAC and VLAN. */
-		list_for_each_entry_safe(f, ftmp, &adapter->mac_filter_list,
-					 list) {
-			list_del(&f->list);
-			kfree(f);
-		}
+	spin_lock_bh(&adapter->mac_vlan_list_lock);
 
-		list_for_each_entry_safe(fv, fvtmp, &adapter->vlan_filter_list,
-					 list) {
-			list_del(&fv->list);
-			kfree(fv);
-		}
+	/* Delete all of the filters, both MAC and VLAN. */
+	list_for_each_entry_safe(f, ftmp, &adapter->mac_filter_list,
+				 list) {
+		list_del(&f->list);
+		kfree(f);
+	}
 
-		i40evf_free_misc_irq(adapter);
-		i40evf_reset_interrupt_capability(adapter);
-		i40evf_free_queues(adapter);
-		i40evf_free_q_vectors(adapter);
-		kfree(adapter->vf_res);
-		adapter->vf_res = NULL;
-		i40e_shutdown_adminq(&adapter->hw);
-		adapter->netdev->flags &= ~IFF_UP;
-		clear_bit(__I40EVF_IN_CRITICAL_TASK, &adapter->crit_section);
-		clear_bit(__I40EVF_IN_CLIENT_TASK, &adapter->crit_section);
-		adapter->flags &= ~I40EVF_FLAG_RESET_PENDING;
-		adapter->state = __I40EVF_DOWN;
-		wake_up(&adapter->down_waitqueue);
-		dev_info(&adapter->pdev->dev, "Reset task did not complete, VF disabled\n");
+	list_for_each_entry_safe(fv, fvtmp, &adapter->vlan_filter_list,
+				 list) {
+		list_del(&fv->list);
+		kfree(fv);
+	}
+
+	spin_unlock_bh(&adapter->mac_vlan_list_lock);
+
+	i40evf_free_misc_irq(adapter);
+	i40evf_reset_interrupt_capability(adapter);
+	i40evf_free_queues(adapter);
+	i40evf_free_q_vectors(adapter);
+	kfree(adapter->vf_res);
+	adapter->vf_res = NULL;
+	i40e_shutdown_adminq(&adapter->hw);
+	adapter->netdev->flags &= ~IFF_UP;
+	clear_bit(__I40EVF_IN_CRITICAL_TASK, &adapter->crit_section);
+	clear_bit(__I40EVF_IN_CLIENT_TASK, &adapter->crit_section);
+	adapter->flags &= ~I40EVF_FLAG_RESET_PENDING;
+	adapter->state = __I40EVF_DOWN;
+	wake_up(&adapter->down_waitqueue);
+	dev_info(&adapter->pdev->dev, "Reset task did not complete, VF disabled\n");
 }
 
 #define I40EVF_RESET_WAIT_MS 10
@@ -1791,6 +1786,13 @@ static void i40evf_reset_task(struct work_struct *work)
 	struct i40evf_mac_filter *f;
 	u32 reg_val;
 	int i = 0, err;
+	bool running;
+
+	/* When device is being removed it doesn't make sense to run the reset
+	 * task, just return in such a case.
+	 */
+	if (test_bit(__I40EVF_IN_REMOVE_TASK, &adapter->crit_section))
+		return;
 
 	while (test_and_set_bit(__I40EVF_IN_CRITICAL_TASK,
 				&adapter->crit_section))
@@ -1852,7 +1854,13 @@ static void i40evf_reset_task(struct work_struct *work)
 	}
 
 continue_reset:
-	if (netif_running(netdev)) {
+	/* We don't use netif_running() because it may be true prior to
+	 * ndo_open() returning, so we can't assume it means all our open
+	 * tasks have finished, since we're not holding the rtnl_lock here.
+	 */
+	running = (adapter->state == __I40EVF_RUNNING);
+
+	if (running) {
 		netif_carrier_off(netdev);
 		netif_tx_stop_all_queues(netdev);
 		adapter->link_up = false;
@@ -1887,6 +1895,8 @@ continue_reset:
 	adapter->aq_required |= I40EVF_FLAG_AQ_GET_CONFIG;
 	adapter->aq_required |= I40EVF_FLAG_AQ_MAP_VECTORS;
 
+	spin_lock_bh(&adapter->mac_vlan_list_lock);
+
 	/* re-add all MAC filters */
 	list_for_each_entry(f, &adapter->mac_filter_list, list) {
 		f->add = true;
@@ -1895,15 +1905,19 @@ continue_reset:
 	list_for_each_entry(vlf, &adapter->vlan_filter_list, list) {
 		vlf->add = true;
 	}
+
+	spin_unlock_bh(&adapter->mac_vlan_list_lock);
+
 	adapter->aq_required |= I40EVF_FLAG_AQ_ADD_MAC_FILTER;
 	adapter->aq_required |= I40EVF_FLAG_AQ_ADD_VLAN_FILTER;
-	clear_bit(__I40EVF_IN_CRITICAL_TASK, &adapter->crit_section);
-	clear_bit(__I40EVF_IN_CLIENT_TASK, &adapter->crit_section);
 	i40evf_misc_irq_enable(adapter);
 
 	mod_timer(&adapter->watchdog_timer, jiffies + 2);
 
-	if (netif_running(adapter->netdev)) {
+	/* We were running when the reset started, so we need to restore some
+	 * state here.
+	 */
+	if (running) {
 		/* allocate transmit descriptors */
 		err = i40evf_setup_all_tx_resources(adapter);
 		if (err)
@@ -1931,8 +1945,14 @@ continue_reset:
 		adapter->state = __I40EVF_DOWN;
 		wake_up(&adapter->down_waitqueue);
 	}
+
+	clear_bit(__I40EVF_IN_CLIENT_TASK, &adapter->crit_section);
+	clear_bit(__I40EVF_IN_CRITICAL_TASK, &adapter->crit_section);
+
 	return;
 reset_err:
+	clear_bit(__I40EVF_IN_CLIENT_TASK, &adapter->crit_section);
+	clear_bit(__I40EVF_IN_CRITICAL_TASK, &adapter->crit_section);
 	dev_err(&adapter->pdev->dev, "failed to allocate resources during reinit\n");
 	i40evf_close(netdev);
 }
@@ -2176,8 +2196,14 @@ static int i40evf_open(struct net_device *netdev)
 		return -EIO;
 	}
 
-	if (adapter->state != __I40EVF_DOWN)
-		return -EBUSY;
+	while (test_and_set_bit(__I40EVF_IN_CRITICAL_TASK,
+				&adapter->crit_section))
+		usleep_range(500, 1000);
+
+	if (adapter->state != __I40EVF_DOWN) {
+		err = -EBUSY;
+		goto err_unlock;
+	}
 
 	/* allocate transmit descriptors */
 	err = i40evf_setup_all_tx_resources(adapter);
@@ -2201,6 +2227,8 @@ static int i40evf_open(struct net_device *netdev)
 
 	i40evf_irq_enable(adapter, true);
 
+	clear_bit(__I40EVF_IN_CRITICAL_TASK, &adapter->crit_section);
+
 	return 0;
 
 err_req_irq:
@@ -2210,6 +2238,8 @@ err_setup_rx:
 	i40evf_free_all_rx_resources(adapter);
 err_setup_tx:
 	i40evf_free_all_tx_resources(adapter);
+err_unlock:
+	clear_bit(__I40EVF_IN_CRITICAL_TASK, &adapter->crit_section);
 
 	return err;
 }
@@ -2233,6 +2263,9 @@ static int i40evf_close(struct net_device *netdev)
 	if (adapter->state <= __I40EVF_DOWN_PENDING)
 		return 0;
 
+	while (test_and_set_bit(__I40EVF_IN_CRITICAL_TASK,
+				&adapter->crit_section))
+		usleep_range(500, 1000);
 
 	set_bit(__I40E_VSI_DOWN, adapter->vsi.state);
 	if (CLIENT_ENABLED(adapter))
@@ -2241,6 +2274,8 @@ static int i40evf_close(struct net_device *netdev)
 	i40evf_down(adapter);
 	adapter->state = __I40EVF_DOWN_PENDING;
 	i40evf_free_traffic_irqs(adapter);
+
+	clear_bit(__I40EVF_IN_CRITICAL_TASK, &adapter->crit_section);
 
 	/* We explicitly don't free resources here because the hardware is
 	 * still active and can DMA into memory. Resources are cleared in
@@ -2318,6 +2353,8 @@ static int i40evf_change_mtu(struct net_device *netdev, int new_mtu)
 	netdev->features |= NETIF_F_TSO;
 	netdev->features |= NETIF_F_TSO6;
 #endif /* !HAVE_NDO_FEATURES_CHECK */
+	netdev_info(netdev, "changing MTU from %d to %d\n",
+		    netdev->mtu, new_mtu);
 	netdev->mtu = new_mtu;
 	adapter->flags |= I40EVF_FLAG_RESET_NEEDED;
 	schedule_work(&adapter->reset_task);
@@ -2340,17 +2377,27 @@ static int i40evf_set_features(struct net_device *netdev,
 {
 	struct i40evf_adapter *adapter = netdev_priv(netdev);
 
-	if (!VLAN_ALLOWED(adapter))
-		return -EINVAL;
-
+	/* Don't allow changing VLAN_RX flag when VLAN is set for VF
+	 * and return an error in this case
+	 */
+	if (VLAN_ALLOWED(adapter)) {
 #ifdef NETIF_F_HW_VLAN_CTAG_RX
-	if (features & NETIF_F_HW_VLAN_CTAG_RX)
+		if (features & NETIF_F_HW_VLAN_CTAG_RX)
 #else
-	if (features & NETIF_F_HW_VLAN_RX)
+		if (features & NETIF_F_HW_VLAN_RX)
 #endif
-		adapter->aq_required |= I40EVF_FLAG_AQ_ENABLE_VLAN_STRIPPING;
-	else
-		adapter->aq_required |= I40EVF_FLAG_AQ_DISABLE_VLAN_STRIPPING;
+			adapter->aq_required |=
+				I40EVF_FLAG_AQ_ENABLE_VLAN_STRIPPING;
+		else
+			adapter->aq_required |=
+				I40EVF_FLAG_AQ_DISABLE_VLAN_STRIPPING;
+#ifdef NETIF_F_HW_VLAN_CTAG_RX
+	} else if ((netdev->features ^ features) & NETIF_F_HW_VLAN_CTAG_RX) {
+#else
+	} else if ((netdev->features ^ features) & NETIF_F_HW_VLAN_RX) {
+#endif
+		return -EINVAL;
+	}
 
 	return 0;
 }
@@ -3027,6 +3074,8 @@ static int i40evf_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 	i40e_init_spinlock_d(&hw->aq.asq_spinlock);
 	i40e_init_spinlock_d(&hw->aq.arq_spinlock);
 
+	spin_lock_init(&adapter->mac_vlan_list_lock);
+
 	INIT_LIST_HEAD(&adapter->mac_filter_list);
 	INIT_LIST_HEAD(&adapter->vlan_filter_list);
 
@@ -3069,6 +3118,10 @@ static int i40evf_suspend(struct pci_dev *pdev, pm_message_t state)
 
 	netif_device_detach(netdev);
 
+	while (test_and_set_bit(__I40EVF_IN_CRITICAL_TASK,
+				&adapter->crit_section))
+		usleep_range(500, 1000);
+
 	if (netif_running(netdev)) {
 		rtnl_lock();
 		i40evf_down(adapter);
@@ -3076,6 +3129,8 @@ static int i40evf_suspend(struct pci_dev *pdev, pm_message_t state)
 	}
 	i40evf_free_misc_irq(adapter);
 	i40evf_reset_interrupt_capability(adapter);
+
+	clear_bit(__I40EVF_IN_CRITICAL_TASK, &adapter->crit_section);
 
 	retval = pci_save_state(pdev);
 	if (retval)
@@ -3153,7 +3208,8 @@ static void i40evf_remove(struct pci_dev *pdev)
 	struct i40evf_mac_filter *f, *ftmp;
 	struct i40e_hw *hw = &adapter->hw;
 	int err;
-
+	/* Indicate we are in remove and not to run reset_task */
+	set_bit(__I40EVF_IN_REMOVE_TASK, &adapter->crit_section);
 	cancel_delayed_work_sync(&adapter->init_task);
 	cancel_work_sync(&adapter->reset_task);
 	cancel_delayed_work_sync(&adapter->client_task);
@@ -3189,8 +3245,6 @@ static void i40evf_remove(struct pci_dev *pdev)
 	if (adapter->watchdog_timer.function)
 		del_timer_sync(&adapter->watchdog_timer);
 
-	flush_scheduled_work();
-
 	i40evf_free_rss(adapter);
 
 	if (hw->aq.asq.count)
@@ -3207,6 +3261,8 @@ static void i40evf_remove(struct pci_dev *pdev)
 	kfree(adapter->vf_res);
 	adapter->vf_res = NULL;
 
+	spin_lock_bh(&adapter->mac_vlan_list_lock);
+
 	/* If we got removed before an up/down sequence, we've got a filter
 	 * hanging out there that we need to get rid of.
 	 */
@@ -3218,6 +3274,8 @@ static void i40evf_remove(struct pci_dev *pdev)
 		list_del(&f->list);
 		kfree(f);
 	}
+
+	spin_unlock_bh(&adapter->mac_vlan_list_lock);
 
 	free_netdev(netdev);
 

@@ -31,7 +31,7 @@
 #             the string is consumed by the tools using it.
 #
 8086  Intel Corporation
-	154c  XL710/X710 Virtual Function
-	1571  XL710/X710 Virtual Function
+	154c  Ethernet Virtual Function 700 Series
+	1571  Ethernet Virtual Function 700 Series
 	1889  Ethernet Adaptive Virtual Function
-	37cd  X722 Virtual Function
+	37cd  Ethernet Virtual Function 700 Series

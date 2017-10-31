@@ -124,11 +124,12 @@ void i40e_free_tx_resources(struct i40e_ring *tx_ring)
 /**
  * i40e_get_tx_pending - how many tx descriptors not processed
  * @tx_ring: the ring of descriptors
+ * @in_sw: use SW variables
  *
  * Since there is no access to the ring head register
  * in XL710, we need to use our local copies
  **/
-u32 i40e_get_tx_pending(struct i40e_ring *ring)
+u32 i40e_get_tx_pending(struct i40e_ring *ring, bool in_sw)
 {
 	u32 head, tail;
 
@@ -140,6 +141,59 @@ u32 i40e_get_tx_pending(struct i40e_ring *ring)
 			tail - head : (tail + ring->count - head);
 
 	return 0;
+}
+
+/**
+ * i40e_detect_recover_hung - Function to detect and recover hung_queues
+ * @vsi:  pointer to vsi struct with tx queues
+ *
+ * VSI has netdev and netdev has TX queues. This function is to check each of
+ * those TX queues if they are hung, trigger recovery by issuing SW interrupt.
+ **/
+void i40e_detect_recover_hung(struct i40e_vsi *vsi)
+{
+	struct i40e_ring *tx_ring = NULL;
+	struct net_device *netdev;
+	unsigned int i;
+	int packets;
+
+	if (!vsi)
+		return;
+
+	if (test_bit(__I40E_VSI_DOWN, vsi->state))
+		return;
+
+	netdev = vsi->netdev;
+	if (!netdev)
+		return;
+
+	if (!netif_carrier_ok(netdev))
+		return;
+
+	for (i = 0; i < vsi->back->num_active_queues; i++) {
+		tx_ring = &vsi->back->tx_rings[i];
+		if (tx_ring && tx_ring->desc) {
+			/* If packet counter has not changed the queue is
+			 * likely stalled, so force an interrupt for this
+			 * queue.
+			 *
+			 * prev_pkt_ctr would be negative if there was no
+			 * pending work.
+			 */
+			packets = tx_ring->stats.packets & INT_MAX;
+			if (tx_ring->tx_stats.prev_pkt_ctr == packets) {
+				i40e_force_wb(vsi, tx_ring->q_vector);
+				continue;
+			}
+
+			/* Memory barrier between read of packet count and call
+			 * to i40e_get_tx_pending()
+			 */
+			smp_rmb();
+			tx_ring->tx_stats.prev_pkt_ctr =
+			    i40e_get_tx_pending(tx_ring, true) ? packets : -1;
+		}
+	}
 }
 
 #define WB_STRIDE 4
@@ -256,7 +310,7 @@ static bool i40e_clean_tx_irq(struct i40e_vsi *vsi,
 		 * them to be written back in case we stay in NAPI.
 		 * In this mode on X722 we do not enable Interrupt.
 		 */
-		unsigned int j = i40e_get_tx_pending(tx_ring);
+		unsigned int j = i40e_get_tx_pending(tx_ring, false);
 
 		if (budget &&
 		    ((j / WB_STRIDE) == 0) && (j > 0) &&
@@ -428,6 +482,35 @@ reset_latency:
 	}
 	return false;
 }
+
+#ifndef CONFIG_I40E_DISABLE_PACKET_SPLIT
+/**
+ * i40e_reuse_rx_page - page flip buffer and store it back on the ring
+ * @rx_ring: rx descriptor ring to store buffers on
+ * @old_buff: donor buffer to have page reused
+ *
+ * Synchronizes page for reuse by the adapter
+ **/
+static void i40e_reuse_rx_page(struct i40e_ring *rx_ring,
+			       struct i40e_rx_buffer *old_buff)
+{
+	struct i40e_rx_buffer *new_buff;
+	u16 nta = rx_ring->next_to_alloc;
+
+	new_buff = &rx_ring->rx_bi[nta];
+
+	/* update, and store next to alloc */
+	nta++;
+	rx_ring->next_to_alloc = (nta < rx_ring->count) ? nta : 0;
+
+	/* transfer page from old buffer to new buffer */
+	new_buff->dma		= old_buff->dma;
+	new_buff->page		= old_buff->page;
+	new_buff->page_offset	= old_buff->page_offset;
+	new_buff->pagecnt_bias	= old_buff->pagecnt_bias;
+}
+
+#endif /* CONFIG_I40E_DISABLE_PACKET_SPLIT */
 /**
  * i40e_setup_tx_descriptors - Allocate the Tx descriptors
  * @tx_ring: the tx ring to set up
@@ -462,6 +545,7 @@ int i40e_setup_tx_descriptors(struct i40e_ring *tx_ring)
 
 	tx_ring->next_to_use = 0;
 	tx_ring->next_to_clean = 0;
+	tx_ring->tx_stats.prev_pkt_ctr = -1;
 	return 0;
 
 err:
@@ -579,7 +663,7 @@ int i40e_setup_rx_descriptors(struct i40e_ring *rx_ring)
 #endif /* HAVE_NDO_GET_STATS64 */
 
 	/* Round up to nearest 4K */
-	rx_ring->size = rx_ring->count * sizeof(union i40e_32byte_rx_desc);
+	rx_ring->size = rx_ring->count * sizeof(union i40e_rx_desc);
 	rx_ring->size = ALIGN(rx_ring->size, 4096);
 	rx_ring->desc = dma_alloc_coherent(dev, rx_ring->size,
 					   &rx_ring->dma, GFP_KERNEL);
@@ -776,6 +860,15 @@ bool i40e_alloc_rx_buffers(struct i40e_ring *rx_ring, u16 cleaned_count)
 	u16 ntu = rx_ring->next_to_use;
 	union i40e_rx_desc *rx_desc;
 	struct i40e_rx_buffer *bi;
+
+	/* Hardware only fetches new descriptors in cache lines of 8,
+	 * essentially ignoring the lower 3 bits of the tail register. We want
+	 * to ensure our tail writes are aligned to avoid unnecessary work. We
+	 * can't simply round down the cleaned count, since we might fail to
+	 * allocate some buffers. What we really want is to ensure that
+	 * next_to_used + cleaned_count produces an aligned value.
+	 */
+	cleaned_count -= (ntu + cleaned_count) & 0x7;
 
 	/* do nothing if no valid netdev defined */
 	if (!rx_ring->netdev || !cleaned_count)
@@ -1112,32 +1205,6 @@ static void i40e_put_rx_buffer(struct i40e_ring *rx_ring,
 }
 
 #else /* CONFIG_I40E_DISABLE_PACKET_SPLIT */
-/**
- * i40e_reuse_rx_page - page flip buffer and store it back on the ring
- * @rx_ring: rx descriptor ring to store buffers on
- * @old_buff: donor buffer to have page reused
- *
- * Synchronizes page for reuse by the adapter
- **/
-static void i40e_reuse_rx_page(struct i40e_ring *rx_ring,
-			       struct i40e_rx_buffer *old_buff)
-{
-	struct i40e_rx_buffer *new_buff;
-	u16 nta = rx_ring->next_to_alloc;
-
-	new_buff = &rx_ring->rx_bi[nta];
-
-	/* update, and store next to alloc */
-	nta++;
-	rx_ring->next_to_alloc = (nta < rx_ring->count) ? nta : 0;
-
-	/* transfer page from old buffer to new buffer */
-	new_buff->dma		= old_buff->dma;
-	new_buff->page		= old_buff->page;
-	new_buff->page_offset	= old_buff->page_offset;
-	new_buff->pagecnt_bias	= old_buff->pagecnt_bias;
-}
-
 /**
  * i40e_page_is_reusable - check if any reuse is possible
  * @page: page struct to check
@@ -1598,9 +1665,7 @@ static u32 i40e_buildreg_itr(const int type, const u16 itr)
 	u32 val;
 
 	val = I40E_VFINT_DYN_CTLN1_INTENA_MASK |
-	      /* Don't clear PBA because that can cause lost interrupts that
-	       * came in while we were cleaning/polling
-	       */
+	      I40E_VFINT_DYN_CTLN1_CLEARPBA_MASK |
 	      (type << I40E_VFINT_DYN_CTLN1_ITR_INDX_SHIFT) |
 	      (itr << I40E_VFINT_DYN_CTLN1_INTERVAL_SHIFT);
 

@@ -78,9 +78,9 @@ void i40evf_client_get_params(struct i40e_vsi *vsi, struct i40e_params *params)
  **/
 void i40evf_notify_client_message(struct i40e_vsi *vsi, u8 *msg, u16 len)
 {
-	struct i40evf_adapter *adapter = vsi->back;
-	struct i40e_client_instance *cinst = adapter->cinst;
+	struct i40e_client_instance *cinst;
 
+	cinst = vsi->back->cinst;
 	if (!cinst || !cinst->client || !cinst->client->ops ||
 	    !cinst->client->ops->virtchnl_receive) {
 		dev_dbg(&vsi->back->pdev->dev,
@@ -99,10 +99,10 @@ void i40evf_notify_client_message(struct i40e_vsi *vsi, u8 *msg, u16 len)
  **/
 void i40evf_notify_client_l2_params(struct i40e_vsi *vsi)
 {
-	struct i40evf_adapter *adapter = vsi->back;
-	struct i40e_client_instance *cinst = adapter->cinst;
+	struct i40e_client_instance *cinst;
 	struct i40e_params params;
 
+	cinst = vsi->back->cinst;
 	if (!cinst || !cinst->client || !cinst->client->ops ||
 	    !cinst->client->ops->l2_param_change) {
 		dev_dbg(&vsi->back->pdev->dev,
