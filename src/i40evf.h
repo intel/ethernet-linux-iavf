@@ -121,14 +121,13 @@ struct i40e_q_vector {
 	struct i40evf_adapter *adapter;
 	struct i40e_vsi *vsi;
 	struct napi_struct napi;
-	unsigned long reg_idx;
 	struct i40e_ring_container rx;
 	struct i40e_ring_container tx;
 	u32 ring_mask;
+	u8 itr_countdown;	/* when 0 should adjust adaptive ITR */
 	u8 num_ringpairs;	/* total number of ring pairs in vector */
-#define ITR_COUNTDOWN_START 100
-	u8 itr_countdown;	/* when 0 or 1 update ITR */
-	int v_idx;	/* vector index in list */
+	u16 v_idx;		/* index in the vsi->q_vector array. */
+	u16 reg_idx;		/* register index of the interrupt */
 	char name[IFNAMSIZ + 15];
 	bool arm_wb_state;
 #ifdef HAVE_IRQ_AFFINITY_NOTIFY
@@ -295,19 +294,19 @@ struct i40evf_adapter {
 	enum virtchnl_link_speed link_speed;
 	enum virtchnl_ops current_op;
 #define CLIENT_ALLOWED(_a) ((_a)->vf_res ? \
-			    (_a)->vf_res->vf_offload_flags & \
+			    (_a)->vf_res->vf_cap_flags & \
 				VIRTCHNL_VF_OFFLOAD_IWARP : \
 			    0)
 #define CLIENT_ENABLED(_a) ((_a)->cinst != NULL)
 /* RSS by the PF should be preferred over RSS via other methods. */
-#define RSS_PF(_a) ((_a)->vf_res->vf_offload_flags & \
+#define RSS_PF(_a) ((_a)->vf_res->vf_cap_flags & \
 		    VIRTCHNL_VF_OFFLOAD_RSS_PF)
-#define RSS_AQ(_a) ((_a)->vf_res->vf_offload_flags & \
+#define RSS_AQ(_a) ((_a)->vf_res->vf_cap_flags & \
 		    VIRTCHNL_VF_OFFLOAD_RSS_AQ)
-#define RSS_REG(_a) (!((_a)->vf_res->vf_offload_flags & \
+#define RSS_REG(_a) (!((_a)->vf_res->vf_cap_flags & \
 		       (VIRTCHNL_VF_OFFLOAD_RSS_AQ | \
 			VIRTCHNL_VF_OFFLOAD_RSS_PF)))
-#define VLAN_ALLOWED(_a) ((_a)->vf_res->vf_offload_flags & \
+#define VLAN_ALLOWED(_a) ((_a)->vf_res->vf_cap_flags & \
 			  VIRTCHNL_VF_OFFLOAD_VLAN)
 	struct virtchnl_vf_resource *vf_res; /* incl. all VSIs */
 	struct virtchnl_vsi_resource *vsi_res; /* our LAN VSI */

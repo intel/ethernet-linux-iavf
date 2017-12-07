@@ -47,8 +47,8 @@ static const char i40evf_driver_string[] =
 #define DRV_VF_VERSION_DESC ""
 
 #define DRV_VERSION_MAJOR 3
-#define DRV_VERSION_MINOR 2
-#define DRV_VERSION_BUILD 5
+#define DRV_VERSION_MINOR 4
+#define DRV_VERSION_BUILD 2
 #define DRV_VERSION __stringify(DRV_VERSION_MAJOR) "." \
 	     __stringify(DRV_VERSION_MINOR) "." \
 	     __stringify(DRV_VERSION_BUILD) \
@@ -254,11 +254,12 @@ i40evf_map_vector_to_rxq(struct i40evf_adapter *adapter, int v_idx, int r_idx)
 	rx_ring->vsi = &adapter->vsi;
 	q_vector->rx.ring = rx_ring;
 	q_vector->rx.count++;
-	q_vector->rx.latency_range = I40E_LOW_LATENCY;
-	q_vector->rx.itr = ITR_TO_REG(rx_ring->rx_itr_setting);
+	q_vector->rx.next_update = jiffies + 1;
+	q_vector->rx.target_itr = ITR_TO_REG(rx_ring->itr_setting);
 	q_vector->ring_mask |= BIT(r_idx);
-	q_vector->itr_countdown = ITR_COUNTDOWN_START;
-	wr32(hw, I40E_VFINT_ITRN1(I40E_RX_ITR, v_idx - 1), q_vector->rx.itr);
+	wr32(hw, I40E_VFINT_ITRN1(I40E_RX_ITR, q_vector->reg_idx),
+	     q_vector->rx.current_itr);
+	q_vector->rx.current_itr = q_vector->rx.target_itr;
 }
 
 /**
@@ -279,11 +280,12 @@ i40evf_map_vector_to_txq(struct i40evf_adapter *adapter, int v_idx, int t_idx)
 	tx_ring->vsi = &adapter->vsi;
 	q_vector->tx.ring = tx_ring;
 	q_vector->tx.count++;
-	q_vector->tx.latency_range = I40E_LOW_LATENCY;
-	q_vector->tx.itr = ITR_TO_REG(tx_ring->tx_itr_setting);
-	q_vector->itr_countdown = ITR_COUNTDOWN_START;
+	q_vector->tx.next_update = jiffies + 1;
+	q_vector->tx.target_itr = ITR_TO_REG(tx_ring->itr_setting);
 	q_vector->num_ringpairs++;
-	wr32(hw, I40E_VFINT_ITRN1(I40E_TX_ITR, v_idx - 1), q_vector->tx.itr);
+	wr32(hw, I40E_VFINT_ITRN1(I40E_TX_ITR, q_vector->reg_idx),
+	     q_vector->tx.target_itr);
+	q_vector->tx.current_itr = q_vector->tx.target_itr;
 }
 
 /**
@@ -1133,7 +1135,7 @@ static int i40evf_alloc_queues(struct i40evf_adapter *adapter)
 		tx_ring->netdev = adapter->netdev;
 		tx_ring->dev = pci_dev_to_dev(adapter->pdev);
 		tx_ring->count = adapter->tx_desc_count;
-		tx_ring->tx_itr_setting = I40E_ITR_TX_DEF;
+		tx_ring->itr_setting = I40E_ITR_TX_DEF;
 
 		if (adapter->flags & I40EVF_FLAG_WB_ON_ITR_CAPABLE)
 			tx_ring->flags |= I40E_TXR_FLAGS_WB_ON_ITR;
@@ -1143,7 +1145,7 @@ static int i40evf_alloc_queues(struct i40evf_adapter *adapter)
 		rx_ring->netdev = adapter->netdev;
 		rx_ring->dev = pci_dev_to_dev(adapter->pdev);
 		rx_ring->count = adapter->rx_desc_count;
-		rx_ring->rx_itr_setting = I40E_ITR_RX_DEF;
+		rx_ring->itr_setting = I40E_ITR_RX_DEF;
 	}
 
 	adapter->num_active_queues = num_active_queues;
@@ -1226,6 +1228,7 @@ static int i40evf_alloc_q_vectors(struct i40evf_adapter *adapter)
 		q_vector->adapter = adapter;
 		q_vector->vsi = &adapter->vsi;
 		q_vector->v_idx = q_idx;
+		q_vector->reg_idx = q_idx;
 #ifdef HAVE_IRQ_AFFINITY_NOTIFY
 		cpumask_copy(&q_vector->affinity_mask, cpu_possible_mask);
 #endif
@@ -1436,7 +1439,7 @@ static int i40evf_init_rss(struct i40evf_adapter *adapter)
 
 	if (!RSS_PF(adapter)) {
 		/* Enable PCTYPES for RSS, TCP/UDP with IPv4/IPv6 */
-		if (adapter->vf_res->vf_offload_flags &
+		if (adapter->vf_res->vf_cap_flags &
 		    VIRTCHNL_VF_OFFLOAD_RSS_PCTYPE_V2)
 			adapter->hena = I40E_DEFAULT_RSS_HENA_EXPANDED;
 		else
@@ -2479,7 +2482,7 @@ static netdev_features_t i40evf_fix_features(struct net_device *netdev,
 {
 	struct i40evf_adapter *adapter = netdev_priv(netdev);
 
-	if (!(adapter->vf_res->vf_offload_flags & VIRTCHNL_VF_OFFLOAD_VLAN))
+	if (!(adapter->vf_res->vf_cap_flags & VIRTCHNL_VF_OFFLOAD_VLAN))
 #ifdef NETIF_F_HW_VLAN_CTAG_RX
 		features &= ~(NETIF_F_HW_VLAN_CTAG_TX |
 			      NETIF_F_HW_VLAN_CTAG_RX |
@@ -2615,7 +2618,7 @@ int i40evf_process_config(struct i40evf_adapter *adapter)
 	/* advertise to stack only if offloads for encapsulated packets is
 	 * supported
 	 */
-	if (vfres->vf_offload_flags & VIRTCHNL_VF_OFFLOAD_ENCAP) {
+	if (vfres->vf_cap_flags & VIRTCHNL_VF_OFFLOAD_ENCAP) {
 #ifdef HAVE_ENCAP_TSO_OFFLOAD
 		hw_enc_features |= NETIF_F_GSO_UDP_TUNNEL	|
 #ifdef HAVE_GRE_ENCAP_OFFLOAD
@@ -2641,7 +2644,7 @@ int i40evf_process_config(struct i40evf_adapter *adapter)
 #endif /* NETIF_F_GRE_ENCAP_OFFLOAD */
 				   0;
 
-		if (!(vfres->vf_offload_flags &
+		if (!(vfres->vf_cap_flags &
 		      VIRTCHNL_VF_OFFLOAD_ENCAP_CSUM))
 #ifndef NETIF_F_GSO_PARTIAL
 			hw_enc_features ^= NETIF_F_GSO_UDP_TUNNEL_CSUM;
@@ -2672,7 +2675,7 @@ int i40evf_process_config(struct i40evf_adapter *adapter)
 	hw_features = hw_enc_features;
 
 	/* Enable VLAN features if supported */
-	if (vfres->vf_offload_flags & VIRTCHNL_VF_OFFLOAD_VLAN)
+	if (vfres->vf_cap_flags & VIRTCHNL_VF_OFFLOAD_VLAN)
 #ifdef NETIF_F_HW_VLAN_CTAG_RX
 		hw_features |= (NETIF_F_HW_VLAN_CTAG_TX |
 				NETIF_F_HW_VLAN_CTAG_RX);
@@ -2692,7 +2695,7 @@ int i40evf_process_config(struct i40evf_adapter *adapter)
 
 	netdev->features |= hw_features;
 
-	if (vfres->vf_offload_flags & VIRTCHNL_VF_OFFLOAD_VLAN)
+	if (vfres->vf_cap_flags & VIRTCHNL_VF_OFFLOAD_VLAN)
 #ifdef NETIF_F_HW_VLAN_CTAG_RX
 		netdev->features |= NETIF_F_HW_VLAN_CTAG_FILTER;
 #else
@@ -2706,7 +2709,7 @@ int i40evf_process_config(struct i40evf_adapter *adapter)
 	adapter->vsi.work_limit = I40E_DEFAULT_IRQ_WORK;
 	vsi->netdev = adapter->netdev;
 	vsi->qs_handle = adapter->vsi_res->qset_handle;
-	if (vfres->vf_offload_flags & VIRTCHNL_VF_OFFLOAD_RSS_PF) {
+	if (vfres->vf_cap_flags & VIRTCHNL_VF_OFFLOAD_RSS_PF) {
 		adapter->rss_key_size = vfres->rss_key_size;
 		adapter->rss_lut_size = vfres->rss_lut_size;
 	} else {
@@ -2883,7 +2886,7 @@ static void i40evf_init_task(struct work_struct *work)
 	if (err)
 		goto err_sw_init;
 	i40evf_map_rings_to_vectors(adapter);
-	if (adapter->vf_res->vf_offload_flags &
+	if (adapter->vf_res->vf_cap_flags &
 	    VIRTCHNL_VF_OFFLOAD_WB_ON_ITR)
 		adapter->flags |= I40EVF_FLAG_WB_ON_ITR_CAPABLE;
 
@@ -3205,6 +3208,7 @@ static void i40evf_remove(struct pci_dev *pdev)
 {
 	struct net_device *netdev = pci_get_drvdata(pdev);
 	struct i40evf_adapter *adapter = netdev_priv(netdev);
+	struct i40evf_vlan_filter *vlf, *vlftmp;
 	struct i40evf_mac_filter *f, *ftmp;
 	struct i40e_hw *hw = &adapter->hw;
 	int err;
@@ -3270,9 +3274,11 @@ static void i40evf_remove(struct pci_dev *pdev)
 		list_del(&f->list);
 		kfree(f);
 	}
-	list_for_each_entry_safe(f, ftmp, &adapter->vlan_filter_list, list) {
-		list_del(&f->list);
-		kfree(f);
+
+	list_for_each_entry_safe(vlf, vlftmp, &adapter->vlan_filter_list,
+				 list) {
+		list_del(&vlf->list);
+		kfree(vlf);
 	}
 
 	spin_unlock_bh(&adapter->mac_vlan_list_lock);
