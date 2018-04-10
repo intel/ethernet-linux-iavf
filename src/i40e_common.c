@@ -1201,7 +1201,7 @@ i40e_status i40e_vf_reset(struct i40e_hw *hw)
 /**
  * i40e_aq_set_arp_proxy_config
  * @hw: pointer to the HW structure
- * @proxy_config - pointer to proxy config command table struct
+ * @proxy_config: pointer to proxy config command table struct
  * @cmd_details: pointer to command details
  *
  * Set ARP offload parameters from pre-populated
@@ -1438,6 +1438,7 @@ i40e_status_code i40e_aq_write_ddp(struct i40e_hw *hw, void *buff,
  * @hw: pointer to the hw struct
  * @buff: command buffer (size in bytes = buff_size)
  * @buff_size: buffer size in bytes
+ * @flags: AdminQ command flags
  * @cmd_details: pointer to command details structure or NULL
  **/
 enum

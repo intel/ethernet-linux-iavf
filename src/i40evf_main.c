@@ -47,8 +47,8 @@ static const char i40evf_driver_string[] =
 #define DRV_VF_VERSION_DESC ""
 
 #define DRV_VERSION_MAJOR 3
-#define DRV_VERSION_MINOR 4
-#define DRV_VERSION_BUILD 2
+#define DRV_VERSION_MINOR 5
+#define DRV_VERSION_BUILD 6
 #define DRV_VERSION __stringify(DRV_VERSION_MAJOR) "." \
 	     __stringify(DRV_VERSION_MINOR) "." \
 	     __stringify(DRV_VERSION_BUILD) \
@@ -352,6 +352,7 @@ static void i40evf_irq_affinity_release(struct kref *ref) {}
 /**
  * i40evf_request_traffic_irqs - Initialize MSI-X interrupts
  * @adapter: board private structure
+ * @basename: device basename
  *
  * Allocates MSI-X vectors for tx and rx handling, and requests
  * interrupts from the kernel.
@@ -571,10 +572,11 @@ static void i40evf_configure_rx(struct i40evf_adapter *adapter)
 /**
  * i40evf_vlan_rx_register - Register for RX vlan filtering, enable VLAN
  * tag stripping
- * @adapter: board private structure
+ * @netdev: netdevice structure
+ * @grp: vlan group data
  **/
 static void i40evf_vlan_rx_register(struct net_device *netdev,
-				     struct vlan_group *grp)
+				    struct vlan_group *grp)
 {
 	struct i40evf_adapter *adapter = netdev_priv(netdev);
 
@@ -660,6 +662,7 @@ static void i40evf_del_vlan(struct i40evf_adapter *adapter, u16 vlan)
 /**
  * i40evf_vlan_rx_add_vid - Add a VLAN filter to a device
  * @netdev: network device struct
+ * @proto: unused protocol data
  * @vid: VLAN tag
  **/
 #ifdef HAVE_INT_NDO_VLAN_RX_ADD_VID
@@ -691,6 +694,7 @@ static void i40evf_vlan_rx_add_vid(struct net_device *netdev, u16 vid)
 /**
  * i40evf_vlan_rx_kill_vid - Remove a VLAN filter from a device
  * @netdev: network device struct
+ * @proto: unused protocol data
  * @vid: VLAN tag
  **/
 #ifdef HAVE_INT_NDO_VLAN_RX_ADD_VID
@@ -729,7 +733,7 @@ static void i40evf_vlan_rx_kill_vid(struct net_device *netdev, u16 vid)
  **/
 static struct
 i40evf_mac_filter *i40evf_find_filter(struct i40evf_adapter *adapter,
-				      u8 *macaddr)
+				      const u8 *macaddr)
 {
 	struct i40evf_mac_filter *f;
 
@@ -752,20 +756,18 @@ i40evf_mac_filter *i40evf_find_filter(struct i40evf_adapter *adapter,
  **/
 static struct
 i40evf_mac_filter *i40evf_add_filter(struct i40evf_adapter *adapter,
-				     u8 *macaddr)
+				     const u8 *macaddr)
 {
 	struct i40evf_mac_filter *f;
 
 	if (!macaddr)
 		return NULL;
 
-	spin_lock_bh(&adapter->mac_vlan_list_lock);
-
 	f = i40evf_find_filter(adapter, macaddr);
 	if (!f) {
 		f = kzalloc(sizeof(*f), GFP_ATOMIC);
 		if (!f)
-			goto clearout;
+			return f;
 
 		ether_addr_copy(f->macaddr, macaddr);
 
@@ -776,8 +778,6 @@ i40evf_mac_filter *i40evf_add_filter(struct i40evf_adapter *adapter,
 		f->remove = false;
 	}
 
-clearout:
-	spin_unlock_bh(&adapter->mac_vlan_list_lock);
 	return f;
 }
 
@@ -812,9 +812,10 @@ static int i40evf_set_mac(struct net_device *netdev, void *p)
 		adapter->aq_required |= I40EVF_FLAG_AQ_DEL_MAC_FILTER;
 	}
 
+	f = i40evf_add_filter(adapter, addr->sa_data);
+
 	spin_unlock_bh(&adapter->mac_vlan_list_lock);
 
-	f = i40evf_add_filter(adapter, addr->sa_data);
 	if (f) {
 		ether_addr_copy(hw->mac.addr, addr->sa_data);
 		ether_addr_copy(netdev->dev_addr, adapter->hw.mac.addr);
@@ -824,63 +825,67 @@ static int i40evf_set_mac(struct net_device *netdev, void *p)
 }
 
 /**
+ * i40evf_addr_sync - Callback for dev_(mc|uc)_sync to add address
+ * @netdev: the netdevice
+ * @addr: address to add
+ *
+ * Called by __dev_(mc|uc)_sync when an address needs to be added. We call
+ * __dev_(uc|mc)_sync from .set_rx_mode and guarantee to hold the hash lock.
+ */
+static int i40evf_addr_sync(struct net_device *netdev, const u8 *addr)
+{
+	struct i40evf_adapter *adapter = netdev_priv(netdev);
+
+	if (i40evf_add_filter(adapter, addr))
+		return 0;
+	else
+		return -ENOMEM;
+}
+
+/**
+ * i40evf_addr_unsync - Callback for dev_(mc|uc)_sync to remove address
+ * @netdev: the netdevice
+ * @addr: address to add
+ *
+ * Called by __dev_(mc|uc)_sync when an address needs to be removed. We call
+ * __dev_(uc|mc)_sync from .set_rx_mode and guarantee to hold the hash lock.
+ */
+static int i40evf_addr_unsync(struct net_device *netdev, const u8 *addr)
+{
+	struct i40evf_adapter *adapter = netdev_priv(netdev);
+	struct i40evf_mac_filter *f;
+
+	/* Under some circumstances, we might receive a request to delete
+	 * our own device address from our uc list. Because we store the
+	 * device address in the VSI's MAC/VLAN filter list, we need to ignore
+	 * such requests and not delete our device address from this list.
+	 */
+	if (ether_addr_equal(addr, netdev->dev_addr))
+		return 0;
+
+	f = i40evf_find_filter(adapter, addr);
+	if (f) {
+		f->remove = true;
+		adapter->aq_required |= I40EVF_FLAG_AQ_DEL_MAC_FILTER;
+	}
+
+	return 0;
+}
+
+/**
  * i40evf_set_rx_mode - NDO callback to set the netdev filters
  * @netdev: network interface device structure
  **/
 static void i40evf_set_rx_mode(struct net_device *netdev)
 {
 	struct i40evf_adapter *adapter = netdev_priv(netdev);
-	struct i40evf_mac_filter *f, *ftmp;
-	struct netdev_hw_addr *uca;
-#ifdef NETDEV_HW_ADDR_T_MULTICAST
-	struct netdev_hw_addr *mca;
-#else
-	struct dev_mc_list *mca;
-#endif /* NETDEV_HW_ADDR_T_MULTICAST */
-	struct netdev_hw_addr *ha;
-
-	/* add addr if not already in the filter list */
-	netdev_for_each_uc_addr(uca, netdev) {
-		i40evf_add_filter(adapter, uca->addr);
-	}
-	netdev_for_each_mc_addr(mca, netdev) {
-#ifdef NETDEV_HW_ADDR_T_MULTICAST
-		i40evf_add_filter(adapter, mca->addr);
-#else
-		i40evf_add_filter(adapter, mca->da_addr);
-#endif /* NETDEV_HW_ADDR_T_MULTICAST */
-	}
 
 	spin_lock_bh(&adapter->mac_vlan_list_lock);
 
-	list_for_each_entry_safe(f, ftmp, &adapter->mac_filter_list, list) {
+	__dev_uc_sync(netdev, i40evf_addr_sync, i40evf_addr_unsync);
+	__dev_mc_sync(netdev, i40evf_addr_sync, i40evf_addr_unsync);
 
-		netdev_for_each_mc_addr(mca, netdev)
-#ifdef NETDEV_HW_ADDR_T_MULTICAST
-			if (ether_addr_equal(mca->addr, f->macaddr))
-#else
-			if (ether_addr_equal(mca->da_addr, f->macaddr))
-#endif
-				goto bottom_of_search_loop;
-
-		netdev_for_each_uc_addr(uca, netdev)
-			if (ether_addr_equal(uca->addr, f->macaddr))
-				goto bottom_of_search_loop;
-
-		for_each_dev_addr(netdev, ha)
-			if (ether_addr_equal(ha->addr, f->macaddr))
-				goto bottom_of_search_loop;
-
-		if (ether_addr_equal(f->macaddr, adapter->hw.mac.addr))
-			goto bottom_of_search_loop;
-
-		/* f->macaddr wasn't found in uc, mc, or ha list so delete it */
-		f->remove = true;
-		adapter->aq_required |= I40EVF_FLAG_AQ_DEL_MAC_FILTER;
-
-bottom_of_search_loop:
-		continue;
-	}
+	spin_unlock_bh(&adapter->mac_vlan_list_lock);
 
 	if (netdev->flags & IFF_PROMISC &&
 	    !(adapter->flags & I40EVF_FLAG_PROMISC_ON))
@@ -895,8 +900,6 @@ bottom_of_search_loop:
 	else if (!(netdev->flags & IFF_ALLMULTI) &&
 		 adapter->flags & I40EVF_FLAG_ALLMULTI_ON)
 		adapter->aq_required |= I40EVF_FLAG_AQ_RELEASE_ALLMULTI;
-
-	spin_unlock_bh(&adapter->mac_vlan_list_lock);
 }
 
 /**
@@ -989,6 +992,7 @@ static void i40evf_up_complete(struct i40evf_adapter *adapter)
 void i40evf_down(struct i40evf_adapter *adapter)
 {
 	struct net_device *netdev = adapter->netdev;
+	struct i40evf_vlan_filter *vlf;
 	struct i40evf_mac_filter *f;
 
 	if (adapter->state <= __I40EVF_DOWN_PENDING)
@@ -1002,12 +1006,17 @@ void i40evf_down(struct i40evf_adapter *adapter)
 
 	spin_lock_bh(&adapter->mac_vlan_list_lock);
 
+	/* clear the sync flag on all filters */
+	__dev_uc_unsync(adapter->netdev, NULL);
+	__dev_mc_unsync(adapter->netdev, NULL);
+
 	/* remove all MAC filters */
 	list_for_each_entry(f, &adapter->mac_filter_list, list) {
 		f->remove = true;
 	}
+
 	/* remove all VLAN filters */
-	list_for_each_entry(f, &adapter->vlan_filter_list, list) {
+	list_for_each_entry(vlf, &adapter->vlan_filter_list, list) {
 		f->remove = true;
 	}
 
@@ -1512,11 +1521,12 @@ err:
 
 /**
  * i40evf_watchdog_timer - Periodic call-back timer
- * @data: pointer to adapter disguised as unsigned long
+ * @t: pointer to timer_list structure
  **/
-static void i40evf_watchdog_timer(unsigned long data)
+static void i40evf_watchdog_timer(struct timer_list *t)
 {
-	struct i40evf_adapter *adapter = (struct i40evf_adapter *)data;
+	struct i40evf_adapter *adapter = from_timer(adapter, t,
+						    watchdog_timer);
 
 	schedule_work(&adapter->watchdog_task);
 	/* timer will be rescheduled in watchdog task */
@@ -2223,7 +2233,12 @@ static int i40evf_open(struct net_device *netdev)
 	if (err)
 		goto err_req_irq;
 
+	spin_lock_bh(&adapter->mac_vlan_list_lock);
+
 	i40evf_add_filter(adapter, adapter->hw.mac.addr);
+
+	spin_unlock_bh(&adapter->mac_vlan_list_lock);
+
 	i40evf_configure(adapter);
 
 	i40evf_up_complete(adapter);
@@ -2409,7 +2424,7 @@ static int i40evf_set_features(struct net_device *netdev,
 /**
  * i40evf_features_check - Validate encapsulated packet conforms to limits
  * @skb: skb buff
- * @netdev: This physical port's netdev
+ * @dev: This physical port's netdev
  * @features: Offload features that the stack believes apply
  **/
 static netdev_features_t i40evf_features_check(struct sk_buff *skb,
@@ -2875,9 +2890,7 @@ static void i40evf_init_task(struct work_struct *work)
 		ether_addr_copy(netdev->perm_addr, adapter->hw.mac.addr);
 	}
 
-	init_timer(&adapter->watchdog_timer);
-	adapter->watchdog_timer.function = &i40evf_watchdog_timer;
-	adapter->watchdog_timer.data = (unsigned long)adapter;
+	timer_setup(&adapter->watchdog_timer, i40evf_watchdog_timer, 0);
 	mod_timer(&adapter->watchdog_timer, jiffies + 1);
 
 	adapter->tx_desc_count = I40EVF_DEFAULT_TXD;
@@ -3274,7 +3287,6 @@ static void i40evf_remove(struct pci_dev *pdev)
 		list_del(&f->list);
 		kfree(f);
 	}
-
 	list_for_each_entry_safe(vlf, vlftmp, &adapter->vlan_filter_list,
 				 list) {
 		list_del(&vlf->list);

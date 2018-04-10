@@ -168,8 +168,7 @@ int i40evf_send_vf_config_msg(struct i40evf_adapter *adapter)
 
 /**
  * i40evf_get_vf_config
- * @hw: pointer to the hardware structure
- * @len: length of buffer
+ * @adapter: private adapter structure
  *
  * Get VF configuration from PF and populate hw structure. Must be called after
  * admin queue is initialized. Busy waits until response is received from PF,
@@ -408,8 +407,6 @@ int i40evf_request_queues(struct i40evf_adapter *adapter, int num)
 /**
  * i40evf_add_ether_addrs
  * @adapter: adapter structure
- * @addrs: the MAC address filters to add (contiguous)
- * @count: number of filters
  *
  * Request that the PF add one or more addresses to our filters.
  **/
@@ -452,7 +449,7 @@ void i40evf_add_ether_addrs(struct i40evf_adapter *adapter)
 		more = true;
 	}
 
-	veal = kzalloc(len, GFP_KERNEL);
+	veal = kzalloc(len, GFP_ATOMIC);
 	if (!veal) {
 		spin_unlock_bh(&adapter->mac_vlan_list_lock);
 		return;
@@ -482,8 +479,6 @@ void i40evf_add_ether_addrs(struct i40evf_adapter *adapter)
 /**
  * i40evf_del_ether_addrs
  * @adapter: adapter structure
- * @addrs: the MAC address filters to remove (contiguous)
- * @count: number of filtes
  *
  * Request that the PF remove one or more addresses from our filters.
  **/
@@ -525,7 +520,7 @@ void i40evf_del_ether_addrs(struct i40evf_adapter *adapter)
 		      (count * sizeof(struct virtchnl_ether_addr));
 		more = true;
 	}
-	veal = kzalloc(len, GFP_KERNEL);
+	veal = kzalloc(len, GFP_ATOMIC);
 	if (!veal) {
 		spin_unlock_bh(&adapter->mac_vlan_list_lock);
 		return;
@@ -556,8 +551,6 @@ void i40evf_del_ether_addrs(struct i40evf_adapter *adapter)
 /**
  * i40evf_add_vlans
  * @adapter: adapter structure
- * @vlans: the VLANs to add
- * @count: number of VLANs
  *
  * Request that the PF add one or more VLAN filters to our VSI.
  **/
@@ -599,7 +592,7 @@ void i40evf_add_vlans(struct i40evf_adapter *adapter)
 		      (count * sizeof(u16));
 		more = true;
 	}
-	vvfl = kzalloc(len, GFP_KERNEL);
+	vvfl = kzalloc(len, GFP_ATOMIC);
 	if (!vvfl) {
 		spin_unlock_bh(&adapter->mac_vlan_list_lock);
 		return;
@@ -628,8 +621,6 @@ void i40evf_add_vlans(struct i40evf_adapter *adapter)
 /**
  * i40evf_del_vlans
  * @adapter: adapter structure
- * @vlans: the VLANs to remove
- * @count: number of VLANs
  *
  * Request that the PF remove one or more VLAN filters from our VSI.
  **/
@@ -671,7 +662,7 @@ void i40evf_del_vlans(struct i40evf_adapter *adapter)
 		      (count * sizeof(u16));
 		more = true;
 	}
-	vvfl = kzalloc(len, GFP_KERNEL);
+	vvfl = kzalloc(len, GFP_ATOMIC);
 	if (!vvfl) {
 		spin_unlock_bh(&adapter->mac_vlan_list_lock);
 		return;
@@ -994,13 +985,12 @@ void i40evf_virtchnl_completion(struct i40evf_adapter *adapter,
 	if (v_opcode == VIRTCHNL_OP_EVENT) {
 		struct virtchnl_pf_event *vpe =
 			(struct virtchnl_pf_event *)msg;
-		enum virtchnl_link_speed link_speed;
 		bool link_up = vpe->event_data.link_event.link_status;
 
 		switch (vpe->event) {
 		case VIRTCHNL_EVENT_LINK_CHANGE:
-			link_speed = vpe->event_data.link_event.link_speed;
-			adapter->link_speed = link_speed;
+			adapter->link_speed =
+				vpe->event_data.link_event.link_speed;
 
 			/* we've already got the right link status, bail */
 			if (adapter->link_up == link_up)
@@ -1027,7 +1017,7 @@ void i40evf_virtchnl_completion(struct i40evf_adapter *adapter,
 			adapter->flags |= I40EVF_FLAG_CLIENT_NEEDS_L2_PARAMS;
 			break;
 		case VIRTCHNL_EVENT_RESET_IMPENDING:
-			dev_info(&adapter->pdev->dev, "PF reset warning received\n");
+			dev_info(&adapter->pdev->dev, "Reset warning received from the PF\n");
 			if (!(adapter->flags & I40EVF_FLAG_RESET_PENDING)) {
 				adapter->flags |= I40EVF_FLAG_RESET_PENDING;
 				dev_info(&adapter->pdev->dev, "Scheduling reset task\n");
