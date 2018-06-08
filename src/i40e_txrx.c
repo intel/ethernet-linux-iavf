@@ -1,7 +1,7 @@
 /*******************************************************************************
  *
  * Intel(R) 40-10 Gigabit Ethernet Virtual Function Driver
- * Copyright(c) 2013 - 2017 Intel Corporation.
+ * Copyright(c) 2013 - 2018 Intel Corporation.
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms and conditions of the GNU General Public License,
@@ -123,7 +123,7 @@ void i40e_free_tx_resources(struct i40e_ring *tx_ring)
 
 /**
  * i40e_get_tx_pending - how many tx descriptors not processed
- * @ring: the ring of descriptors
+ * @tx_ring: the ring of descriptors
  * @in_sw: use SW variables
  *
  * Since there is no access to the ring head register
@@ -1096,7 +1096,7 @@ static void i40e_rx_extra_counters(struct i40e_vsi *vsi, u32 rx_error,
 }
 
 #endif /* I40E_ADD_PROBES */
-#if defined(HAVE_VXLAN_RX_OFFLOAD) || defined(HAVE_GENEVE_RX_OFFLOAD) || defined(HAVE_UDP_ENC_RX_OFFLOAD)
+#if defined(HAVE_VXLAN_RX_OFFLOAD) || defined(HAVE_GENEVE_RX_OFFLOAD) || defined(HAVE_UDP_ENC_RX_OFFLOAD) || defined(ESX55)
 #define I40E_TUNNEL_SUPPORT
 #endif
 /**
@@ -1221,8 +1221,6 @@ static inline enum pkt_hash_types i40e_ptype_to_htype(u8 ptype)
  * i40e_rx_hash - set the hash value in the skb
  * @ring: descriptor ring
  * @rx_desc: specific descriptor
- * @skb: skb currently being received and modified
- * @rx_ptype: Rx packet type
  **/
 static inline void i40e_rx_hash(struct i40e_ring *ring,
 				union i40e_rx_desc *rx_desc,

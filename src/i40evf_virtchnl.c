@@ -1,7 +1,7 @@
 /*******************************************************************************
  *
  * Intel(R) 40-10 Gigabit Ethernet Virtual Function Driver
- * Copyright(c) 2013 - 2017 Intel Corporation.
+ * Copyright(c) 2013 - 2018 Intel Corporation.
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms and conditions of the GNU General Public License,
@@ -168,7 +168,8 @@ int i40evf_send_vf_config_msg(struct i40evf_adapter *adapter)
 
 /**
  * i40evf_get_vf_config
- * @adapter: private adapter structure
+ * @hw: pointer to the hardware structure
+ * @len: length of buffer
  *
  * Get VF configuration from PF and populate hw structure. Must be called after
  * admin queue is initialized. Busy waits until response is received from PF,
@@ -407,6 +408,8 @@ int i40evf_request_queues(struct i40evf_adapter *adapter, int num)
 /**
  * i40evf_add_ether_addrs
  * @adapter: adapter structure
+ * @addrs: the MAC address filters to add (contiguous)
+ * @count: number of filters
  *
  * Request that the PF add one or more addresses to our filters.
  **/
@@ -479,6 +482,8 @@ void i40evf_add_ether_addrs(struct i40evf_adapter *adapter)
 /**
  * i40evf_del_ether_addrs
  * @adapter: adapter structure
+ * @addrs: the MAC address filters to remove (contiguous)
+ * @count: number of filtes
  *
  * Request that the PF remove one or more addresses from our filters.
  **/
@@ -551,6 +556,8 @@ void i40evf_del_ether_addrs(struct i40evf_adapter *adapter)
 /**
  * i40evf_add_vlans
  * @adapter: adapter structure
+ * @vlans: the VLANs to add
+ * @count: number of VLANs
  *
  * Request that the PF add one or more VLAN filters to our VSI.
  **/
@@ -621,6 +628,8 @@ void i40evf_add_vlans(struct i40evf_adapter *adapter)
 /**
  * i40evf_del_vlans
  * @adapter: adapter structure
+ * @vlans: the VLANs to remove
+ * @count: number of VLANs
  *
  * Request that the PF remove one or more VLAN filters from our VSI.
  **/

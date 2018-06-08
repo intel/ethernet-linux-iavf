@@ -1,7 +1,7 @@
 /*******************************************************************************
  *
  * Intel(R) 40-10 Gigabit Ethernet Virtual Function Driver
- * Copyright(c) 2013 - 2017 Intel Corporation.
+ * Copyright(c) 2013 - 2018 Intel Corporation.
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms and conditions of the GNU General Public License,
@@ -48,14 +48,14 @@ static const char i40evf_driver_string[] =
 
 #define DRV_VERSION_MAJOR 3
 #define DRV_VERSION_MINOR 5
-#define DRV_VERSION_BUILD 6
+#define DRV_VERSION_BUILD 13
 #define DRV_VERSION __stringify(DRV_VERSION_MAJOR) "." \
 	     __stringify(DRV_VERSION_MINOR) "." \
 	     __stringify(DRV_VERSION_BUILD) \
 	     DRV_VF_VERSION_DESC __stringify(DRV_VERSION_LOCAL)
 const char i40evf_driver_version[] = DRV_VERSION;
 static const char i40evf_copyright[] =
-	"Copyright(c) 2013 - 2017 Intel Corporation.";
+	"Copyright(c) 2013 - 2018 Intel Corporation.";
 
 /* i40evf_pci_tbl - PCI Device ID Table
  *
@@ -352,7 +352,6 @@ static void i40evf_irq_affinity_release(struct kref *ref) {}
 /**
  * i40evf_request_traffic_irqs - Initialize MSI-X interrupts
  * @adapter: board private structure
- * @basename: device basename
  *
  * Allocates MSI-X vectors for tx and rx handling, and requests
  * interrupts from the kernel.
@@ -572,11 +571,10 @@ static void i40evf_configure_rx(struct i40evf_adapter *adapter)
 /**
  * i40evf_vlan_rx_register - Register for RX vlan filtering, enable VLAN
  * tag stripping
- * @netdev: netdevice structure
- * @grp: vlan group data
+ * @adapter: board private structure
  **/
 static void i40evf_vlan_rx_register(struct net_device *netdev,
-				    struct vlan_group *grp)
+				     struct vlan_group *grp)
 {
 	struct i40evf_adapter *adapter = netdev_priv(netdev);
 
@@ -662,7 +660,6 @@ static void i40evf_del_vlan(struct i40evf_adapter *adapter, u16 vlan)
 /**
  * i40evf_vlan_rx_add_vid - Add a VLAN filter to a device
  * @netdev: network device struct
- * @proto: unused protocol data
  * @vid: VLAN tag
  **/
 #ifdef HAVE_INT_NDO_VLAN_RX_ADD_VID
@@ -694,7 +691,6 @@ static void i40evf_vlan_rx_add_vid(struct net_device *netdev, u16 vid)
 /**
  * i40evf_vlan_rx_kill_vid - Remove a VLAN filter from a device
  * @netdev: network device struct
- * @proto: unused protocol data
  * @vid: VLAN tag
  **/
 #ifdef HAVE_INT_NDO_VLAN_RX_ADD_VID
@@ -1017,7 +1013,7 @@ void i40evf_down(struct i40evf_adapter *adapter)
 
 	/* remove all VLAN filters */
 	list_for_each_entry(vlf, &adapter->vlan_filter_list, list) {
-		f->remove = true;
+		vlf->remove = true;
 	}
 
 	spin_unlock_bh(&adapter->mac_vlan_list_lock);
@@ -1871,7 +1867,8 @@ continue_reset:
 	 * ndo_open() returning, so we can't assume it means all our open
 	 * tasks have finished, since we're not holding the rtnl_lock here.
 	 */
-	running = (adapter->state == __I40EVF_RUNNING);
+	running = ((adapter->state == __I40EVF_RUNNING) ||
+		   (adapter->state == __I40EVF_RESETTING));
 
 	if (running) {
 		netif_carrier_off(netdev);
@@ -2424,7 +2421,7 @@ static int i40evf_set_features(struct net_device *netdev,
 /**
  * i40evf_features_check - Validate encapsulated packet conforms to limits
  * @skb: skb buff
- * @dev: This physical port's netdev
+ * @netdev: This physical port's netdev
  * @features: Offload features that the stack believes apply
  **/
 static netdev_features_t i40evf_features_check(struct sk_buff *skb,
@@ -2520,7 +2517,11 @@ static const struct net_device_ops i40evf_netdev_ops = {
 	.ndo_set_rx_mode	= i40evf_set_rx_mode,
 	.ndo_validate_addr	= eth_validate_addr,
 	.ndo_set_mac_address	= i40evf_set_mac,
+#ifdef HAVE_RHEL7_EXTENDED_MIN_MAX_MTU
+	.extended.ndo_change_mtu = i40evf_change_mtu,
+#else
 	.ndo_change_mtu		= i40evf_change_mtu,
+#endif /* HAVE_RHEL7_EXTENDED_MIN_MAX_MTU */
 	.ndo_tx_timeout		= i40evf_tx_timeout,
 #ifdef HAVE_VLAN_RX_REGISTER
 	.ndo_vlan_rx_register	= i40evf_vlan_rx_register,
@@ -2875,9 +2876,14 @@ static void i40evf_init_task(struct work_struct *work)
 
 #ifdef HAVE_NETDEVICE_MIN_MAX_MTU
 	/* MTU range: 68 - 9710 */
+#ifdef HAVE_RHEL7_EXTENDED_MIN_MAX_MTU
+	netdev->extended->min_mtu = ETH_MIN_MTU;
+	netdev->extended->max_mtu = I40E_MAX_RXBUFFER - I40E_PACKET_HDR_PAD;
+#else
 	netdev->min_mtu = ETH_MIN_MTU;
 	netdev->max_mtu = I40E_MAX_RXBUFFER - I40E_PACKET_HDR_PAD;
-#endif
+#endif /* HAVE_RHEL7_EXTENDED_MIN_MAX_MTU */
+#endif /* HAVE_NETDEVICE_MIN_MAX_NTU */
 
 	if (!is_valid_ether_addr(adapter->hw.mac.addr)) {
 		dev_info(&pdev->dev, "Invalid MAC address %pM, using random\n",
@@ -3287,6 +3293,7 @@ static void i40evf_remove(struct pci_dev *pdev)
 		list_del(&f->list);
 		kfree(f);
 	}
+
 	list_for_each_entry_safe(vlf, vlftmp, &adapter->vlan_filter_list,
 				 list) {
 		list_del(&vlf->list);
