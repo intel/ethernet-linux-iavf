@@ -1,25 +1,5 @@
-/*******************************************************************************
- *
- * Intel(R) 40-10 Gigabit Ethernet Virtual Function Driver
- * Copyright(c) 2013 - 2018 Intel Corporation.
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms and conditions of the GNU General Public License,
- * version 2, as published by the Free Software Foundation.
- *
- * This program is distributed in the hope it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
- * more details.
- *
- * The full GNU General Public License is included in this distribution in
- * the file called "COPYING".
- *
- * Contact Information:
- * e1000-devel Mailing List <e1000-devel@lists.sourceforge.net>
- * Intel Corporation, 5200 N.E. Elam Young Parkway, Hillsboro, OR 97124-6497
- *
- ******************************************************************************/
+// SPDX-License-Identifier: GPL-2.0
+/* Copyright(c) 2013 - 2018 Intel Corporation. */
 
 #include <linux/list.h>
 #include <linux/errno.h>
@@ -193,7 +173,6 @@ void i40evf_notify_client_close(struct i40e_vsi *vsi, bool reset)
 /**
  * i40evf_client_add_instance - add a client instance to the instance list
  * @adapter: pointer to the board struct
- * @client: pointer to a client struct in the client list.
  *
  * Returns cinst ptr on success, NULL on failure
  **/
@@ -251,7 +230,6 @@ out:
 /**
  * i40evf_client_del_instance - removes a client instance from the list
  * @adapter: pointer to the board struct
- * @client: pointer to the client struct
  *
  **/
 static
@@ -466,7 +444,7 @@ static u32 i40evf_client_virtchnl_send(struct i40e_info *ldev,
  * i40evf_client_setup_qvlist - send a message to the PF to setup iwarp qv map
  * @ldev: pointer to L2 context.
  * @client: Client pointer.
- * @qv_info: queue and vector list
+ * @qvlist_info: queue and vector list
  *
  * Return 0 on success or < 0 on error
  **/

@@ -1,25 +1,5 @@
-/*******************************************************************************
- *
- * Intel(R) 40-10 Gigabit Ethernet Virtual Function Driver
- * Copyright(c) 2013 - 2018 Intel Corporation.
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms and conditions of the GNU General Public License,
- * version 2, as published by the Free Software Foundation.
- *
- * This program is distributed in the hope it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
- * more details.
- *
- * The full GNU General Public License is included in this distribution in
- * the file called "COPYING".
- *
- * Contact Information:
- * e1000-devel Mailing List <e1000-devel@lists.sourceforge.net>
- * Intel Corporation, 5200 N.E. Elam Young Parkway, Hillsboro, OR 97124-6497
- *
- ******************************************************************************/
+// SPDX-License-Identifier: GPL-2.0
+/* Copyright(c) 2013 - 2018 Intel Corporation. */
 
 #include "i40e_type.h"
 #include "i40e_adminq.h"
@@ -48,6 +28,7 @@ i40e_status i40e_set_mac_type(struct i40e_hw *hw)
 		case I40E_DEV_ID_QSFP_C:
 		case I40E_DEV_ID_10G_BASE_T:
 		case I40E_DEV_ID_10G_BASE_T4:
+		case I40E_DEV_ID_10G_BASE_T_BC:
 		case I40E_DEV_ID_20G_KR2:
 		case I40E_DEV_ID_20G_KR2_A:
 		case I40E_DEV_ID_25G_B:
@@ -1036,75 +1017,6 @@ do_retry:
 	/* if the AQ access failed, try the old-fashioned way */
 	if (status || use_register)
 		wr32(hw, reg_addr, reg_val);
-}
-
-/**
- * i40e_aq_set_phy_register
- * @hw: pointer to the hw struct
- * @phy_select: select which phy should be accessed
- * @dev_addr: PHY device address
- * @reg_addr: PHY register address
- * @reg_val: new register value
- * @cmd_details: pointer to command details structure or NULL
- *
- * Write the external PHY register.
- **/
-i40e_status i40e_aq_set_phy_register(struct i40e_hw *hw,
-				u8 phy_select, u8 dev_addr,
-				u32 reg_addr, u32 reg_val,
-				struct i40e_asq_cmd_details *cmd_details)
-{
-	struct i40e_aq_desc desc;
-	struct i40e_aqc_phy_register_access *cmd =
-		(struct i40e_aqc_phy_register_access *)&desc.params.raw;
-	i40e_status status;
-
-	i40e_fill_default_direct_cmd_desc(&desc,
-					  i40e_aqc_opc_set_phy_register);
-
-	cmd->phy_interface = phy_select;
-	cmd->dev_addres = dev_addr;
-	cmd->reg_address = CPU_TO_LE32(reg_addr);
-	cmd->reg_value = CPU_TO_LE32(reg_val);
-
-	status = i40e_asq_send_command(hw, &desc, NULL, 0, cmd_details);
-
-	return status;
-}
-
-/**
- * i40e_aq_get_phy_register
- * @hw: pointer to the hw struct
- * @phy_select: select which phy should be accessed
- * @dev_addr: PHY device address
- * @reg_addr: PHY register address
- * @reg_val: read register value
- * @cmd_details: pointer to command details structure or NULL
- *
- * Read the external PHY register.
- **/
-i40e_status i40e_aq_get_phy_register(struct i40e_hw *hw,
-				u8 phy_select, u8 dev_addr,
-				u32 reg_addr, u32 *reg_val,
-				struct i40e_asq_cmd_details *cmd_details)
-{
-	struct i40e_aq_desc desc;
-	struct i40e_aqc_phy_register_access *cmd =
-		(struct i40e_aqc_phy_register_access *)&desc.params.raw;
-	i40e_status status;
-
-	i40e_fill_default_direct_cmd_desc(&desc,
-					  i40e_aqc_opc_get_phy_register);
-
-	cmd->phy_interface = phy_select;
-	cmd->dev_addres = dev_addr;
-	cmd->reg_address = CPU_TO_LE32(reg_addr);
-
-	status = i40e_asq_send_command(hw, &desc, NULL, 0, cmd_details);
-	if (!status)
-		*reg_val = LE32_TO_CPU(cmd->reg_value);
-
-	return status;
 }
 
 /**

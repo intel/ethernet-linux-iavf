@@ -1,7 +1,7 @@
 Linux* Driver for Intel(R) Ethernet Virtual Function 700 Series
 ======================================================
 
-December 1, 2017
+August 28, 2018
 
 ======================================================
 
@@ -91,6 +91,9 @@ VERSION>/updates/drivers/net/ethernet/intel/i40evf/i40evf.ko
 
    The install location listed above is the default location. This may differ
    for various Linux distributions.
+   NOTE: To compile the driver on some kernel/arch combinations, a
+   package with the development version of libelf (e.g. libelf-dev,
+   libelf-devel, elfutilsl-libelf-devel) may need to be installed.
 
   NOTE: To gather and display additional statistics, use the
   I40E_ADD_PROBES pre-processor macro:
@@ -217,6 +220,227 @@ NOTES:
 supported for 802.1ad (QinQ) packets.
 
 
+Application Device Queues (ADq)
+-------------------------------
+
+Application Device Queues (ADq) allows you to dedicate one or more queues to a
+specific application. This can reduce latency for the specified application,
+and allow Tx traffic to be rate limited per application. Follow the steps below
+to set ADq.
+
+NOTE: Run all tc commands from the iproute2 <pathtoiproute2>/tc/ directory.
+  1. Create traffic classes (TCs). Maximum of 8 TCs can be created per
+  interface. The shaper bw_rlimit parameter is optional.
+  Example:
+  Sets up two tcs, tc0 and tc1, with 16 queues each and max tx rate set
+  to 1Gbit for tc0 and 3Gbit for tc1.
+  # tc qdisc add dev <interface> root mqprio num_tc 2 map 0 0 0 0 1 1 1 1
+  queues 16@0 16@16 hw 1 mode channel shaper bw_rlimit min_rate 1Gbit 2Gbit
+  max_rate 1Gbit 3Gbit
+
+  map: priority mapping for up to 16 priorities to tcs
+  (e.g. map 0 0 0 0 1 1 1 1 sets priorities 0-3 to use tc0 and 4-7 to
+  use tc1)
+
+  queues: for each tc, <num queues>@<offset> (e.g. queues 16@0 16@16 assigns
+  16 queues to tc0 at offset 0 and 16 queues to tc1 at offset 16. Max total
+  number of queues for all tcs is 64 or number of cores, whichever is
+  lower.)
+
+  hw 1 mode channel: ‘channel’ with ‘hw’ set to 1 is a new new hardware
+  offload mode in mqprio that makes full use of the mqprio options, the
+  TCs, the queue configurations, and the QoS parameters.
+
+  shaper bw_rlimit: for each tc, sets minimum and maximum bandwidth rates.
+  Totals must be equal or less than port speed.
+  For example: min_rate 1Gbit 3Gbit:
+  Verify bandwidth limit using network monitoring tools such as ifstat
+  or sar –n DEV [interval] [number of samples]
+
+NOTE: Setting up channels via ethtool (ethtool -L) is not supported when the
+TCs are configured using mqprio.
+
+  2. Enable HW TC offload on interface:
+  # ethtool -K <interface> hw-tc-offload on
+  3. Apply TCs to ingress (RX) flow of interface:
+  # tc qdisc add dev <interface> ingress
+NOTES:
+- You must have kernel version 4.15 or later and the sch_mqprio, act_mirred
+  and cls_flower modules loaded to set ADq
+- You must have iproute2 latest version
+- NVM version 6.01 or later is required.
+- ADq cannot be enabled when any the following features are enabled: Data
+  Center Bridging (DCB), Multiple Functions per Port (MFP), or Sideband
+  Filters.
+- If another driver (for example, DPDK) has set cloud filters, you cannot
+  enable ADq.
+- Tunnel filters are not supported in ADq. If encapsulated packets do
+  arrive in non-tunnel mode, filtering will be done on the inner headers.
+  For example, for VXLAN traffic in non-tunnel mode, PCTYPE is identified
+  as a VXLAN encapsulated packet, outer headers are ignored. Therefore,
+  inner headers are matched.
+- If a TC filter on a PF matches traffic over a VF (on the PF), that
+  traffic will be routed to the appropriate queue of the PF, and will
+  not be passed on the VF. Such traffic will end up getting dropped higher
+  up in the TCP/IP stack as it does not match PF address data.
+- If traffic matches multiple TC filters that point to different TCs,
+  that traffic will be duplicated and sent to all matching TC queues.
+  The hardware switch mirrors the packet to a VSI list when multiple
+  filters are matched.
+
+
+SR-IOV Hypervisor Management Interface
+--------------------------------------
+The sysfs file structure below supports the SR-IOV hypervisor management
+interface.
+
+/sys/class/net/<interface-name>/device/sriov (see 1 below)
++-- [VF-id, 0 .. 127] (see 2 below)
+| +-- trunk
+| +-- vlan_mirror
+| +-- engress_mirror
+| +-- ingress_mirror
+| +-- mac_anti_spoof
+| +-- vlan_anti_spoof
+| +-- loopback
+| +-- mac
+| +-- mac_list
+| +-- promisc
+| +-- vlan_strip
+| +-- stats
+| +-- link_state
+| +-- max_tx_rate
+| +-- min_tx_rate
+| +-- spoofcheck
+| +-- trust
+| +-- vlan
+*1: kobject started from “sriov” is not available from existing kernel
+sysfs, and it requires device driver to implement this interface.
+*2: assume maximum # of VF supported by a PF is 128. To support a device
+that supports more than 128 SR-IOV instances, a “vfx” is added to 0..127.
+With “vfx” kboject, users need to add vf index as the first parameter and
+followed by “:”.
+
+SR-IOV hypervisor functions:
+
+- trunk
+  Supports two operations: add and rem.
+  - add: adds one or more VLAN id into VF VLAN filtering.
+  - rem: removes VLAN ids from the VF VLAN filtering list.
+  Example 1: add multiple VLAN tags, VLANs 2,4,5,10-20, by PF, p1p2, on
+  a selected VF, 1, for filtering, with the sysfs support:
+  #echo add 2,4,5,10-20 > /sys/class/net/p1p2/device/sriov/1/trunk
+  Example 2: remove VLANs 5, 11-13 from PF p1p2 VF 1 with sysfs:
+  #echo rem 5,11-13 > /sys/class/net/p1p2/device/sriov/1/trunk
+  Note: for rem, if VLAN id is not on the VLAN filtering list, the
+  VLAN id will be ignored.
+
+- vlan_mirror
+  Supports both ingress and egress traffic mirroring.
+  Example 1: mirror traffic based upon VLANs 2,4,6,18-22 to VF 3 of PF p1p1.
+  # echo add 2,4,6,18-22 > /sys/class/net/p1p1/device/sriov/3/vlan_mirror
+  Example 2: remove VLAN 4, 15-17 from traffic mirroring at destination VF 3.
+  # echo rem 15-17 > /sys/class/net/p1p1/device/sriov/3/vlan_mirror
+  Example 3: remove all VLANs from mirroring at VF 3.
+  # echo rem 0 - 4095> /sys/class/net/p1p1/device/sriov/3/vlan_mirror
+
+- egress_mirror
+  Supports egress traffic mirroring.
+  Example 1: add egress traffic mirroring on PF p1p2 VF 1 to VF 7.
+  #echo add 7 > /sys/class/net/p1p2/device/sriov/1/egress_mirror
+  Example 2: remove egress traffic mirroring on PF p1p2 VF 1 to VF 7.
+  #echo rem 7 > /sys/class/net/p1p2/device/sriov/1/egress_mirror
+
+- ingress_mirror
+  Supports ingress traffic mirroring.
+  Example 1: mirror ingress traffic on PF p1p2 VF 1 to VF 7.
+  #echo add 7 > /sys/class/net/p1p2/device/sriov/1/ingress_mirror
+  Example 2: show current ingress mirroring configuration.
+  #cat /sys/class/net/p1p2/device/sriov/1/ingress_mirror
+
+- mac_anti_spoof
+  Supports Enable/Disable MAC anti-spoof. Allows VFs to transmit packets with
+  any SRC MAC, which is needed for some L2 applications as well as vNIC bonding
+  within VMs if set to OFF.
+  Example 1: enable MAC anti-spoof for PF p2p1 VF 1.
+  #echo ON /sys/class/net/p1p2/device/sriov/1/mac_anti_spoof
+  Example 2: disable MAC anti-spoof for PF p2p1 VF 1.
+  #echo OFF /sys/class/net/p1p2/device/sriov/1/mac_anti_spoof
+
+- vlan_anti_spoof
+  Supports Enable/Disable VLAN anti-spoof. Allows VFs to transmit packets only
+  with VLAN tag specified in “trunk” settings, also will not allow to transmit
+  “untagged” packets if set to ON. Violation have to increment tx_spoof stats
+  counter.
+  Example 1: enable VLAN anti-spoof for PF p2p1 VF 1.
+  #echo ON /sys/class/net/p1p2/device/sriov/1/vlan_anti_spoof
+  Example 2: disable VLAN anti-spoof for PF p2p1 VF 1.
+  #echo OFF /sys/class/net/p1p2/device/sriov/1/vlan_anti_spoof
+
+- loopback
+  Supports Enable/Disable VEB/VEPA (Local loopback).
+  Example 1: allow traffic switching between VFs on the same PF.
+  #echo ON > /sys/class/net/p1p2/device/sriov/loopback
+  Example 2: send Hairpin traffic to the switch to which the PF is connected.
+  #echo OFF > /sys/class/net/p1p2/device/sriov/loopback
+  Example 3: show loopback configuration.
+  #cat /sys/class/net/p1p2/device/sriov/loopback
+
+- mac
+  Supports setting default MAC address. If MAC address is set by this
+  command, the PF will not allow VF to change it using an MBOX request.
+  Example 1: set default MAC address to VF 1.
+  #echo "00:11:22:33:44:55" > /sys/class/net/p1p2/device/sriov/1/mac
+  Example 2: show default MAC address.
+  #cat /sys/class/net/p1p2/device/sriov/1/mac
+
+- mac_list
+  Supports adding additional MACs to the VF. The default MAC is taken from
+  "ip link set p1p2 vf 1 mac 00:11:22:33:44:55" if configured. If not, a random
+  address is assigned to the VF by the NIC. If the MAC is configured using
+the IP LINK command, the VF cannot change it via MBOX/AdminQ requests.
+  Example 1: add mac 00:11:22:33:44:55 and 00:66:55:44:33:22 to PF p1p2 VF 1.
+  #echo add "00:11:22:33:44:55,00:66:55:44:33:22" >
+  /sys/class/net/p1p2/device/sriov/1/mac_list
+  Example 2: delete mac 00:11:22:33:44:55 from above VF device.
+  #echo rem 00:11:22:33:44:55 > /sys/class/net/p1p2/device/sriov/1/mac_list
+  Example 3: display a VF MAC address list.
+  #cat /sys/class/net/p1p2/device/sriov/1/mac_lis
+
+- promisc
+  Supports setting/unsetting VF device unicast promiscuous mode and multicast
+  promiscuous mode.
+  Example 1: set MCAST promiscuous on PF p1p2 VF 1.
+  #echo add mcast > /sys/class/net/p1p2/device/sriov/1/promisc
+  Example 2: set UCAST promiscuous on PF p1p2 VF 1.
+  #echo add ucast > /sys/class/net/p1p2/device/sriov/1/promisc
+  Example 3: unset MCAST promiscuous on PF p1p2 VF 1.
+  #echo rem mcast > /sys/class/net/p1p2/device/sriov/1/promisc
+  Example 4: show current promiscuous mode configuration.
+  #cat /sys/class/net/p1p2/device/sriov/1/promisc
+
+- vlan_strip
+  Supports enabling/disabling VF device outer VLAN stripping
+  Example 1: enable VLAN strip on VF 3.
+  # echo ON > /sys/class/net/p1p1/device/sriov/3/vlan_strip
+  Example 2: disable VLAN striping VF 3.
+  # echo OFF > /sys/class/net/p1p1/device/sriov/3/vlan_strip
+
+- stats
+  Supports getting VF statistics
+  Example 1: display anti-spoofing violations counter for VF 1.
+  #cat /sys/class/net/p1p2/device/sriov/1/stats/tx_spoofed
+
+- link_state
+  Sets/displays link status.
+  Example 1: display link status on link speed.
+  #cat /sys/class/net/p1p2/device/sriov/1/link_state
+  Example 2 set VF 1 to track status of PF link.
+  #echo auto > /sys/class/net/p1p2/device/sriov/1/link_state
+  Example 3: disable VF 1.
+  #echo disable > /sys/class/net/p1p2/device/sriov/1/link_state
+
+
 ================================================================================
 
 
@@ -235,6 +459,12 @@ readme document. For information on setting spoof checking, refer to the
 section "MAC and VLAN anti-spoofing feature" in this readme document.
 
 
+Using four traffic classes fails
+--------------------------------
+Do not try to reserve more than three traffic classes on the 3.6.8 or 3.6.9
+version of the i40evf driver. Doing so will fail to set any traffic classes and
+will cause the driver to write errors to stdout. Use a maximum of three queues
+to avoid this issue.
 Multiple log error messages on i40evf driver removal
 ----------------------------------------------------
 If you have several VFs and you remove the i40evf driver, several instances of
