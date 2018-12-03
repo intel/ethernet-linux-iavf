@@ -1,7 +1,7 @@
 Linux* Driver for Intel(R) Ethernet Virtual Function 700 Series
 ======================================================
 
-August 28, 2018
+October 25, 2018
 
 ======================================================
 
@@ -461,10 +461,9 @@ section "MAC and VLAN anti-spoofing feature" in this readme document.
 
 Using four traffic classes fails
 --------------------------------
-Do not try to reserve more than three traffic classes on the 3.6.8 or 3.6.9
-version of the i40evf driver. Doing so will fail to set any traffic classes and
-will cause the driver to write errors to stdout. Use a maximum of three queues
-to avoid this issue.
+Do not try to reserve more than three traffic classes in the i40evf driver.
+Doing so will fail to set any traffic classes and will cause the driver to
+write errors to stdout. Use a maximum of three queues to avoid this issue.
 Multiple log error messages on i40evf driver removal
 ----------------------------------------------------
 If you have several VFs and you remove the i40evf driver, several instances of
