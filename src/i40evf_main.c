@@ -30,7 +30,7 @@ static const char i40evf_driver_string[] =
 
 #define DRV_VERSION_MAJOR 3
 #define DRV_VERSION_MINOR 6
-#define DRV_VERSION_BUILD 12
+#define DRV_VERSION_BUILD 15
 #define DRV_VERSION __stringify(DRV_VERSION_MAJOR) "." \
 	     __stringify(DRV_VERSION_MINOR) "." \
 	     __stringify(DRV_VERSION_BUILD) \
@@ -3545,6 +3545,14 @@ static netdev_features_t i40evf_fix_features(struct net_device *netdev,
 
 #endif /* HAVE_NDO_SET_FEATURES */
 static const struct net_device_ops i40evf_netdev_ops = {
+#ifdef HAVE_RHEL7_NET_DEVICE_OPS_EXT
+/* RHEL7 requires this to be defined to enable extended ops.  RHEL7 uses the
+ * function get_ndo_ext to retrieve offsets for extended fields from with the
+ * net_device_ops struct and ndo_size is checked to determine whether or not
+ * the offset is valid.
+ */
+	.ndo_size		= sizeof(const struct net_device_ops),
+#endif
 	.ndo_open		= i40evf_open,
 	.ndo_stop		= i40evf_close,
 	.ndo_start_xmit		= i40e_lan_xmit_frame,
@@ -3553,7 +3561,6 @@ static const struct net_device_ops i40evf_netdev_ops = {
 	.ndo_validate_addr	= eth_validate_addr,
 	.ndo_set_mac_address	= i40evf_set_mac,
 #ifdef HAVE_RHEL7_EXTENDED_MIN_MAX_MTU
-	.ndo_size		= sizeof(struct net_device_ops),
 	.extended.ndo_change_mtu = i40evf_change_mtu,
 #else
 	.ndo_change_mtu		= i40evf_change_mtu,
@@ -3567,7 +3574,11 @@ static const struct net_device_ops i40evf_netdev_ops = {
 #ifdef HAVE_SETUP_TC
 #ifdef HAVE_NDO_SETUP_TC_REMOVE_TC_TO_NETDEV
 #ifdef __TC_MQPRIO_MODE_MAX
+#ifdef HAVE_RHEL7_NETDEV_OPS_EXT_NDO_SETUP_TC
+	.extended.ndo_setup_tc_rh = i40evf_setup_tc,
+#else
 	.ndo_setup_tc		= i40evf_setup_tc,
+#endif /* HAVE_RHEL7_NETDEV_OPS_EXT_NDO_SETUP_TC */
 #endif /* __TC_MQPRIO_MODE_MAX */
 #endif /* HAVE_NDO_SETUP_TC_REMOVE_TC_TO_NETDEV */
 #endif /* HAVE_SETUP_TC */
