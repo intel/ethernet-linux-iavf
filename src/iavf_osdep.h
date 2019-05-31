@@ -1,8 +1,8 @@
 /* SPDX-License-Identifier: GPL-2.0 */
-/* Copyright(c) 2013 - 2018 Intel Corporation. */
+/* Copyright(c) 2013 - 2019 Intel Corporation. */
 
-#ifndef _I40E_OSDEP_H_
-#define _I40E_OSDEP_H_
+#ifndef _IAVF_OSDEP_H_
+#define _IAVF_OSDEP_H_
 
 #include <linux/types.h>
 #include <linux/if_ether.h>
@@ -41,7 +41,7 @@ static inline void writeq(__u64 val, volatile void __iomem *addr)
  */
 
 #define hw_dbg(h, s, ...) do {					\
-		pr_debug("i40evf %02x:%02x.%x " s,		\
+		pr_debug("iavf %02x:%02x.%x " s,		\
 			(h)->bus.bus_id, (h)->bus.device,	\
 			(h)->bus.func, ##__VA_ARGS__);		\
 } while (0)
@@ -52,31 +52,31 @@ static inline void writeq(__u64 val, volatile void __iomem *addr)
 
 #define wr64(a, reg, value)	writeq((value), ((a)->hw_addr + (reg)))
 #define rd64(a, reg)		readq((a)->hw_addr + (reg))
-#define i40e_flush(a)		readl((a)->hw_addr + I40E_VFGEN_RSTAT)
+#define iavf_flush(a)		readl((a)->hw_addr + IAVF_VFGEN_RSTAT)
 /* memory allocation tracking */
-struct i40e_dma_mem {
+struct iavf_dma_mem {
 	void *va;
 	dma_addr_t pa;
 	u32 size;
 };
 
-#define i40e_allocate_dma_mem(h, m, unused, s, a) \
-			i40e_allocate_dma_mem_d(h, m, unused, s, a)
+#define iavf_allocate_dma_mem(h, m, unused, s, a) \
+	iavf_allocate_dma_mem_d(h, m, unused, s, a)
 
-#define i40e_free_dma_mem(h, m) i40e_free_dma_mem_d(h, m)
+#define iavf_free_dma_mem(h, m) iavf_free_dma_mem_d(h, m)
 
-struct i40e_virt_mem {
+struct iavf_virt_mem {
 	void *va;
 	u32 size;
 };
 
-#define i40e_allocate_virt_mem(h, m, s) i40e_allocate_virt_mem_d(h, m, s)
-#define i40e_free_virt_mem(h, m) i40e_free_virt_mem_d(h, m)
+#define iavf_allocate_virt_mem(h, m, s) iavf_allocate_virt_mem_d(h, m, s)
+#define iavf_free_virt_mem(h, m) iavf_free_virt_mem_d(h, m)
 
-#define i40e_debug(h, m, s, ...)				\
+#define iavf_debug(h, m, s, ...)				\
 do {								\
 	if (((m) & (h)->debug_mask))				\
-		pr_info("i40evf %02x:%02x.%x " s,		\
+		pr_info("iavf %02x:%02x.%x " s,			\
 			(h)->bus.bus_id, (h)->bus.device,	\
 			(h)->bus.func, ##__VA_ARGS__);		\
 } while (0)
@@ -93,29 +93,28 @@ do {								\
 #define LE64_TO_CPU(k) le64_to_cpu(k)
 
 /* SW spinlock */
-struct i40e_spinlock {
+struct iavf_spinlock {
 	struct mutex spinlock;
 };
 
-static inline void i40e_no_action(struct i40e_spinlock *sp)
+static inline void iavf_no_action(struct iavf_spinlock *sp)
 {
 	/* nothing */
 }
 
 /* the locks are initialized in _probe and destroyed in _remove
  * so make sure NOT to implement init/destroy here, as to
- * avoid the i40e_init_adminq code trying to reinitialize
+ * avoid the iavf_init_adminq code trying to reinitialize
  * the persistent lock memory
  */
-#define i40e_init_spinlock(_sp)    i40e_no_action(_sp)
-#define i40e_acquire_spinlock(_sp) i40e_acquire_spinlock_d(_sp)
-#define i40e_release_spinlock(_sp) i40e_release_spinlock_d(_sp)
-#define i40e_destroy_spinlock(_sp) i40e_no_action(_sp)
+#define iavf_init_spinlock(_sp)    iavf_no_action(_sp)
+#define iavf_acquire_spinlock(_sp) iavf_acquire_spinlock_d(_sp)
+#define iavf_release_spinlock(_sp) iavf_release_spinlock_d(_sp)
+#define iavf_destroy_spinlock(_sp) iavf_no_action(_sp)
 
-#define I40E_HTONL(a)		htonl(a)
+#define IAVF_HTONL(a)		htonl(a)
 
-#define i40e_memset(a, b, c, d)  memset((a), (b), (c))
-#define i40e_memcpy(a, b, c, d)  memcpy((a), (b), (c))
+#define iavf_memset(a, b, c, d)  memset((a), (b), (c))
+#define iavf_memcpy(a, b, c, d)  memcpy((a), (b), (c))
 
-typedef enum i40e_status_code i40e_status;
-#endif /* _I40E_OSDEP_H_ */
+#endif /* _IAVF_OSDEP_H_ */

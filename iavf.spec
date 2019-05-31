@@ -1,6 +1,6 @@
-Name: i40evf
-Summary: Intel(R) 40-10 Gigabit Ethernet Virtual Function Driver
-Version: 3.6.15
+Name: iavf
+Summary: Intel(R) Ethernet Adaptive Virtual Function Driver
+Version: 3.7.34
 Release: 1
 Source: %{name}-%{version}.tar.gz
 Vendor: Intel Corporation
@@ -20,7 +20,7 @@ BuildRoot: %{_tmppath}/%{name}-%{version}-root
 Requires: kernel, fileutils, findutils, gawk, bash
 
 %description
-This package contains the Intel(R) 40-10 Gigabit Ethernet Virtual Function Driver.
+This package contains the Intel(R) Ethernet Adaptive Virtual Function Driver.
 
 %prep
 %setup
@@ -34,7 +34,7 @@ make -C src INSTALL_MOD_PATH=%{buildroot} MANDIR=%{_mandir} modules_install mand
 # Remove modules files that we do not want to include
 find %{buildroot}/lib/modules/ -name 'modules.*' -exec rm -f {} \;
 cd %{buildroot}
-find lib -name "i40evf.ko" \
+find lib -name "iavf.ko" \
 	-fprintf %{_builddir}/%{name}-%{version}/file.list "/%p\n"
 
 
@@ -42,8 +42,10 @@ find lib -name "i40evf.ko" \
 rm -rf %{buildroot}
 
 %files -f file.list
+/etc/modprobe.d/iavf-blacklist-i40evf.conf
+
 %defattr(-,root,root)
-%{_mandir}/man7/i40evf.7.gz
+%{_mandir}/man7/iavf.7.gz
 %doc COPYING
 %doc README
 %doc file.list

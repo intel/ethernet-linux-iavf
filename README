@@ -1,7 +1,7 @@
 Linux* Driver for Intel(R) Ethernet Virtual Function 700 Series
 ======================================================
 
-November 29, 2018
+May 29, 2019
 
 ======================================================
 
@@ -21,7 +21,6 @@ Contents
 
 Overview
 --------
-
 This driver supports Intel(R) Ethernet Controller 700 Series-based virtual
 function devices
  with CONFIG_PCI_IOV enabled.
@@ -62,52 +61,52 @@ http://www.intel.com/support
 Building and Installation
 -------------------------
 To build a binary RPM* package of this driver, run 'rpmbuild -tb
-i40evf-<x.x.x>.tar.gz', where <x.x.x> is the version number for the driver tar
+iavf-<x.x.x>.tar.gz', where <x.x.x> is the version number for the driver tar
 file.
 
 Note: For the build to work properly, the currently running kernel MUST match
 the version and configuration of the installed kernel sources. If you have just
 recompiled the kernel reboot the system before building.
 
+- To compile the driver on some kernel/arch combinations, a package with the
+development version of libelf (e.g. libelf-dev, libelf-devel,
+elfutilsl-libelf-devel) may need to be installed.
+
 Note: RPM functionality has only been tested in Red Hat distributions.
 
 
 1. Move the virtual function driver tar file to the directory of your choice.
 For
-   example, use '/home/username/i40evf' or '/usr/local/src/i40evf'.
+   example, use '/home/username/iavf' or '/usr/local/src/iavf'.
 
 2. Untar/unzip the archive, where <x.x.x> is the version number for the
    driver tar file:
-   tar zxf i40evf-<x.x.x>.tar.gz
+   tar zxf iavf-<x.x.x>.tar.gz
 
 3. Change to the driver src directory, where <x.x.x> is the version number
    for the driver tar:
-   cd i40evf-<x.x.x>/src/
+   cd iavf-<x.x.x>/src/
 
 4. Compile the driver module:
    # make install
    The binary will be installed as:
-   /lib/modules/<KERNEL
-VERSION>/updates/drivers/net/ethernet/intel/i40evf/i40evf.ko
+   /lib/modules/<KERNEL VERSION>/updates/drivers/net/ethernet/intel/iavf/iavf.ko
 
    The install location listed above is the default location. This may differ
    for various Linux distributions.
-   NOTE: To compile the driver on some kernel/arch combinations, a
-   package with the development version of libelf (e.g. libelf-dev,
-   libelf-devel, elfutilsl-libelf-devel) may need to be installed.
 
   NOTE: To gather and display additional statistics, use the
-  I40E_ADD_PROBES pre-processor macro:
-  #make CFLAGS_EXTRA=-DI40E_ADD_PROBES
+  IAVF_ADD_PROBES pre-processor macro:
+  #make CFLAGS_EXTRA=-DIAVF_ADD_PROBES
   Please note that this additional statistics gathering can impact
   performance.
 
 5. Load the module using the modprobe command:
-   modprobe <i40evf>
+   modprobe <iavf>
 
-   Make sure that any older i40evf drivers are removed from the kernel before
+   Make sure that any older iavf drivers are removed from the kernel before
    loading the new module:
-   rmmod i40evf; modprobe i40evf
+   rmmod iavf; modprobe iavf
 
 6. Assign an IP address to the interface by entering the following,
    where ethX is the interface name that was shown in dmesg after modprobe:
@@ -121,7 +120,7 @@ VERSION>/updates/drivers/net/ethernet/intel/i40evf/i40evf.ko
 
 Note: For certain distributions like (but not limited to) RedHat Enterprise
 Linux 7 and Ubuntu, once the driver is installed the initrd/initramfs file may
-need to be updated to prevent the OS loading old versions of the i40evf driver.
+need to be updated to prevent the OS loading old versions of the iavf driver.
 The dracut utility may be used on RedHat distributions:
 	# dracut --force
    For Ubuntu:
@@ -131,7 +130,7 @@ The dracut utility may be used on RedHat distributions:
 Command Line Parameters
 -----------------------
 
-The i40evf driver does not support any command line parameters.
+The iavf driver does not support any command line parameters.
 
 
 Additional Features and Configurations
@@ -157,7 +156,6 @@ http://ftp.kernel.org/pub/software/network/ethtool/
 
 Setting VLAN Tag Stripping
 --------------------------
-
 If you have applications that require Virtual Functions (VFs) to receive
 packets with VLAN tags, you can disable VLAN tag stripping for the VF. The
 Physical Function (PF) processes requests issued from the VF to enable or
@@ -201,9 +199,8 @@ which the AVF is associated. The following are base mode features:
 - HW mailbox is used for VF to PF communications (including on Windows).
 
 
-IEEE 802.1ad (QinQ) Support
+IEEE 802.1ad (QinQ) Support
 ---------------------------
-
 The IEEE 802.1ad standard, informally known as QinQ, allows for multiple VLAN
 IDs within a single Ethernet frame. VLAN IDs are sometimes referred to as
 "tags," and multiple VLAN IDs are thus referred to as a "tag stack." Tag stacks
@@ -441,12 +438,49 @@ the IP LINK command, the VF cannot change it via MBOX/AdminQ requests.
   #echo disable > /sys/class/net/p1p2/device/sriov/1/link_state
 
 
+FW-LLDP (Firmware Link Layer Discovery Protocol)
+------------------------------------------------
+FW-LLDP (Firmware Link Layer Discovery Protocol) can be enabled/disabled by
+setting the private flag disable_fw_lldp. Setting disable_fw_lldp to 'off'
+enables FW-LLDP. Setting disable_fw_lldp to 'on' disables FW-LLDP.
+NOTE: You must enable the UEFI HII "LLDP Agent" attribute for this setting to
+take affect. If "LLDP AGENT" is set to disabled, you cannot enable it from the
+OS.
+
+
 ================================================================================
 
 
 Known Issues/Troubleshooting
 ============================
 
+Hardware Issues
+---------------
+For known hardware and troubleshooting issues, either refer to the "Release
+Notes" in your User Guide, or for more detailed information, go to
+http://www.intel.com.
+
+In the search box enter your devices controller ID followed by "spec update"
+(i.e., XL710 spec update). The specification update file has complete
+information on known hardware issues.
+
+
+Software Issues
+---------------
+NOTE: After installing the driver, if your Intel Ethernet Network Connection
+is not working, verify that you have installed the correct driver.
+
+
+Linux bonding fails with Virtual Functions bound to an Intel(R) Ethernet
+Controller 700 series based device
+------------------------------------------------------------------------
+If you bind Virtual Functions (VFs) to an Intel(R) Ethernet Controller 700
+series based device, the VF slaves may fail when they become the active slave.
+If the MAC address of the VF is set by the PF (Physical Function) of the
+device, when you add a slave, or change the active-backup slave, Linux bonding
+tries to sync the backup slave's MAC address to the same MAC address as the
+active slave. Linux bonding will fail at this point. This issue will not occur
+if the VF's MAC address is not set by the PF.
 Traffic Is Not Being Passed Between VM and Client
 -------------------------------------------------
 You may not be able to pass traffic between a client system and a
@@ -461,14 +495,14 @@ section "MAC and VLAN anti-spoofing feature" in this readme document.
 
 Using four traffic classes fails
 --------------------------------
-Do not try to reserve more than three traffic classes in the i40evf driver.
-Doing so will fail to set any traffic classes and will cause the driver to
-write errors to stdout. Use a maximum of three queues to avoid this issue.
+Do not try to reserve more than three traffic classes in the iavf driver. Doing
+so will fail to set any traffic classes and will cause the driver to write
+errors to stdout. Use a maximum of three queues to avoid this issue.
 
 
-Multiple log error messages on i40evf driver removal
+Multiple log error messages on iavf driver removal
 ----------------------------------------------------
-If you have several VFs and you remove the i40evf driver, several instances of
+If you have several VFs and you remove the iavf driver, several instances of
 the following log errors are written to the log:
   Unable to send opcode 2 to PF, err I40E_ERR_QUEUE_EMPTY, aq_err ok
   Unable to send the message to VF 2 aq_err 12
@@ -492,25 +526,6 @@ If a Virtual Function's MAC address is not assigned in the host, then the VF
 address may change each time the VF driver is reloaded. You can assign a static
 MAC address in the host machine. This static MAC address will survive
 a VF driver reload.
-
-
-Hardware Issues
----------------
-
-For known hardware and troubleshooting issues, either refer to the "Release
-Notes" in your User Guide, or for more detailed information, go to
-http://www.intel.com.
-
-In the search box enter your devices controller ID followed by "spec update"
-(i.e., XL710 spec update). The specification update file has complete
-information on known hardware issues.
-
-
-Software Issues
----------------
-
-NOTE: After installing the driver, if your Intel Ethernet Network Connection
-is not working, verify that you have installed the correct driver.
 
 
 Driver Buffer Overflow Fix
@@ -563,7 +578,6 @@ This is caused by the way the Linux kernel reports this stressed condition.
 
 Host May Reboot after Removing PF when VF is Active in Guest
 ------------------------------------------------------------
-
 Using kernel versions earlier than 3.2, do not unload the PF driver with
 active VFs. Doing this will cause your VFs to stop working until you reload
 the PF driver and may cause a spontaneous reboot of your system.
@@ -607,14 +621,14 @@ St - Fifth Floor, Boston, MA 02110-1301 USA.
 The full GNU General Public License is included in this distribution in the
 file called "COPYING".
 
-Copyright(c) 2014-2018 Intel Corporation.
+Copyright(c) 2018 - 2019 Intel Corporation.
 ================================================================================
 
 
 Trademarks
 ----------
-Intel and Itanium are trademarks or registered trademarks of Intel Corporation
-or its subsidiaries in the United States and/or other countries.
+Intel is a trademark or registered trademark of Intel Corporation or its
+subsidiaries in the United States and/or other countries.
 
 * Other names and brands may be claimed as the property of others.
 
