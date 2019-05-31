@@ -1,10 +1,10 @@
 # SPDX-License-Identifier: GPL-2.0
-# Copyright(c) 2013 - 2018 Intel Corporation.
+# Copyright(c) 2013 - 2019 Intel Corporation.
 
 ifneq ($(KERNELRELEASE),)
 # kbuild part of makefile
 #
-# Makefile for the Intel(R) 40-10 Gigabit Ethernet Virtual Function Driver
+# Makefile for the Intel(R) Ethernet Adaptive Virtual Function Driver
 #
 
 ccflags-y += -I$(src)
@@ -19,6 +19,7 @@ iavf-y := iavf_main.o \
 	iavf_adminq.o	 \
 	iavf_common.o	 \
 	iavf_txrx.o
+
 
 iavf-y += kcompat.o
 
@@ -85,6 +86,9 @@ mandocs_install: manfile
 modules_install: default
 	@echo "Installing modules..."
 	@+$(call kernelbuild,modules_install)
+	@echo "Installing i40evf blacklist file..."
+	mkdir -p "${INSTALL_MOD_PATH}/etc/modprobe.d/"
+	echo "blacklist i40evf" > "${INSTALL_MOD_PATH}/etc/modprobe.d/iavf-blacklist-i40evf.conf"
 
 # After installing all the files, perform necessary work to ensure the system
 # will use the new modules. This includes running depmod to update module
@@ -109,6 +113,7 @@ mandocs_uninstall:
 # build root. Thus, it must not update the initramfs image or run depmod.
 modules_uninstall:
 	rm -f ${INSTALL_MOD_PATH}/lib/modules/${KVER}/${INSTALL_MOD_DIR}/${DRIVER}.ko;
+	rm -f /etc/modprobe.d/iavf-blacklist-i40evf.conf;
 
 # After uninstalling all the files, perform necessary work to restore the
 # system back to using the default kernel modules. This includes running depmod
