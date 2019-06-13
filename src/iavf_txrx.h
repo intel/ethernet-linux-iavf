@@ -293,9 +293,6 @@ struct iavf_tx_buffer {
 
 struct iavf_rx_buffer {
 	dma_addr_t dma;
-#ifdef CONFIG_IAVF_DISABLE_PACKET_SPLIT
-	struct sk_buff *skb;
-#else
 	struct page *page;
 #if (BITS_PER_LONG > 32) || (PAGE_SIZE >= 65536)
 	__u32 page_offset;
@@ -303,7 +300,6 @@ struct iavf_rx_buffer {
 	__u16 page_offset;
 #endif
 	__u16 pagecnt_bias;
-#endif /* CONFIG_IAVF_DISABLE_PACKET_SPLIT */
 };
 
 struct iavf_queue_stats {

@@ -1906,7 +1906,8 @@ void __kc_skb_complete_tx_timestamp(struct sk_buff *skb,
 #include <linux/sctp.h>
 #endif
 
-unsigned int __kc_eth_get_headlen(unsigned char *data, unsigned int max_len)
+u32 __kc_eth_get_headlen(const struct net_device __always_unused *dev,
+			 unsigned char *data, unsigned int max_len)
 {
 	union {
 		unsigned char *network;

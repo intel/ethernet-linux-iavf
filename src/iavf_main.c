@@ -31,7 +31,7 @@ static const char iavf_driver_string[] =
 
 #define DRV_VERSION_MAJOR 3
 #define DRV_VERSION_MINOR 7
-#define DRV_VERSION_BUILD 34
+#define DRV_VERSION_BUILD 53
 #define DRV_VERSION __stringify(DRV_VERSION_MAJOR) "." \
 	     __stringify(DRV_VERSION_MINOR) "." \
 	     __stringify(DRV_VERSION_BUILD) \
@@ -511,12 +511,6 @@ static void iavf_configure_rx(struct iavf_adapter *adapter)
 	struct iavf_hw *hw = &adapter->hw;
 	int i;
 
-#ifdef CONFIG_IAVF_DISABLE_PACKET_SPLIT
-	/* reset Rx buffer length for an Ethernet packet */
-	rx_buf_len = IAVF_RXBUFFER_1536 - NET_IP_ALIGN;
-	if ((adapter->netdev->mtu + IAVF_PACKET_HDR_PAD) > rx_buf_len)
-		rx_buf_len = adapter->netdev->mtu + IAVF_PACKET_HDR_PAD;
-#else
 	/* Legacy Rx will always default to a 2048 buffer size. */
 #if (PAGE_SIZE < 8192)
 	if (!(adapter->flags & IAVF_FLAG_LEGACY_RX)) {
@@ -537,7 +531,6 @@ static void iavf_configure_rx(struct iavf_adapter *adapter)
 			rx_buf_len = IAVF_RXBUFFER_1536 - NET_IP_ALIGN;
 	}
 #endif
-#endif /* CONFIG_IAVF_DISABLE_PACKET_SPLIT */
 
 	for (i = 0; i < adapter->num_active_queues; i++) {
 		adapter->rx_rings[i].tail = hw->hw_addr + IAVF_QRX_TAIL1(i);
@@ -823,9 +816,6 @@ static int iavf_set_mac(struct net_device *netdev, void *p)
 
 	if (ether_addr_equal(netdev->dev_addr, addr->sa_data))
 		return 0;
-
-	if (adapter->flags & IAVF_FLAG_ADDR_SET_BY_PF)
-		return -EPERM;
 
 	spin_lock_bh(&adapter->mac_vlan_list_lock);
 
@@ -1752,7 +1742,6 @@ static void iavf_init_get_resources(struct iavf_adapter *adapter)
 		eth_hw_addr_random(netdev);
 		ether_addr_copy(adapter->hw.mac.addr, netdev->dev_addr);
 	} else {
-		adapter->flags |= IAVF_FLAG_ADDR_SET_BY_PF;
 		ether_addr_copy(netdev->dev_addr, adapter->hw.mac.addr);
 		ether_addr_copy(netdev->perm_addr, adapter->hw.mac.addr);
 	}

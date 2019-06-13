@@ -39,6 +39,18 @@ include common.mk
 $(call minimum_kver_check,2,6,32)
 endif
 
+# Command to update initramfs or display a warning message
+ifeq (${cmd_initrd},)
+define cmd_initramfs
+@echo "Unable to update initramfs. You may need to do this manaully."
+endef
+else
+define cmd_initramfs
+@echo "Updating initramfs..."
+-@$(call cmd_initrd)
+endef
+endif
+
 ###############
 # Build rules #
 ###############
@@ -86,9 +98,10 @@ mandocs_install: manfile
 modules_install: default
 	@echo "Installing modules..."
 	@+$(call kernelbuild,modules_install)
-	@echo "Installing i40evf blacklist file..."
+	@echo "Creating /etc/modprobe.d/iavf.conf file ..."
 	mkdir -p "${INSTALL_MOD_PATH}/etc/modprobe.d/"
-	echo "blacklist i40evf" > "${INSTALL_MOD_PATH}/etc/modprobe.d/iavf-blacklist-i40evf.conf"
+	echo "blacklist i40evf"  >  "${INSTALL_MOD_PATH}/etc/modprobe.d/iavf.conf"
+	echo "alias i40evf iavf" >> "${INSTALL_MOD_PATH}/etc/modprobe.d/iavf.conf"
 
 # After installing all the files, perform necessary work to ensure the system
 # will use the new modules. This includes running depmod to update module
@@ -113,7 +126,7 @@ mandocs_uninstall:
 # build root. Thus, it must not update the initramfs image or run depmod.
 modules_uninstall:
 	rm -f ${INSTALL_MOD_PATH}/lib/modules/${KVER}/${INSTALL_MOD_DIR}/${DRIVER}.ko;
-	rm -f /etc/modprobe.d/iavf-blacklist-i40evf.conf;
+	rm -f /etc/modprobe.d/iavf.conf;
 
 # After uninstalling all the files, perform necessary work to restore the
 # system back to using the default kernel modules. This includes running depmod
