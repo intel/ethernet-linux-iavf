@@ -607,7 +607,6 @@ clear_counts:
 	rc->total_packets = 0;
 }
 
-#ifndef CONFIG_IAVF_DISABLE_PACKET_SPLIT
 /**
  * iavf_reuse_rx_page - page flip buffer and store it back on the ring
  * @rx_ring: rx descriptor ring to store buffers on
@@ -634,7 +633,6 @@ static void iavf_reuse_rx_page(struct iavf_ring *rx_ring,
 	new_buff->pagecnt_bias	= old_buff->pagecnt_bias;
 }
 
-#endif /* CONFIG_IAVF_DISABLE_PACKET_SPLIT */
 /**
  * iavf_setup_tx_descriptors - Allocate the Tx descriptors
  * @tx_ring: the tx ring to set up
@@ -700,15 +698,6 @@ void iavf_clean_rx_ring(struct iavf_ring *rx_ring)
 	for (i = 0; i < rx_ring->count; i++) {
 		struct iavf_rx_buffer *rx_bi = &rx_ring->rx_bi[i];
 
-#ifdef CONFIG_IAVF_DISABLE_PACKET_SPLIT
-		if (!rx_bi->skb)
-			continue;
-
-		dma_unmap_single(rx_ring->dev, rx_bi->dma,
-				 rx_ring->rx_buf_len, DMA_FROM_DEVICE);
-		dev_kfree_skb(rx_bi->skb);
-		rx_bi->skb = NULL;
-#else /* CONFIG_IAVF_DISABLE_PACKET_SPLIT */
 		if (!rx_bi->page)
 			continue;
 
@@ -731,7 +720,6 @@ void iavf_clean_rx_ring(struct iavf_ring *rx_ring)
 
 		rx_bi->page = NULL;
 		rx_bi->page_offset = 0;
-#endif /* CONFIG_IAVF_DISABLE_PACKET_SPLIT */
 	}
 
 	bi_size = sizeof(struct iavf_rx_buffer) * rx_ring->count;
@@ -831,46 +819,6 @@ static inline void iavf_release_rx_desc(struct iavf_ring *rx_ring, u32 val)
 	writel(val, rx_ring->tail);
 }
 
-#ifdef CONFIG_IAVF_DISABLE_PACKET_SPLIT
-static bool iavf_alloc_mapped_skb(struct iavf_ring *rx_ring,
-				  struct iavf_rx_buffer *bi)
-{
-	struct sk_buff *skb = bi->skb;
-	dma_addr_t dma;
-
-	if (unlikely(skb))
-		return true;
-
-	if (likely(!skb)) {
-		skb = __napi_alloc_skb(&rx_ring->q_vector->napi,
-				       rx_ring->rx_buf_len,
-				       GFP_ATOMIC | __GFP_NOWARN);
-		if (unlikely(!skb)) {
-			rx_ring->rx_stats.alloc_buff_failed++;
-			return false;
-		}
-	}
-
-	dma = dma_map_single(rx_ring->dev, skb->data,
-			     rx_ring->rx_buf_len, DMA_FROM_DEVICE);
-
-	/*
-	 * if mapping failed free memory back to system since
-	 * there isn't much point in holding memory we can't use
-	 */
-	if (dma_mapping_error(rx_ring->dev, dma)) {
-		dev_kfree_skb_any(skb);
-		rx_ring->rx_stats.alloc_buff_failed++;
-		return false;
-	}
-
-	bi->skb = skb;
-	bi->dma = dma;
-
-	return true;
-}
-
-#else /* CONFIG_IAVF_DISABLE_PACKET_SPLIT */
 /**
  * iavf_rx_offset - Return expected offset into page to access data
  * @rx_ring: Ring we are requesting offset of
@@ -934,7 +882,6 @@ static bool iavf_alloc_mapped_page(struct iavf_ring *rx_ring,
 	return true;
 }
 
-#endif /* CONFIG_IAVF_DISABLE_PACKET_SPLIT */
 /**
  * iavf_receive_skb - Send a completed packet up the stack
  * @rx_ring:  rx ring in play
@@ -1004,12 +951,6 @@ bool iavf_alloc_rx_buffers(struct iavf_ring *rx_ring, u16 cleaned_count)
 	bi = &rx_ring->rx_bi[ntu];
 
 	do {
-#ifdef CONFIG_IAVF_DISABLE_PACKET_SPLIT
-		if (!iavf_alloc_mapped_skb(rx_ring, bi))
-			goto no_buffers;
-
-		rx_desc->read.pkt_addr = cpu_to_le64(bi->dma);
-#else
 		if (!iavf_alloc_mapped_page(rx_ring, bi))
 			goto no_buffers;
 
@@ -1023,7 +964,6 @@ bool iavf_alloc_rx_buffers(struct iavf_ring *rx_ring, u16 cleaned_count)
 		 * because each write-back erases this info.
 		 */
 		rx_desc->read.pkt_addr = cpu_to_le64(bi->dma + bi->page_offset);
-#endif /* CONFIG_IAVF_DISABLE_PACKET_SPLIT */
 
 		rx_desc++;
 		bi++;
@@ -1304,51 +1244,6 @@ static bool iavf_cleanup_headers(struct iavf_ring *rx_ring, struct sk_buff *skb,
 	return false;
 }
 
-#ifdef CONFIG_IAVF_DISABLE_PACKET_SPLIT
-/**
- * iavf_get_rx_buffer - Fetch Rx buffer and synchronize data for use
- * @rx_ring: rx descriptor ring to transact packets on
- * @size: size of buffer to add to skb
- *
- * This function will pull an Rx buffer from the ring and synchronize it
- * for use by the CPU.
- *
- * ONE-BUFF version
- */
-static struct iavf_rx_buffer *iavf_get_rx_buffer(struct iavf_ring *rx_ring,
-						 const unsigned int size)
-{
-	struct iavf_rx_buffer *rx_buffer;
-
-	rx_buffer = &rx_ring->rx_bi[rx_ring->next_to_clean];
-
-	/* we are reusing so sync this buffer for CPU use */
-	dma_unmap_single(rx_ring->dev, rx_buffer->dma,
-			 rx_ring->rx_buf_len, DMA_FROM_DEVICE);
-
-	prefetch(rx_buffer->skb->data);
-
-	return rx_buffer;
-}
-
-/**
- * iavf_put_rx_buffer - Clean up used buffer and either recycle or free
- * @rx_ring: rx descriptor ring to transact packets on
- * @rx_buffer: rx buffer to pull data from
- *
- * This function will clean up the contents of the rx_buffer.  It will
- * either recycle the bufer or unmap it and free the associated resources.
- *
- * ONE-BUFF version
- */
-static void iavf_put_rx_buffer(struct iavf_ring *rx_ring,
-			       struct iavf_rx_buffer *rx_buffer)
-{
-	/* clear contents of buffer_info */
-	rx_buffer->skb = NULL;
-}
-
-#else /* CONFIG_IAVF_DISABLE_PACKET_SPLIT */
 /**
  * iavf_page_is_reusable - check if any reuse is possible
  * @page: page struct to check
@@ -1451,6 +1346,8 @@ static void iavf_add_rx_frag(struct iavf_ring *rx_ring,
 	unsigned int truesize =	SKB_DATA_ALIGN(size + iavf_rx_offset(rx_ring));
 #endif
 
+	if (!size)
+		return;
 	skb_add_rx_frag(skb, skb_shinfo(skb)->nr_frags, rx_buffer->page,
 			rx_buffer->page_offset, size, truesize);
 
@@ -1475,6 +1372,8 @@ static struct iavf_rx_buffer *iavf_get_rx_buffer(struct iavf_ring *rx_ring,
 {
 	struct iavf_rx_buffer *rx_buffer;
 
+	if (!size)
+		return NULL;
 	rx_buffer = &rx_ring->rx_bi[rx_ring->next_to_clean];
 	prefetchw(rx_buffer->page);
 
@@ -1516,6 +1415,8 @@ static struct sk_buff *iavf_construct_skb(struct iavf_ring *rx_ring,
 	unsigned int headlen;
 	struct sk_buff *skb;
 
+	if (!rx_buffer)
+		return NULL;
 	/* prefetch first cache line of first page */
 	prefetch(xdp->data);
 #if L1_CACHE_BYTES < 128
@@ -1532,7 +1433,8 @@ static struct sk_buff *iavf_construct_skb(struct iavf_ring *rx_ring,
 	/* Determine available headroom for copy */
 	headlen = size;
 	if (headlen > IAVF_RX_HDR_SIZE)
-		headlen = eth_get_headlen(xdp->data, IAVF_RX_HDR_SIZE);
+		headlen = eth_get_headlen(skb->dev, xdp->data,
+					  IAVF_RX_HDR_SIZE);
 
 	/* align pull length to size of long to optimize memcpy performance */
 	memcpy(__skb_put(skb, headlen), xdp->data,
@@ -1584,6 +1486,9 @@ static struct sk_buff *iavf_build_skb(struct iavf_ring *rx_ring,
 #endif
 	struct sk_buff *skb;
 
+	if (!rx_buffer)
+		return NULL;
+
 	/* prefetch first cache line of first page */
 	prefetch(xdp->data);
 #if L1_CACHE_BYTES < 128
@@ -1620,6 +1525,9 @@ static struct sk_buff *iavf_build_skb(struct iavf_ring *rx_ring,
 static void iavf_put_rx_buffer(struct iavf_ring *rx_ring,
 			       struct iavf_rx_buffer *rx_buffer)
 {
+	if (!rx_buffer)
+		return;
+
 	if (iavf_can_reuse_rx_page(rx_buffer)) {
 		/* hand second half of page back to the ring */
 		iavf_reuse_rx_page(rx_ring, rx_buffer);
@@ -1637,7 +1545,6 @@ static void iavf_put_rx_buffer(struct iavf_ring *rx_ring,
 	rx_buffer->page = NULL;
 }
 
-#endif /* CONFIG_IAVF_DISABLE_PACKET_SPLIT */
 /**
  * iavf_is_non_eop - process handling of non-EOP buffers
  * @rx_ring: Rx ring being processed
@@ -1701,10 +1608,14 @@ static void iavf_rx_buffer_flip(struct iavf_ring *rx_ring,
 #if (PAGE_SIZE < 8192)
 	unsigned int truesize = iavf_rx_pg_size(rx_ring) / 2;
 
+	if (!rx_buffer)
+		return;
 	rx_buffer->page_offset ^= truesize;
 #else
 	unsigned int truesize = SKB_DATA_ALIGN(iavf_rx_offset(rx_ring) + size);
 
+	if (!rx_buffer)
+		return;
 	rx_buffer->page_offset += truesize;
 #endif
 }
@@ -1772,30 +1683,28 @@ static int iavf_clean_rx_irq(struct iavf_ring *rx_ring, int budget)
 		 * verified the descriptor has been written back.
 		 */
 		dma_rmb();
+#define IAVF_RXD_DD BIT(IAVF_RX_DESC_STATUS_DD_SHIFT)
+		if (!iavf_test_staterr(rx_desc, IAVF_RXD_DD))
+			break;
 
 		size = (qword & IAVF_RXD_QW1_LENGTH_PBUF_MASK) >>
 		       IAVF_RXD_QW1_LENGTH_PBUF_SHIFT;
-		if (!size)
-			break;
 
 		iavf_trace(clean_rx_irq, rx_ring, rx_desc, skb);
 		rx_buffer = iavf_get_rx_buffer(rx_ring, size);
 
 		/* retrieve a buffer from the ring */
-#ifdef CONFIG_IAVF_DISABLE_PACKET_SPLIT
-		/* we are leaking memory if an skb is already present */
-		WARN_ON(skb);
-		skb = rx_buffer->skb;
-		__skb_put(skb, size);
-#else
 		if (!skb) {
-			xdp.data = page_address(rx_buffer->page) +
-				   rx_buffer->page_offset;
-			xdp.data_hard_start = (void *)((u8 *)xdp.data -
-					      iavf_rx_offset(rx_ring));
-			xdp.data_end = (void *)((u8 *)xdp.data + size);
-
-			skb = iavf_run_xdp(rx_ring, &xdp);
+			if (rx_buffer) {
+				xdp.data = page_address(rx_buffer->page) +
+					   rx_buffer->page_offset;
+				xdp.data_hard_start = (void *)((u8 *)xdp.data -
+						      iavf_rx_offset(rx_ring));
+				xdp.data_end = (void *)((u8 *)xdp.data + size);
+				skb = iavf_run_xdp(rx_ring, &xdp);
+			} else {
+				break;
+			}
 		}
 
 		if (IS_ERR(skb)) {
@@ -1805,7 +1714,8 @@ static int iavf_clean_rx_irq(struct iavf_ring *rx_ring, int budget)
 				xdp_xmit |= xdp_res;
 				iavf_rx_buffer_flip(rx_ring, rx_buffer, size);
 			} else {
-				rx_buffer->pagecnt_bias++;
+				if (rx_buffer)
+					rx_buffer->pagecnt_bias++;
 			}
 			total_rx_bytes += size;
 			total_rx_packets++;
@@ -1822,10 +1732,10 @@ static int iavf_clean_rx_irq(struct iavf_ring *rx_ring, int budget)
 		/* exit if we failed to retrieve a buffer */
 		if (!skb) {
 			rx_ring->rx_stats.alloc_buff_failed++;
-			rx_buffer->pagecnt_bias++;
+			if (rx_buffer)
+				rx_buffer->pagecnt_bias++;
 			break;
 		}
-#endif /* CONFIG_IAVF_DISABLE_PACKET_SPLIT */
 
 		iavf_put_rx_buffer(rx_ring, rx_buffer);
 		cleaned_count++;
@@ -2760,21 +2670,35 @@ static inline int iavf_tx_map(struct iavf_ring *tx_ring, struct sk_buff *skb,
 
 	/* notify HW of packet */
 #ifdef HAVE_SKB_XMIT_MORE
-	if (netif_xmit_stopped(txring_txq(tx_ring)) || !skb->xmit_more) {
+	if (netif_xmit_stopped(txring_txq(tx_ring)) || !netdev_xmit_more()) {
 		writel(i, tx_ring->tail);
 
-		/* we need this if more than one processor can write to our tail
-		 * at a time, it synchronizes IO on IA64/Altix systems
+#ifndef SPIN_UNLOCK_IMPLIES_MMIOWB
+		/* We need this mmiowb on IA64/Altix systems where wmb() isn't
+		 * guaranteed to synchronize I/O.
+		 *
+		 * Note that mmiowb() only provides a guarantee about ordering
+		 * when in conjunction with a spin_unlock(). This barrier is
+		 * used to guarantee the I/O ordering with respect to a spin
+		 * lock in the networking core code.
 		 */
 		mmiowb();
+#endif /* SPIN_UNLOCK_IMPLIES_MMIOWB */
 	}
 #else
 	writel(i, tx_ring->tail);
 
-	/* we need this if more than one processor can write to our tail
-	 * at a time, it synchronizes IO on IA64/Altix systems
+#ifndef SPIN_UNLOCK_IMPLIES_MMIOWB
+	/* We need this mmiowb on IA64/Altix systems where wmb() isn't
+	 * guaranteed to synchronize I/O.
+	 *
+	 * Note that mmiowb() only provides a guarantee about ordering when in
+	 * conjunction with a spin_unlock(). This barrier is used to guarantee
+	 * the I/O ordering with respect to a spin lock in the networking core
+	 * code.
 	 */
 	mmiowb();
+#endif /* SPIN_UNLOCK_IMPLIES_MMIOWB */
 #endif /* HAVE_XMIT_MORE */
 
 	return 0;
