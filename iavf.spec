@@ -1,6 +1,6 @@
 Name: iavf
 Summary: Intel(R) Ethernet Adaptive Virtual Function Driver
-Version: 3.7.53
+Version: 3.7.61.20
 Release: 1
 Source: %{name}-%{version}.tar.gz
 Vendor: Intel Corporation

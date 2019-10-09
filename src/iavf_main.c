@@ -27,11 +27,11 @@ static const char iavf_driver_string[] =
 #define DRV_VERSION_LOCAL
 #endif /* DRV_VERSION_LOCAL */
 
-#define DRV_VF_VERSION_DESC ""
+#define DRV_VF_VERSION_DESC ".20"
 
 #define DRV_VERSION_MAJOR 3
 #define DRV_VERSION_MINOR 7
-#define DRV_VERSION_BUILD 53
+#define DRV_VERSION_BUILD 61
 #define DRV_VERSION __stringify(DRV_VERSION_MAJOR) "." \
 	     __stringify(DRV_VERSION_MINOR) "." \
 	     __stringify(DRV_VERSION_BUILD) \
@@ -2731,14 +2731,14 @@ exit:
 /**
  * iavf_parse_cls_flower - Parse tc flower filters provided by kernel
  * @adapter: board private structure
- * @f: pointer to struct tc_cls_flower_offload
+ * @f: pointer to struct flow_cls_offload
  * @filter: pointer to cloud filter structure
  */
 static int iavf_parse_cls_flower(struct iavf_adapter *adapter,
-				 struct tc_cls_flower_offload *f,
+				 struct flow_cls_offload *f,
 				 struct iavf_cloud_filter *filter)
 {
-	struct flow_rule *rule = tc_cls_flower_offload_flow_rule(f);
+	struct flow_rule *rule = flow_cls_offload_flow_rule(f);
 	struct flow_dissector *dissector = rule->match.dissector;
 	struct virtchnl_filter *cf = &filter->f;
 	u16 n_proto_mask = 0;
@@ -3013,10 +3013,10 @@ static int iavf_handle_tclass(struct iavf_adapter *adapter, u32 tc,
 /**
  * iavf_configure_clsflower - Add tc flower filters
  * @adapter: board private structure
- * @cls_flower: Pointer to struct tc_cls_flower_offload
+ * @cls_flower: Pointer to struct flow_cls_offload
  */
 static int iavf_configure_clsflower(struct iavf_adapter *adapter,
-				    struct tc_cls_flower_offload *cls_flower)
+				    struct flow_cls_offload *cls_flower)
 {
 	int tc = tc_classid_to_hwtc(adapter->netdev, cls_flower->classid);
 	struct iavf_cloud_filter *filter = NULL;
@@ -3092,10 +3092,10 @@ static struct iavf_cloud_filter *iavf_find_cf(struct iavf_adapter *adapter,
 /**
  * iavf_delete_clsflower - Remove tc flower filters
  * @adapter: board private structure
- * @cls_flower: Pointer to struct tc_cls_flower_offload
+ * @cls_flower: Pointer to struct flow_cls_offload
  */
 static int iavf_delete_clsflower(struct iavf_adapter *adapter,
-				 struct tc_cls_flower_offload *cls_flower)
+				 struct flow_cls_offload *cls_flower)
 {
 	struct iavf_cloud_filter *filter = NULL;
 	int err = 0;
@@ -3116,20 +3116,20 @@ static int iavf_delete_clsflower(struct iavf_adapter *adapter,
 /**
  * iavf_setup_tc_cls_flower - flower classifier offloads
  * @adapter: board private structure
- * @cls_flower: pointer to struct tc_cls_flower_offload
+ * @cls_flower: pointer to struct flow_cls_offload
  */
 static int iavf_setup_tc_cls_flower(struct iavf_adapter *adapter,
-				    struct tc_cls_flower_offload *cls_flower)
+				    struct flow_cls_offload *cls_flower)
 {
 	if (cls_flower->common.chain_index)
 		return -EOPNOTSUPP;
 
 	switch (cls_flower->command) {
-	case TC_CLSFLOWER_REPLACE:
+	case FLOW_CLS_REPLACE:
 		return iavf_configure_clsflower(adapter, cls_flower);
-	case TC_CLSFLOWER_DESTROY:
+	case FLOW_CLS_DESTROY:
 		return iavf_delete_clsflower(adapter, cls_flower);
-	case TC_CLSFLOWER_STATS:
+	case FLOW_CLS_STATS:
 		return -EOPNOTSUPP;
 	default:
 		return -EINVAL;
@@ -3155,39 +3155,7 @@ static int iavf_setup_tc_block_cb(enum tc_setup_type type, void *type_data,
 	}
 }
 
-/**
- * iavf_setup_tc_block - register callbacks for tc
- * @dev: network interface device structure
- * @f: tc offload data
- *
- * This function registers block callbacks for tc
- * offloads
- **/
-static int iavf_setup_tc_block(struct net_device *dev,
-			       struct tc_block_offload *f)
-{
-	struct iavf_adapter *adapter = netdev_priv(dev);
-
-	if (f->binder_type != TCF_BLOCK_BINDER_TYPE_CLSACT_INGRESS)
-		return -EOPNOTSUPP;
-
-	switch (f->command) {
-	case TC_BLOCK_BIND:
-#ifdef HAVE_TCF_BLOCK_CB_REGISTER_EXTACK
-		return tcf_block_cb_register(f->block, iavf_setup_tc_block_cb,
-					     adapter, adapter, f->extack);
-#else
-		return tcf_block_cb_register(f->block, iavf_setup_tc_block_cb,
-					     adapter, adapter);
-#endif
-	case TC_BLOCK_UNBIND:
-		tcf_block_cb_unregister(f->block, iavf_setup_tc_block_cb,
-					adapter);
-		return 0;
-	default:
-		return -EOPNOTSUPP;
-	}
-}
+static LIST_HEAD(iavf_block_cb_list);
 
 /**
  * iavf_setup_tc - configure multiple traffic classes
@@ -3203,11 +3171,16 @@ static int iavf_setup_tc_block(struct net_device *dev,
 static int iavf_setup_tc(struct net_device *dev, enum tc_setup_type type,
 			 void *type_data)
 {
+	struct iavf_adapter *adapter = netdev_priv(dev);
+
 	switch (type) {
 	case TC_SETUP_QDISC_MQPRIO:
 		return __iavf_setup_tc(dev, type_data);
 	case TC_SETUP_BLOCK:
-		return iavf_setup_tc_block(dev, type_data);
+		return flow_block_cb_setup_simple(type_data,
+						  &iavf_block_cb_list,
+						  iavf_setup_tc_block_cb,
+						  adapter, adapter, true);
 	default:
 		return -EOPNOTSUPP;
 	}
