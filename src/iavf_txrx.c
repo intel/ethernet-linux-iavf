@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0
-/* Copyright(c) 2013 - 2019 Intel Corporation. */
+/* Copyright (c) 2013, Intel Corporation. */
 
 #include <linux/prefetch.h>
 #include "iavf.h"
@@ -1989,7 +1989,7 @@ tx_only:
 
 	iavf_update_enable_itr(vsi, q_vector);
 
-	return min(work_done, budget - 1);
+	return min_t(int, work_done, budget - 1);
 }
 
 /**
@@ -2050,6 +2050,24 @@ out:
 	*flags = tx_flags;
 	return 0;
 }
+
+#ifdef IAVF_ADD_PROBES
+/**
+ * iavf_update_gso_counter - update TSO/USO counter
+ * @tx_buffer: Tx buffer with necessary data to update counter
+ */
+static void iavf_update_gso_counter(struct iavf_tx_buffer *tx_buffer)
+{
+	struct sk_buff *skb = tx_buffer->skb;
+	struct iavf_adapter *adapter =
+		netdev_priv(skb->dev);
+
+	if (skb->csum_offset == offsetof(struct tcphdr, check))
+		adapter->tcp_segs += tx_buffer->gso_segs;
+	else
+		adapter->udp_segs += tx_buffer->gso_segs;
+}
+#endif
 
 #ifndef HAVE_ENCAP_TSO_OFFLOAD
 #define inner_ip_hdr(skb) 0
@@ -2160,13 +2178,20 @@ static int iavf_tso(struct iavf_tx_buffer *first, u8 *hdr_len,
 #endif /* HAVE_ENCAP_TSO_OFFLOAD */
 	/* determine offset of inner transport header */
 	l4_offset = l4.hdr - skb->data;
-
 	/* remove payload length from inner checksum */
 	paylen = skb->len - l4_offset;
-	csum_replace_by_diff(&l4.tcp->check, (__force __wsum)htonl(paylen));
 
-	/* compute length of segmentation header */
-	*hdr_len = (l4.tcp->doff * 4) + l4_offset;
+	if (skb->csum_offset == offsetof(struct tcphdr, check)) {
+		csum_replace_by_diff(&l4.tcp->check,
+				     (__force __wsum)htonl(paylen));
+		/* compute length of TCP segmentation header */
+		*hdr_len = (l4.tcp->doff * 4) + l4_offset;
+	} else {
+		csum_replace_by_diff(&l4.udp->check,
+				     (__force __wsum)htonl(paylen));
+		/* compute length of UDP segmentation header */
+		*hdr_len = sizeof(l4.udp) + l4_offset;
+	}
 
 	/* pull values out of skb_shinfo */
 	gso_size = skb_shinfo(skb)->gso_size;
@@ -2190,6 +2215,9 @@ static int iavf_tso(struct iavf_tx_buffer *first, u8 *hdr_len,
 	*cd_type_cmd_tso_mss |= (cd_cmd << IAVF_TXD_CTX_QW1_CMD_SHIFT) |
 				(cd_tso_len << IAVF_TXD_CTX_QW1_TSO_LEN_SHIFT) |
 				(cd_mss << IAVF_TXD_CTX_QW1_MSS_SHIFT);
+#ifdef IAVF_ADD_PROBES
+	iavf_update_gso_counter(first);
+#endif
 	return 1;
 }
 
@@ -2465,7 +2493,7 @@ int __iavf_maybe_stop_tx(struct iavf_ring *tx_ring, int size)
  **/
 bool __iavf_chk_linearize(struct sk_buff *skb)
 {
-	const struct skb_frag_struct *frag, *stale;
+	const skb_frag_t *frag, *stale;
 	int nr_frags, sum;
 
 	/* no need to check if number of frags is less than 7 */
@@ -2509,7 +2537,7 @@ bool __iavf_chk_linearize(struct sk_buff *skb)
 		 * descriptor associated with the fragment.
 		 */
 		if (stale_size > IAVF_MAX_DATA_PER_TXD) {
-			int align_pad = -(stale->page_offset) &
+			int align_pad = -(skb_frag_off(stale)) &
 					(IAVF_MAX_READ_REQ_SIZE - 1);
 
 			sum -= align_pad;
@@ -2552,7 +2580,7 @@ static inline int iavf_tx_map(struct iavf_ring *tx_ring, struct sk_buff *skb,
 {
 	unsigned int data_len = skb->data_len;
 	unsigned int size = skb_headlen(skb);
-	struct skb_frag_struct *frag;
+	skb_frag_t *frag;
 	struct iavf_tx_buffer *tx_bi;
 	struct iavf_tx_desc *tx_desc;
 	u16 i = tx_ring->next_to_use;
@@ -2568,11 +2596,6 @@ static inline int iavf_tx_map(struct iavf_ring *tx_ring, struct sk_buff *skb,
 #endif
 	}
 
-#ifdef IAVF_ADD_PROBES
-	if (tx_flags & (IAVF_TX_FLAGS_TSO | IAVF_TX_FLAGS_FSO))
-		tx_ring->vsi->back->tcp_segs += first->gso_segs;
-
-#endif
 	first->tx_flags = tx_flags;
 
 	dma = dma_map_single(tx_ring->dev, skb->data, size, DMA_TO_DEVICE);

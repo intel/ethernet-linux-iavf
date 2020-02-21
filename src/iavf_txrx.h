@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0 */
-/* Copyright(c) 2013 - 2019 Intel Corporation. */
+/* Copyright (c) 2013, Intel Corporation. */
 
 #ifndef _IAVF_TXRX_H_
 #define _IAVF_TXRX_H_
@@ -508,7 +508,7 @@ void iavf_xdp_flush(struct net_device *dev);
  **/
 static inline int iavf_xmit_descriptor_count(struct sk_buff *skb)
 {
-	const struct skb_frag_struct *frag = &skb_shinfo(skb)->frags[0];
+	const skb_frag_t *frag = &skb_shinfo(skb)->frags[0];
 	unsigned int nr_frags = skb_shinfo(skb)->nr_frags;
 	int count = 0, size = skb_headlen(skb);
 
