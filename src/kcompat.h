@@ -6725,4 +6725,10 @@ static inline void skb_frag_off_add(skb_frag_t *frag, int delta)
 #define HAVE_NDO_XSK_WAKEUP
 #endif /* 5.4.0 */
 
+/*****************************************************************************/
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(5,6,0))
+#else /* >= 5.6.0 */
+#define HAVE_TX_TIMEOUT_TXQUEUE
+#endif /* 5.6.0 */
+
 #endif /* _KCOMPAT_H_ */

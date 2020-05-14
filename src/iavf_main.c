@@ -25,8 +25,8 @@ static const char iavf_driver_string[] =
 
 #define DRV_VERSION_MAJOR (3)
 #define DRV_VERSION_MINOR (9)
-#define DRV_VERSION_BUILD (3)
-#define DRV_VERSION "3.9.3"
+#define DRV_VERSION_BUILD (5)
+#define DRV_VERSION "3.9.5"
 const char iavf_driver_version[] = DRV_VERSION;
 static const char iavf_copyright[] =
 	"Copyright (c) 2013, Intel Corporation.";
@@ -75,8 +75,14 @@ void iavf_schedule_reset(struct iavf_adapter *adapter)
 /**
  * iavf_tx_timeout - Respond to a Tx Hang
  * @netdev: network interface device structure
+ * @txqueue: stuck queue
  **/
+#ifdef HAVE_TX_TIMEOUT_TXQUEUE
+static void
+iavf_tx_timeout(struct net_device *netdev, __always_unused unsigned int txqueue)
+#else
 static void iavf_tx_timeout(struct net_device *netdev)
+#endif
 {
 	struct iavf_adapter *adapter = netdev_priv(netdev);
 
@@ -2166,8 +2172,6 @@ static void iavf_disable_vf(struct iavf_adapter *adapter)
 	dev_info(&adapter->pdev->dev, "Reset task did not complete, VF disabled\n");
 }
 
-#define IAVF_RESET_WAIT_MS 10
-#define IAVF_RESET_WAIT_COUNT 500
 /**
  * iavf_handle_reset - Handle hardware reset
  * @adapter: pointer to iavf_adapter
