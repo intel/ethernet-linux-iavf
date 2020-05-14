@@ -233,6 +233,9 @@ struct iavf_cloud_filter {
 	bool add;		/* filter needs to be added */
 };
 
+#define IAVF_RESET_WAIT_MS 10
+#define IAVF_RESET_WAIT_COUNT 500
+
 /* board specific private data structure */
 struct iavf_adapter {
 	struct work_struct adminq_task;

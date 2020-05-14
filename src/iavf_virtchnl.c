@@ -1683,7 +1683,7 @@ void iavf_virtchnl_completion(struct iavf_adapter *adapter,
 		}
 		if (!v_retval)
 			dev_info(&adapter->pdev->dev,
-				 "Cloud filters have been added\n");
+				 "Cloud filters are added\n");
 		}
 		break;
 	case VIRTCHNL_OP_DEL_CLOUD_FILTER: {
@@ -1700,7 +1700,7 @@ void iavf_virtchnl_completion(struct iavf_adapter *adapter,
 		}
 		if (!v_retval)
 			dev_info(&adapter->pdev->dev,
-				 "Cloud filters have been deleted\n");
+				 "Cloud filters are deleted\n");
 		}
 		break;
 	default:
