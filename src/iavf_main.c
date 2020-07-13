@@ -23,10 +23,10 @@ char iavf_driver_name[] = "iavf";
 static const char iavf_driver_string[] =
 	"Intel(R) Ethernet Adaptive Virtual Function Network Driver";
 
-#define DRV_VERSION_MAJOR (3)
-#define DRV_VERSION_MINOR (9)
-#define DRV_VERSION_BUILD (5)
-#define DRV_VERSION "3.9.5"
+#define DRV_VERSION_MAJOR (4)
+#define DRV_VERSION_MINOR (0)
+#define DRV_VERSION_BUILD (1)
+#define DRV_VERSION "4.0.1"
 const char iavf_driver_version[] = DRV_VERSION;
 static const char iavf_copyright[] =
 	"Copyright (c) 2013, Intel Corporation.";
@@ -65,6 +65,9 @@ struct workqueue_struct *iavf_wq;
 /**
  * iavf_schedule_reset - Set the flags and schedule a reset event
  * @adapter: board private structure
+ *
+ * Set IAVF_FLAG_RESET_NEEDED flag so iavf_watchdog_task() will change drivers
+ * state to __IAVF_RESETTING.
  **/
 void iavf_schedule_reset(struct iavf_adapter *adapter)
 {
@@ -815,6 +818,13 @@ static int iavf_set_mac(struct net_device *netdev, void *p)
 	if (ether_addr_equal(netdev->dev_addr, addr->sa_data))
 		return 0;
 
+	if (iavf_chnl_filters_exist(adapter)) {
+		netdev_err(netdev,
+			   "unable to set mac address because device %s has tc-flower filters. Delete all of them and try again\n",
+				    netdev->name);
+		return -EAGAIN;
+	}
+
 	spin_lock_bh(&adapter->mac_vlan_list_lock);
 
 	f = iavf_find_filter(adapter, hw->mac.addr);
@@ -1145,10 +1155,11 @@ static int iavf_alloc_queues(struct iavf_adapter *adapter)
 	if (adapter->num_req_queues)
 		num_active_queues = adapter->num_req_queues;
 #ifdef __TC_MQPRIO_MODE_MAX
-	else if ((adapter->vf_res->vf_cap_flags & VIRTCHNL_VF_OFFLOAD_ADQ) &&
-		 adapter->num_tc)
+	else if (iavf_is_adq_enabled(adapter))
 		num_active_queues = adapter->ch_config.total_qps;
 #endif /* __TC_MQPRIO_MODE_MAX */
+	else if (adapter->orig_num_active_queues)
+		num_active_queues = adapter->orig_num_active_queues;
 	else
 		num_active_queues = min_t(int,
 					  adapter->vsi_res->num_queue_pairs,
@@ -1359,8 +1370,7 @@ int iavf_init_interrupt_scheme(struct iavf_adapter *adapter)
 	 * resources have been allocated in the reset path.
 	 * Now we can truly claim that ADQ is enabled.
 	 */
-	if ((adapter->vf_res->vf_cap_flags & VIRTCHNL_VF_OFFLOAD_ADQ) &&
-	    adapter->num_tc)
+	if (iavf_is_adq_enabled(adapter))
 		dev_info(&adapter->pdev->dev, "ADQ Enabled, %u TCs created",
 			 adapter->num_tc);
 #endif /* __TC_MQPRIO_MODE_MAX */
@@ -1670,15 +1680,13 @@ static void iavf_init_get_resources(struct iavf_adapter *adapter)
 	struct net_device *netdev = adapter->netdev;
 	struct iavf_hw *hw = &adapter->hw;
 	struct pci_dev *pdev = adapter->pdev;
-	int ret, bufsz;
+	int ret;
 
 	WARN_ON(adapter->state != __IAVF_INIT_GET_RESOURCES);
 	/* aq msg sent, awaiting reply */
 	if (!adapter->vf_res) {
-		bufsz = sizeof(struct virtchnl_vf_resource) +
-			(IAVF_MAX_VF_VSI *
-			sizeof(struct virtchnl_vsi_resource));
-		adapter->vf_res = kzalloc(bufsz, GFP_KERNEL);
+		adapter->vf_res = kzalloc(IAVF_VIRTCHNL_VF_RESOURCE_SIZE,
+					  GFP_KERNEL);
 		if (!adapter->vf_res)
 			goto err;
 	}
@@ -1944,6 +1952,21 @@ static void iavf_send_reset_request(struct iavf_adapter *adapter)
 }
 
 /**
+ * iavf_set_flags_reset_detected - set flags for handling reset
+ * @adapter: pointer to iavf_adapter
+ *
+ * Set IAVF_FLAG_RESET_DETECTED flag and IAVF_FLAG_RESET_PENDING flags to handle
+ * reset without sending reset request to PF in iavf_watchdog_task() via
+ * iavf_send_reset_request().
+ **/
+static void iavf_set_flags_reset_detected(struct iavf_adapter *adapter)
+{
+	adapter->flags &= ~IAVF_FLAG_QUEUES_ENABLED;
+	adapter->flags |= IAVF_FLAG_RESET_DETECTED;
+	adapter->flags |= IAVF_FLAG_RESET_PENDING;
+}
+
+/**
  * iavf_watchdog_task - Periodic call-back task
  * @work: pointer to work_struct
  **/
@@ -1955,12 +1978,19 @@ static void iavf_watchdog_task(struct work_struct *work)
 	struct iavf_hw *hw = &adapter->hw;
 	u32 reg_val;
 
+	/* If the driver is in the process of being removed then don't run or
+	 * reschedule the watchdog task.
+	 */
+	if (test_bit(__IAVF_IN_REMOVE_TASK, &adapter->crit_section))
+		return;
+
 	if (test_and_set_bit(__IAVF_IN_CRITICAL_TASK, &adapter->crit_section))
 		goto restart_watchdog;
 
 	if (adapter->flags & IAVF_FLAG_PF_COMMS_FAILED)
 		iavf_change_state(adapter, __IAVF_COMM_FAILED);
 
+	/* IAVF_FLAG_RESET_NEEDED is set in iavf_schedule_reset() */
 	if (adapter->flags & IAVF_FLAG_RESET_NEEDED &&
 	    adapter->state != __IAVF_RESETTING) {
 		adapter->flags &= ~IAVF_FLAG_RESET_NEEDED;
@@ -2011,7 +2041,7 @@ static void iavf_watchdog_task(struct work_struct *work)
 					   &adapter->watchdog_task, (5 * HZ));
 			return;
 		}
-		/* Try again from failed step*/
+		/* Try again from failed step */
 		iavf_change_state(adapter, adapter->last_state);
 		clear_bit(__IAVF_IN_CRITICAL_TASK, &adapter->crit_section);
 		queue_delayed_work(iavf_wq, &adapter->watchdog_task, HZ);
@@ -2040,6 +2070,10 @@ static void iavf_watchdog_task(struct work_struct *work)
 				   msecs_to_jiffies(10));
 		return;
 	case __IAVF_RESETTING:
+		/* Proceed with handling reset if IAVF_FLAG_RESET_PENDING has
+		 * been set in either iavf_send_reset_request() or
+		 * iavf_set_flags_reset_detected().
+		 */
 		if (!(adapter->flags & IAVF_FLAG_RESET_PENDING))
 			iavf_send_reset_request(adapter);
 		else
@@ -2064,8 +2098,10 @@ static void iavf_watchdog_task(struct work_struct *work)
 			    adapter->state == __IAVF_RUNNING)
 				iavf_request_stats(adapter);
 		}
-		if (adapter->state == __IAVF_RUNNING)
+		if (adapter->state == __IAVF_RUNNING) {
 			iavf_detect_recover_hung(&adapter->vsi);
+			iavf_chnl_detect_recover(&adapter->vsi);
+		}
 		break;
 	case __IAVF_REMOVE:
 		clear_bit(__IAVF_IN_CRITICAL_TASK, &adapter->crit_section);
@@ -2076,6 +2112,7 @@ static void iavf_watchdog_task(struct work_struct *work)
 
 	/* check for hw reset */
 	if (iavf_is_reset(hw)) {
+		iavf_set_flags_reset_detected(adapter);
 		iavf_schedule_reset(adapter);
 		adapter->aq_required = 0;
 		adapter->current_op = VIRTCHNL_OP_UNKNOWN;
@@ -2158,8 +2195,7 @@ static void iavf_disable_vf(struct iavf_adapter *adapter)
 	iavf_reset_interrupt_capability(adapter);
 	iavf_free_q_vectors(adapter);
 	iavf_free_queues(adapter);
-	kfree(adapter->vf_res);
-	adapter->vf_res = NULL;
+	memset(adapter->vf_res, 0, IAVF_VIRTCHNL_VF_RESOURCE_SIZE);
 	iavf_shutdown_adminq(&adapter->hw);
 	adapter->netdev->flags &= ~IFF_UP;
 	adapter->flags &= ~IAVF_FLAG_RESET_PENDING;
@@ -2173,12 +2209,46 @@ static void iavf_disable_vf(struct iavf_adapter *adapter)
 }
 
 /**
+ * iavf_is_reset_detected - check if reset has been detected
+ * @adapter: pointer to iavf_adapter
+ *
+ * IAVF_FLAG_RESET_DETECTED is set if a HW reset is detected in
+ * iavf_watchdog_task() and cleared here, else poll for reset.
+ */
+static bool iavf_is_reset_detected(struct iavf_adapter *adapter)
+{
+	struct iavf_hw *hw = &adapter->hw;
+	int i;
+
+	if (adapter->flags & IAVF_FLAG_RESET_DETECTED) {
+		adapter->flags &= ~IAVF_FLAG_RESET_DETECTED;
+		return true;
+	}
+
+	/* poll until we see the reset actually happen */
+	for (i = 0; i < IAVF_RESET_WAIT_DETECTED_COUNT; i++) {
+		if (iavf_is_reset(hw))
+			return true;
+		usleep_range(5000, 10000);
+	}
+
+	return false;
+}
+
+/**
  * iavf_handle_reset - Handle hardware reset
  * @adapter: pointer to iavf_adapter
  *
  * During reset we need to shut down and reinitialize the admin queue
  * before we can use it to communicate with the PF again. We also clear
  * and reinit the rings because that context is lost as well.
+ *
+ * This function is called in the __IAVF_RESETTING driver state. If a reset
+ * is detected and completes, the driver state changed to __IAVF_RUNNING or
+ * __IAVF_DOWN, else driver state will remain in __IAVF_RESETTING.
+ *
+ * The function is called with the IAVF_FLAG_RESET_PENDING flag set and it is
+ * cleared when a reset is detected and completes.
  **/
 static void iavf_handle_reset(struct iavf_adapter *adapter)
 {
@@ -2188,19 +2258,16 @@ static void iavf_handle_reset(struct iavf_adapter *adapter)
 	bool running;
 	u32 reg_val;
 
-	/* poll until we see the reset actually happen */
-	for (i = 0; i < IAVF_RESET_WAIT_COUNT; i++) {
-		if (iavf_is_reset(hw))
-			break;
-		usleep_range(5000, 10000);
-	}
-	if (i == IAVF_RESET_WAIT_COUNT) {
+	if (!iavf_is_reset_detected(adapter)) {
+		/* Driver state remains __IAVF_RESETTING and flags are not
+		 * cleared, so iavf_watchdog_task() will call again.
+		 */
 		dev_info(&adapter->pdev->dev, "Never saw reset\n");
-		return; /* bail out, I'll be back */
+		return;
 	}
 
 	/* wait until the reset is complete and the PF is responding to us */
-	for (i = 0; i < IAVF_RESET_WAIT_COUNT; i++) {
+	for (i = 0; i < IAVF_RESET_WAIT_COMPLETE_COUNT; i++) {
 		/* sleep first to make sure a minimum wait time is met */
 		msleep(IAVF_RESET_WAIT_MS);
 
@@ -2213,7 +2280,7 @@ static void iavf_handle_reset(struct iavf_adapter *adapter)
 	pci_set_master(adapter->pdev);
 	pci_restore_msi_state(adapter->pdev);
 
-	if (i == IAVF_RESET_WAIT_COUNT) {
+	if (i == IAVF_RESET_WAIT_COMPLETE_COUNT) {
 		dev_err(&adapter->pdev->dev, "Reset never finished (%x)\n",
 			reg_val);
 		iavf_disable_vf(adapter);
@@ -2264,7 +2331,15 @@ static void iavf_handle_reset(struct iavf_adapter *adapter)
 			 err);
 	adapter->aq_required = 0;
 
+	/* Reset TC information if CHNL CFG failed for some reason */
+	if (adapter->flags & IAVF_FLAG_CHNL_CFG_FAILED) {
+		adapter->ch_config.state = __IAVF_TC_INVALID;
+		adapter->num_tc = 0;
+		netdev_reset_tc(netdev);
+	}
+
 	if ((adapter->flags & IAVF_FLAG_REINIT_MSIX_NEEDED) ||
+	    (adapter->flags & IAVF_FLAG_REINIT_CHNL_NEEDED) ||
 	    (adapter->flags & IAVF_FLAG_REINIT_ITR_NEEDED)) {
 		err = iavf_reinit_interrupt_scheme(adapter);
 		if (err)
@@ -2298,6 +2373,7 @@ static void iavf_handle_reset(struct iavf_adapter *adapter)
 			goto reset_err;
 
 		if ((adapter->flags & IAVF_FLAG_REINIT_MSIX_NEEDED) ||
+		    (adapter->flags & IAVF_FLAG_REINIT_CHNL_NEEDED) ||
 		    (adapter->flags & IAVF_FLAG_REINIT_ITR_NEEDED)) {
 			err = iavf_request_traffic_irqs(adapter, netdev->name);
 			if (err)
@@ -2319,6 +2395,8 @@ static void iavf_handle_reset(struct iavf_adapter *adapter)
 	}
 
 	adapter->flags &= ~IAVF_FLAG_REINIT_ITR_NEEDED;
+	adapter->flags &= ~IAVF_FLAG_REINIT_CHNL_NEEDED;
+	adapter->flags &= ~IAVF_FLAG_CHNL_CFG_FAILED;
 
 	clear_bit(__IAVF_IN_CLIENT_TASK, &adapter->crit_section);
 	return;
@@ -2346,6 +2424,12 @@ static void iavf_adminq_task(struct work_struct *work)
 	enum iavf_status ret, v_ret;
 	u32 val, oldval;
 	u16 pending;
+
+	/* If the driver is in the process of being removed then return
+	 * immediately and don't re-enable the Admin Queue interrupt.
+	 */
+	if (test_bit(__IAVF_IN_REMOVE_TASK, &adapter->crit_section))
+		return;
 
 	if (adapter->flags & IAVF_FLAG_PF_COMMS_FAILED)
 		goto out;
@@ -2568,7 +2652,7 @@ static int iavf_validate_tx_bandwidth(struct iavf_adapter *adapter,
 
 #ifdef VIRTCHNL_VF_CAP_ADV_LINK_SPEED
 	if (ADV_LINK_SUPPORT(adapter)) {
-		if (SUPPORTED_SPEED(adapter->link_speed_mbps)) {
+		if (adapter->link_speed_mbps < U32_MAX) {
 			speed = adapter->link_speed_mbps;
 			goto validate_bw;
 		} else {
@@ -2580,22 +2664,28 @@ static int iavf_validate_tx_bandwidth(struct iavf_adapter *adapter,
 #endif /* VIRTCHNL_VF_CAP_ADV_LINK_SPEED */
 	switch (adapter->link_speed) {
 	case VIRTCHNL_LINK_SPEED_40GB:
-		speed = 40000;
+		speed = SPEED_40000;
 		break;
 	case VIRTCHNL_LINK_SPEED_25GB:
-		speed = 25000;
+		speed = SPEED_25000;
 		break;
 	case VIRTCHNL_LINK_SPEED_20GB:
-		speed = 20000;
+		speed = SPEED_20000;
 		break;
 	case VIRTCHNL_LINK_SPEED_10GB:
-		speed = 10000;
+		speed = SPEED_10000;
+		break;
+	case VIRTCHNL_LINK_SPEED_5GB:
+		speed = SPEED_5000;
+		break;
+	case VIRTCHNL_LINK_SPEED_2_5GB:
+		speed = SPEED_2500;
 		break;
 	case VIRTCHNL_LINK_SPEED_1GB:
-		speed = 1000;
+		speed = SPEED_1000;
 		break;
 	case VIRTCHNL_LINK_SPEED_100MB:
-		speed = 100;
+		speed = SPEED_100;
 		break;
 	default:
 		break;
@@ -2757,7 +2847,6 @@ static int __iavf_setup_tc(struct net_device *netdev, void *type_data)
 {
 	struct tc_mqprio_qopt_offload *mqprio_qopt = type_data;
 	struct iavf_adapter *adapter = netdev_priv(netdev);
-	struct virtchnl_vf_resource *vfres = adapter->vf_res;
 	u8 num_tc = 0, total_qps = 0;
 	int ret = 0, netdev_tc = 0;
 	u8 max_tc_allowed;
@@ -2786,7 +2875,7 @@ static int __iavf_setup_tc(struct net_device *netdev, void *type_data)
 
 	/* add queue channel */
 	if (mode == TC_MQPRIO_MODE_CHANNEL) {
-		if (!(vfres->vf_cap_flags & VIRTCHNL_VF_OFFLOAD_ADQ)) {
+		if (!ADQ_ALLOWED(adapter)) {
 			dev_err(&adapter->pdev->dev, "ADQ not supported\n");
 			return -EOPNOTSUPP;
 		}
@@ -2827,12 +2916,29 @@ static int __iavf_setup_tc(struct net_device *netdev, void *type_data)
 						      IAVF_MBPS_DIVISOR);
 				adapter->ch_config.ch_info[i].max_tx_rate =
 					max_tx_rate;
+				adapter->ch_config.ch_ex_info[i].num_rxq =
+					mqprio_qopt->qopt.count[i];
+				adapter->ch_config.ch_ex_info[i].base_q =
+					mqprio_qopt->qopt.offset[i];
 			} else {
 				adapter->ch_config.ch_info[i].count = 1;
 				adapter->ch_config.ch_info[i].offset = 0;
 			}
 		}
+
+		/* Take snapshot of original config such as "num_active_queues"
+		 * It is used later when delete ADQ flow is exercised, so that
+		 * once delete ADQ flow completes, VF shall go back to its
+		 * original queue configuration
+		 */
+
+		adapter->orig_num_active_queues = adapter->num_active_queues;
+		/* Store queue infor based on TC so that, VF gets configured
+		 * with correct number of queues when VF completes ADQ config
+		 * flow
+		 */
 		adapter->ch_config.total_qps = total_qps;
+
 		netif_tx_stop_all_queues(netdev);
 		netif_tx_disable(netdev);
 		adapter->aq_required |= IAVF_FLAG_AQ_ENABLE_CHANNELS;
@@ -2853,6 +2959,48 @@ exit:
 }
 
 /**
+ * iavf_is_vlan_tc_filter_allowed - allowed to add tc-filter using VLAN
+ * @adapter: board private structure
+ * @vlan: VLAN to verify
+ *
+ * Using specified "vlan" ID, there must be active VLAN filter in VF's
+ * MAC-VLAN filter list.
+ */
+static bool
+iavf_is_vlan_tc_filter_allowed(struct iavf_adapter *adapter, u16 vlan)
+{
+	struct iavf_vlan_filter *f;
+	bool allowed;
+
+	spin_lock_bh(&adapter->mac_vlan_list_lock);
+	f = iavf_find_vlan(adapter, vlan);
+	allowed = (f && !f->add && !f->remove);
+	spin_unlock_bh(&adapter->mac_vlan_list_lock);
+	return allowed;
+}
+
+/**
+ * iavf_is_mac_tc_filter_allowed - allowed to add tc-filter using MAC addr
+ * @adapter: board private structure
+ * @macaddr: MAC address
+ *
+ * Using specified MAC address, there must be active MAC filter in VF's
+ * MAC-VLAN filter list.
+ */
+static bool
+iavf_is_mac_tc_filter_allowed(struct iavf_adapter *adapter, const u8 *macaddr)
+{
+	struct iavf_mac_filter *f;
+	bool allowed;
+
+	spin_lock_bh(&adapter->mac_vlan_list_lock);
+	f = iavf_find_filter(adapter, macaddr);
+	allowed = (f && !f->add && !f->is_new_mac && !f->remove);
+	spin_unlock_bh(&adapter->mac_vlan_list_lock);
+	return allowed;
+}
+
+/**
  * iavf_parse_cls_flower - Parse tc flower filters provided by kernel
  * @adapter: board private structure
  * @f: pointer to struct flow_cls_offload
@@ -2864,6 +3012,7 @@ static int iavf_parse_cls_flower(struct iavf_adapter *adapter,
 {
 	struct flow_rule *rule = flow_cls_offload_flow_rule(f);
 	struct flow_dissector *dissector = rule->match.dissector;
+	struct virtchnl_l4_spec *d_spec, *m_spec;
 	struct virtchnl_filter *cf = &filter->f;
 	enum virtchnl_flow_type flow_type;
 	u16 n_proto_mask = 0;
@@ -2901,6 +3050,16 @@ static int iavf_parse_cls_flower(struct iavf_adapter *adapter,
 	}
 #endif /* HAVE_TC_FLOWER_ENC */
 
+	/* even though following code refers as "tcp_sec", it is not
+	 * just for TCP but a generic struct representing
+	 * L2, L3 + L4 fields if specified
+	 */
+	m_spec = &cf->mask.tcp_spec;
+	d_spec = &cf->data.tcp_spec;
+
+	/* determine flow type, TCP/UDP_V4[6]_FLOW based on
+	 * L2 proto (aka ETH proto) and L3 proto (aka IP_PROTO)
+	 */
 	if (flow_rule_match_key(rule, FLOW_DISSECTOR_KEY_BASIC)) {
 		struct flow_match_basic match;
 
@@ -2917,7 +3076,7 @@ static int iavf_parse_cls_flower(struct iavf_adapter *adapter,
 		if (n_proto != ETH_P_IP && n_proto != ETH_P_IPV6)
 			return -EINVAL;
 
-		if (ADQ_V2_ALLOWED(adapter)) {
+		if (iavf_is_adq_v2_enabled(adapter)) {
 			if (match.key->ip_proto != IPPROTO_TCP &&
 			    match.key->ip_proto != IPPROTO_UDP) {
 				dev_err(&adapter->pdev->dev,
@@ -2944,6 +3103,7 @@ static int iavf_parse_cls_flower(struct iavf_adapter *adapter,
 		filter->f.flow_type = flow_type;
 	}
 
+	/* process Ethernet header fields */
 	if (flow_rule_match_key(rule, FLOW_DISSECTOR_KEY_ETH_ADDRS)) {
 		struct flow_match_eth_addrs match;
 
@@ -2951,7 +3111,8 @@ static int iavf_parse_cls_flower(struct iavf_adapter *adapter,
 
 		/* use is_broadcast and is_zero to check for all 0xf or 0 */
 		if (!is_zero_ether_addr(match.mask->dst)) {
-			if (is_broadcast_ether_addr(match.mask->dst)) {
+			if (ADQ_V2_ALLOWED(adapter) ||
+			    is_broadcast_ether_addr(match.mask->dst)) {
 				field_flags |= IAVF_CLOUD_FIELD_OMAC;
 			} else {
 				dev_err(&adapter->pdev->dev, "Bad ether dest mask %pM\n",
@@ -2961,7 +3122,8 @@ static int iavf_parse_cls_flower(struct iavf_adapter *adapter,
 		}
 
 		if (!is_zero_ether_addr(match.mask->src)) {
-			if (is_broadcast_ether_addr(match.mask->src)) {
+			if (ADQ_V2_ALLOWED(adapter) ||
+			    is_broadcast_ether_addr(match.mask->src)) {
 				field_flags |= IAVF_CLOUD_FIELD_IMAC;
 			} else {
 				dev_err(&adapter->pdev->dev, "Bad ether src mask %pM\n",
@@ -2970,43 +3132,66 @@ static int iavf_parse_cls_flower(struct iavf_adapter *adapter,
 			}
 		}
 
-		if (!is_zero_ether_addr(match.key->dst))
+		if (!is_zero_ether_addr(match.key->dst)) {
+			if (!iavf_is_mac_tc_filter_allowed(adapter,
+							   match.key->dst)) {
+				dev_err(&adapter->pdev->dev,
+					"Dest MAC %pM doesn't belong to this VF\n",
+					match.key->dst);
+				return -EINVAL;
+			}
+
 			if (is_valid_ether_addr(match.key->dst) ||
 			    is_multicast_ether_addr(match.key->dst)) {
 				/* set the mask if a valid dst_mac address */
-				for (i = 0; i < ETH_ALEN; i++)
-					cf->mask.tcp_spec.dst_mac[i] |= 0xff;
-				ether_addr_copy(cf->data.tcp_spec.dst_mac,
+				if (ADQ_V2_ALLOWED(adapter))
+					ether_addr_copy(m_spec->dst_mac,
+							match.mask->dst);
+				else
+					eth_broadcast_addr(m_spec->dst_mac);
+				ether_addr_copy(d_spec->dst_mac,
 						match.key->dst);
 			}
+		}
 
 		if (!is_zero_ether_addr(match.key->src))
 			if (is_valid_ether_addr(match.key->src) ||
 			    is_multicast_ether_addr(match.key->src)) {
 				/* set the mask if a valid src_mac address */
-				for (i = 0; i < ETH_ALEN; i++)
-					cf->mask.tcp_spec.src_mac[i] |= 0xff;
-				ether_addr_copy(cf->data.tcp_spec.src_mac,
+				if (ADQ_V2_ALLOWED(adapter))
+					ether_addr_copy(m_spec->src_mac,
+							match.mask->src);
+				else
+					eth_broadcast_addr(m_spec->src_mac);
+				ether_addr_copy(d_spec->src_mac,
 						match.key->src);
 		}
 	}
 
+	/* process VLAN header for single VLAN (type could be S/C-tag) */
 	if (flow_rule_match_key(rule, FLOW_DISSECTOR_KEY_VLAN)) {
 		struct flow_match_vlan match;
 
 		flow_rule_match_vlan(rule, &match);
 
 		if (match.mask->vlan_id) {
-			if (match.mask->vlan_id == VLAN_VID_MASK) {
-				field_flags |= IAVF_CLOUD_FIELD_IVLAN;
-			} else {
+			u16 vlan = match.key->vlan_id & VLAN_VID_MASK;
+
+			if (match.mask->vlan_id != VLAN_VID_MASK) {
 				dev_err(&adapter->pdev->dev, "Bad vlan mask %u\n",
 					match.mask->vlan_id);
 				return -EINVAL;
 			}
+			if (!iavf_is_vlan_tc_filter_allowed(adapter, vlan)) {
+				dev_err(&adapter->pdev->dev,
+					"VLAN %u doesn't belong to this VF\n",
+					vlan);
+				return -EINVAL;
+			}
+			field_flags |= IAVF_CLOUD_FIELD_IVLAN;
+			m_spec->vlan_id = cpu_to_be16(match.mask->vlan_id);
+			d_spec->vlan_id = cpu_to_be16(match.key->vlan_id);
 		}
-		cf->mask.tcp_spec.vlan_id |= cpu_to_be16(0xffff);
-		cf->data.tcp_spec.vlan_id = cpu_to_be16(match.key->vlan_id);
 	}
 
 	if (flow_rule_match_key(rule, FLOW_DISSECTOR_KEY_CONTROL)) {
@@ -3016,13 +3201,21 @@ static int iavf_parse_cls_flower(struct iavf_adapter *adapter,
 		addr_type = match.key->addr_type;
 	}
 
+	/* process IPv4 header */
 	if (addr_type == FLOW_DISSECTOR_KEY_IPV4_ADDRS) {
 		struct flow_match_ipv4_addrs match;
 
 		flow_rule_match_ipv4_addrs(rule, &match);
 
+		if (field_flags & IAVF_CLOUD_FIELD_TEN_ID) {
+			dev_info(&adapter->pdev->dev,
+				 "Tenant id not allowed for ip filter\n");
+			return -EINVAL;
+		}
+
 		if (match.mask->dst) {
-			if (match.mask->dst == cpu_to_be32(0xffffffff)) {
+			if (ADQ_V2_ALLOWED(adapter) ||
+			    match.mask->dst == cpu_to_be32(0xffffffff)) {
 				field_flags |= IAVF_CLOUD_FIELD_IIP;
 			} else {
 				dev_err(&adapter->pdev->dev, "Bad ip dst mask 0x%08x\n",
@@ -3032,7 +3225,8 @@ static int iavf_parse_cls_flower(struct iavf_adapter *adapter,
 		}
 
 		if (match.mask->src) {
-			if (match.mask->src == cpu_to_be32(0xffffffff)) {
+			if (ADQ_V2_ALLOWED(adapter) ||
+			    match.mask->src == cpu_to_be32(0xffffffff)) {
 				field_flags |= IAVF_CLOUD_FIELD_IIP;
 			} else {
 				dev_err(&adapter->pdev->dev, "Bad ip src mask 0x%08x\n",
@@ -3041,20 +3235,23 @@ static int iavf_parse_cls_flower(struct iavf_adapter *adapter,
 			}
 		}
 
-		if (field_flags & IAVF_CLOUD_FIELD_TEN_ID) {
-			dev_info(&adapter->pdev->dev, "Tenant id not allowed for ip filter\n");
-			return -EINVAL;
-		}
 		if (match.key->dst) {
-			cf->mask.tcp_spec.dst_ip[0] |= cpu_to_be32(0xffffffff);
-			cf->data.tcp_spec.dst_ip[0] = match.key->dst;
+			if (ADQ_V2_ALLOWED(adapter))
+				m_spec->dst_ip[0] = match.mask->dst;
+			else
+				m_spec->dst_ip[0] = cpu_to_be32(0xffffffff);
+			d_spec->dst_ip[0] = match.key->dst;
 		}
 		if (match.key->src) {
-			cf->mask.tcp_spec.src_ip[0] |= cpu_to_be32(0xffffffff);
-			cf->data.tcp_spec.src_ip[0] = match.key->src;
+			if (ADQ_V2_ALLOWED(adapter))
+				m_spec->src_ip[0] = match.mask->src;
+			else
+				m_spec->src_ip[0] = cpu_to_be32(0xffffffff);
+			d_spec->src_ip[0] = match.key->src;
 		}
 	}
 
+	/* process IPv6 header */
 	if (addr_type == FLOW_DISSECTOR_KEY_IPV6_ADDRS) {
 		struct flow_match_ipv6_addrs match;
 
@@ -3080,25 +3277,40 @@ static int iavf_parse_cls_flower(struct iavf_adapter *adapter,
 		    !ipv6_addr_any(&match.mask->src))
 			field_flags |= IAVF_CLOUD_FIELD_IIP;
 
-		for (i = 0; i < 4; i++)
-			cf->mask.tcp_spec.dst_ip[i] |= cpu_to_be32(0xffffffff);
-		memcpy(&cf->data.tcp_spec.dst_ip, &match.key->dst.s6_addr32,
-		       sizeof(cf->data.tcp_spec.dst_ip));
-		for (i = 0; i < 4; i++)
-			cf->mask.tcp_spec.src_ip[i] |= cpu_to_be32(0xffffffff);
-		memcpy(&cf->data.tcp_spec.src_ip, &match.key->src.s6_addr32,
-		       sizeof(cf->data.tcp_spec.src_ip));
+		/* copy dest IPv6 mask and address */
+		if (ADQ_V2_ALLOWED(adapter)) {
+			memcpy(&m_spec->dst_ip, &match.mask->dst.s6_addr32,
+			       sizeof(m_spec->dst_ip));
+		} else {
+			for (i = 0; i < 4; i++)
+				m_spec->dst_ip[i] = cpu_to_be32(0xffffffff);
+		}
+		memcpy(&d_spec->dst_ip, &match.key->dst.s6_addr32,
+		       sizeof(d_spec->dst_ip));
+
+		/* copy source IPv6 mask and address */
+		if (ADQ_V2_ALLOWED(adapter)) {
+			memcpy(&m_spec->src_ip, &match.mask->src.s6_addr32,
+			       sizeof(m_spec->src_ip));
+		} else {
+			for (i = 0; i < 4; i++)
+				m_spec->src_ip[i] = cpu_to_be32(0xffffffff);
+		}
+		memcpy(&d_spec->src_ip, &match.key->src.s6_addr32,
+		       sizeof(d_spec->src_ip));
 	}
+
+	/* process L4 header, supported L4 protocols are TCP and UDP */
 	if (flow_rule_match_key(rule, FLOW_DISSECTOR_KEY_PORTS)) {
 		struct flow_match_ports match;
 
 		flow_rule_match_ports(rule, &match);
 
 		if (match.key->dst) {
-			if (match.mask->dst == cpu_to_be16(0xffff)) {
-				cf->mask.tcp_spec.dst_port |=
-							cpu_to_be16(0xffff);
-				cf->data.tcp_spec.dst_port = match.key->dst;
+			if (ADQ_V2_ALLOWED(adapter) ||
+			    match.mask->dst == cpu_to_be16(0xffff)) {
+				m_spec->dst_port = match.mask->dst;
+				d_spec->dst_port = match.key->dst;
 			} else {
 				dev_err(&adapter->pdev->dev, "Bad dst port mask %u\n",
 					be16_to_cpu(match.mask->dst));
@@ -3107,10 +3319,10 @@ static int iavf_parse_cls_flower(struct iavf_adapter *adapter,
 		}
 
 		if (match.key->src) {
-			if (match.mask->src == cpu_to_be16(0xffff)) {
-				cf->mask.tcp_spec.src_port |=
-							cpu_to_be16(0xffff);
-				cf->data.tcp_spec.src_port = match.key->src;
+			if (ADQ_V2_ALLOWED(adapter) ||
+			    match.mask->src == cpu_to_be16(0xffff)) {
+				m_spec->src_port = match.mask->src;
+				d_spec->src_port = match.key->src;
 			} else {
 				dev_err(&adapter->pdev->dev, "Bad src port mask %u\n",
 					be16_to_cpu(match.mask->src));
@@ -3136,7 +3348,7 @@ static int iavf_handle_tclass(struct iavf_adapter *adapter, u32 tc,
 {
 	if (tc == 0)
 		return 0;
-	if (tc < adapter->num_tc && (!ADQ_V2_ALLOWED(adapter)) &&
+	if (tc < adapter->num_tc && (!iavf_is_adq_v2_enabled(adapter)) &&
 	    !filter->f.data.tcp_spec.dst_port) {
 		dev_err(&adapter->pdev->dev,
 			"Specify destination port to redirect to traffic classother than TC0\n");
@@ -3187,6 +3399,22 @@ static int iavf_configure_clsflower(struct iavf_adapter *adapter,
 		return -EINVAL;
 	}
 
+	if (adapter->num_cloud_filters >= IAVF_MAX_CLOUD_ADQ_FILTERS) {
+		dev_err(&adapter->pdev->dev,
+			"Unable to add filter (action is forward to TC) because VF reached the limit of max allowed filters (%u)\n",
+			IAVF_MAX_CLOUD_ADQ_FILTERS);
+		return -ENOSPC;
+	}
+
+	/* bail out here if filter already exists */
+	spin_lock_bh(&adapter->cloud_filter_list_lock);
+	if (iavf_find_cf(adapter, &cls_flower->cookie)) {
+		dev_err(&adapter->pdev->dev, "Failed to add TC Flower filter, it already exists\n");
+		spin_unlock_bh(&adapter->cloud_filter_list_lock);
+		return -EEXIST;
+	}
+	spin_unlock_bh(&adapter->cloud_filter_list_lock);
+
 	filter = kzalloc(sizeof(*filter), GFP_KERNEL);
 	if (!filter)
 		return -ENOMEM;
@@ -3201,15 +3429,6 @@ static int iavf_configure_clsflower(struct iavf_adapter *adapter,
 	}
 	filter->cookie = cls_flower->cookie;
 
-	/* bail out here if filter already exists */
-	spin_lock_bh(&adapter->cloud_filter_list_lock);
-	if (iavf_find_cf(adapter, &cls_flower->cookie)) {
-		dev_err(&adapter->pdev->dev, "Failed to add TC Flower filter, it already exists\n");
-		err = -EEXIST;
-		goto spin_unlock;
-	}
-	spin_unlock_bh(&adapter->cloud_filter_list_lock);
-
 	/* set the mask to all zeroes to begin with */
 	memset(&filter->f.mask.tcp_spec, 0, sizeof(struct virtchnl_l4_spec));
 	/* start out with flow type and eth type IPv4 to begin with */
@@ -3222,16 +3441,33 @@ static int iavf_configure_clsflower(struct iavf_adapter *adapter,
 	if (err)
 		goto err;
 
+	/* store "channel" as back ptr to filter and it is applicable
+	 * only if filter is for ADQ TC, where "hw_tc <n>"
+	 */
+	if (tc >= IAVF_START_CHNL_TC &&
+	    tc < ARRAY_SIZE(adapter->ch_config.ch_ex_info))
+		filter->ch = &adapter->ch_config.ch_ex_info[tc];
+	else
+		filter->ch = NULL;
+
 	/* add filter to the list */
 	spin_lock_bh(&adapter->cloud_filter_list_lock);
 	list_add_tail(&filter->list, &adapter->cloud_filter_list);
 	adapter->num_cloud_filters++;
 	filter->add = true;
 	adapter->aq_required |= IAVF_FLAG_AQ_ADD_CLOUD_FILTER;
-spin_unlock:
 	spin_unlock_bh(&adapter->cloud_filter_list_lock);
+
+	/* instead of waiting for the timer to expire (which could be as long as
+	 * 1 sec), trigger the watchdog_task so that filter add command can be
+	 * sent immediately. This will also reduce the time lag between when
+	 * the filter add user command 'completes' and when the filter is
+	 * actually added in HW.
+	 */
+	if (filter && filter->add)
+		mod_delayed_work(iavf_wq, &adapter->watchdog_task, 0);
 err:
-	if (err)
+	if (err && filter)
 		kfree(filter);
 	clear_bit(__IAVF_IN_CRITICAL_TASK, &adapter->crit_section);
 	return err;
@@ -3253,10 +3489,32 @@ static int iavf_delete_clsflower(struct iavf_adapter *adapter,
 	if (filter) {
 		filter->del = true;
 		adapter->aq_required |= IAVF_FLAG_AQ_DEL_CLOUD_FILTER;
-	} else {
+	} else if (adapter->num_cloud_filters) {
+		/* "num_cloud_filters" can become zero if egress qdisc is
+		 * detached as per design, driver deletes related filters
+		 * when qdisc is detached to avoid stale filters, hence
+		 * num_cloud_filters can become zero. But since netdev
+		 * layer doesn't know that filters are deleted by driver
+		 * implictly when egress qdisc is deleted, it sees filters
+		 * being present and "in_hw". User can request delete
+		 * of specific filter of detach ingress qdisc - in either of
+		 * those operation, filter(s) won't be found in driver cache,
+		 * hence instead if returning, let this function return SUCCESS
+		 * Returning of err as -EINVAL is only applicable when
+		 * unable to find filter and num_cloud_filters is non-zero
+		 */
 		err = -EINVAL;
 	}
 	spin_unlock_bh(&adapter->cloud_filter_list_lock);
+
+	/* instead of waiting for the timer to expire (which could be as long as
+	 * 1 sec), trigger the watchdog_task so that filter delete command can
+	 * be sent immediately. This will also reduce the time lag between when
+	 * the filter delete user command 'completes' and when the filter is
+	 * actually deleted from HW.
+	 */
+	if (filter && filter->del)
+		mod_delayed_work(iavf_wq, &adapter->watchdog_task, 0);
 
 	return err;
 }
@@ -3450,6 +3708,13 @@ static int iavf_close(struct net_device *netdev)
 	iavf_free_traffic_irqs(adapter);
 
 	clear_bit(__IAVF_IN_CRITICAL_TASK, &adapter->crit_section);
+
+	/* If we're closing the interface as part of driver removal then don't
+	 * wait. The VF resources will be reinitialized when the hardware is
+	 * reset.
+	 */
+	if (test_bit(__IAVF_IN_REMOVE_TASK, &adapter->crit_section))
+		return 0;
 
 	/* We explicitly don't free resources here because the hardware is
 	 * still active and can DMA into memory. Resources are cleared in
@@ -3729,7 +3994,7 @@ static int iavf_check_reset_complete(struct iavf_hw *hw)
 	u32 rstat;
 	int i;
 
-	for (i = 0; i < IAVF_RESET_WAIT_COUNT; i++) {
+	for (i = 0; i < IAVF_RESET_WAIT_COMPLETE_COUNT; i++) {
 		rstat = rd32(hw, IAVF_VFGEN_RSTAT) &
 			     IAVF_VFGEN_RSTAT_VFR_STATE_MASK;
 		if ((rstat == VIRTCHNL_VFR_VFACTIVE) ||
@@ -3876,7 +4141,7 @@ int iavf_process_config(struct iavf_adapter *adapter)
 #endif
 #ifdef NETIF_F_HW_TC
 	/* Enable cloud filter if ADQ is supported */
-	if (vfres->vf_cap_flags & VIRTCHNL_VF_OFFLOAD_ADQ)
+	if (ADQ_ALLOWED(adapter))
 		hw_features |= NETIF_F_HW_TC;
 #endif
 #ifdef NETIF_F_GSO_UDP_L4
@@ -4092,6 +4357,13 @@ static int iavf_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 	/* Setup the wait queue for indicating transition to down status */
 	init_waitqueue_head(&adapter->down_waitqueue);
 
+	/* By default, start the value of priv flags
+	 * "channel-pkt-inspect-optimize" as ON. It's not in effect,
+	 * unless ADQ type of filter is added and ADQ_V2 capability
+	 * is negotiated
+	 */
+	adapter->flags |= IAVF_FLAG_CHNL_PKT_OPT_ENA;
+
 	return 0;
 
 err_ioremap:
@@ -4211,17 +4483,24 @@ static void iavf_remove(struct pci_dev *pdev)
 	struct iavf_mac_filter *f, *ftmp;
 	struct iavf_hw *hw = &adapter->hw;
 	int err;
-	/* Indicate we are in remove and not to run reset_task */
+	/* Indicate we are in remove and not to run/schedule any driver tasks */
 	set_bit(__IAVF_IN_REMOVE_TASK, &adapter->crit_section);
 	cancel_delayed_work_sync(&adapter->client_task);
+	cancel_work_sync(&adapter->adminq_task);
+	cancel_delayed_work_sync(&adapter->watchdog_task);
+
+	iavf_misc_irq_disable(adapter);
+
 	if (adapter->netdev_registered) {
-		/* will call iavf_close if the device was open previously */
+		/* This will call iavf_close if the device was open previously.
+		 * The Admin Queue and watchdog tasks have already been shut
+		 * down at this point so the driver will rely on
+		 * iavf_request_reset below to disable the queues and handle
+		 * any other Admin Queue-based cleanup normally done as part of
+		 * iavf_close.
+		 */
 		unregister_netdev(netdev);
 		adapter->netdev_registered = false;
-		/* wait for device down */
-		wait_event_timeout(adapter->down_waitqueue,
-				   adapter->state == __IAVF_DOWN,
-				   msecs_to_jiffies(200));
 	}
 
 	if (CLIENT_ALLOWED(adapter)) {
@@ -4243,11 +4522,6 @@ static void iavf_remove(struct pci_dev *pdev)
 		iavf_request_reset(adapter);
 		msleep(50);
 	}
-
-	iavf_misc_irq_disable(adapter);
-	cancel_work_sync(&adapter->adminq_task);
-
-	cancel_delayed_work_sync(&adapter->watchdog_task);
 
 	iavf_free_all_tx_resources(adapter);
 	iavf_free_all_rx_resources(adapter);

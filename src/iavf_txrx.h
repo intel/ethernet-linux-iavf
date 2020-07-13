@@ -324,6 +324,32 @@ struct iavf_rx_queue_stats {
 	u64 realloc_count;
 };
 
+struct iavf_ch_tx_q_stats {
+};
+
+struct iavf_ch_rx_q_stats {
+	u64 tcp_ctrl_pkts;
+	u64 only_ctrl_pkts;
+	u64 bp_no_data_pkt;
+	u64 tcp_fin_recv;
+	u64 tcp_rst_recv;
+	u64 tcp_syn_recv;
+};
+
+struct iavf_ch_q_poll_stats {
+	/* general packet counters for busy_poll versus napi_poll */
+	u64 pkt_busy_poll;
+	u64 pkt_not_busy_poll;
+};
+
+struct iavf_ch_q_stats {
+	struct iavf_ch_q_poll_stats poll;
+	union {
+		struct iavf_ch_tx_q_stats tx;
+		struct iavf_ch_rx_q_stats rx;
+	};
+};
+
 enum iavf_ring_state_t {
 	__IAVF_TX_FDIR_INIT_DONE,
 	__IAVF_TX_XPS_INIT_DONE,
@@ -394,6 +420,8 @@ struct iavf_ring {
 		struct iavf_rx_queue_stats rx_stats;
 	};
 
+	struct iavf_ch_q_stats ch_q_stats;
+
 	unsigned int size;		/* length of descriptor ring in bytes */
 	dma_addr_t dma;			/* physical address of ring */
 
@@ -411,11 +439,25 @@ struct iavf_ring {
 					 * for this ring.
 					 */
 
-	struct iavf_channel *ch;
+	u16 chnl_flags;
+#define IAVF_RING_CHNL_PERF_ENA	BIT(0)
+
+	struct iavf_channel_ex *ch;
+
 #ifdef HAVE_XDP_BUFF_RXQ
 	struct xdp_rxq_info xdp_rxq;
 #endif
 } ____cacheline_internodealigned_in_smp;
+
+static inline bool ring_ch_ena(struct iavf_ring *ring)
+{
+	return !!ring->ch;
+}
+
+static inline bool ring_ch_perf_ena(struct iavf_ring *ring)
+{
+	return ring->chnl_flags & IAVF_RING_CHNL_PERF_ENA;
+}
 
 static inline bool ring_uses_build_skb(struct iavf_ring *ring)
 {
@@ -483,9 +525,9 @@ int iavf_setup_rx_descriptors(struct iavf_ring *rx_ring);
 void iavf_free_tx_resources(struct iavf_ring *tx_ring);
 void iavf_free_rx_resources(struct iavf_ring *rx_ring);
 int iavf_napi_poll(struct napi_struct *napi, int budget);
-void iavf_force_wb(struct iavf_vsi *vsi, struct iavf_q_vector *q_vector);
 u32 iavf_get_tx_pending(struct iavf_ring *ring, bool in_sw);
 void iavf_detect_recover_hung(struct iavf_vsi *vsi);
+void iavf_chnl_detect_recover(struct iavf_vsi *vsi);
 int __iavf_maybe_stop_tx(struct iavf_ring *tx_ring, int size);
 bool __iavf_chk_linearize(struct sk_buff *skb);
 #ifdef HAVE_XDP_FRAME_STRUCT

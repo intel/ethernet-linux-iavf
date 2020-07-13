@@ -169,8 +169,7 @@ static void iavf_validate_num_queues(struct iavf_adapter *adapter)
 	 * the specified number of queues it's been requested for (as per TC
 	 * info). So this check should be skipped when ADQ is enabled.
 	 */
-	if ((adapter->vf_res->vf_cap_flags & VIRTCHNL_VF_OFFLOAD_ADQ) &&
-	    adapter->num_tc)
+	if (iavf_is_adq_enabled(adapter))
 		return;
 
 	if (adapter->vf_res->num_queue_pairs > IAVF_MAX_REQ_QUEUES) {
@@ -1233,7 +1232,8 @@ void iavf_add_cloud_filter(struct iavf_adapter *adapter)
 {
 	struct iavf_cloud_filter *cf;
 	struct virtchnl_filter *f;
-	int len = 0, count = 0;
+	bool process_fltr = false;
+	int len = 0;
 
 	if (adapter->current_op != VIRTCHNL_OP_UNKNOWN) {
 		/* bail because we already have a command pending */
@@ -1241,32 +1241,46 @@ void iavf_add_cloud_filter(struct iavf_adapter *adapter)
 			adapter->current_op);
 		return;
 	}
-	list_for_each_entry(cf, &adapter->cloud_filter_list, list) {
-		if (cf->add) {
-			count++;
-			break;
-		}
-	}
-	if (!count) {
-		adapter->aq_required &= ~IAVF_FLAG_AQ_ADD_CLOUD_FILTER;
-		return;
-	}
-	adapter->current_op = VIRTCHNL_OP_ADD_CLOUD_FILTER;
 
 	len = sizeof(struct virtchnl_filter);
 	f = kzalloc(len, GFP_KERNEL);
 	if (!f)
 		return;
 
+	/* Only add a single cloud filter per call to iavf_add_cloud_filter(),
+	 * the aq_required IAVF_FLAG_AQ_ADD_CLOUD_FILTER bit will be set until
+	 * no filters are left to add
+	 */
+	spin_lock_bh(&adapter->cloud_filter_list_lock);
 	list_for_each_entry(cf, &adapter->cloud_filter_list, list) {
 		if (cf->add) {
-			*f = cf->f;
+			process_fltr = true;
 			cf->add = false;
 			cf->state = __IAVF_CF_ADD_PENDING;
-			iavf_send_pf_msg(adapter, VIRTCHNL_OP_ADD_CLOUD_FILTER,
-					 (u8 *)f, len);
+			*f = cf->f;
+			/* must to store channel ptr in cloud filter if action
+			 * is TC_REDIRECT since it is used later
+			 */
+			if (f->action == VIRTCHNL_ACTION_TC_REDIRECT) {
+				u32 tc = f->action_meta;
+
+				cf->ch = &adapter->ch_config.ch_ex_info[tc];
+			}
+			break;
 		}
 	}
+	spin_unlock_bh(&adapter->cloud_filter_list_lock);
+
+	if (!process_fltr) {
+		/* prevent iavf_add_cloud_filter() from being called when there
+		 * are no filters to add
+		 */
+		adapter->aq_required &= ~IAVF_FLAG_AQ_ADD_CLOUD_FILTER;
+		kfree(f);
+		return;
+	}
+	adapter->current_op = VIRTCHNL_OP_ADD_CLOUD_FILTER;
+	iavf_send_pf_msg(adapter, VIRTCHNL_OP_ADD_CLOUD_FILTER, (u8 *)f, len);
 	kfree(f);
 }
 
@@ -1279,9 +1293,10 @@ void iavf_add_cloud_filter(struct iavf_adapter *adapter)
  **/
 void iavf_del_cloud_filter(struct iavf_adapter *adapter)
 {
-	struct iavf_cloud_filter *cf, *cftmp;
+	struct iavf_cloud_filter *cf;
 	struct virtchnl_filter *f;
-	int len = 0, count = 0;
+	bool process_fltr = false;
+	int len = 0;
 
 	if (adapter->current_op != VIRTCHNL_OP_UNKNOWN) {
 		/* bail because we already have a command pending */
@@ -1289,32 +1304,37 @@ void iavf_del_cloud_filter(struct iavf_adapter *adapter)
 			adapter->current_op);
 		return;
 	}
-	list_for_each_entry(cf, &adapter->cloud_filter_list, list) {
-		if (cf->del) {
-			count++;
-			break;
-		}
-	}
-	if (!count) {
-		adapter->aq_required &= ~IAVF_FLAG_AQ_DEL_CLOUD_FILTER;
-		return;
-	}
-	adapter->current_op = VIRTCHNL_OP_DEL_CLOUD_FILTER;
-
 	len = sizeof(struct virtchnl_filter);
 	f = kzalloc(len, GFP_KERNEL);
 	if (!f)
 		return;
 
-	list_for_each_entry_safe(cf, cftmp, &adapter->cloud_filter_list, list) {
+	/* Only delete a single cloud filter per call to iavf_del_cloud_filter()
+	 * the aq_required IAVF_FLAG_AQ_DEL_CLOUD_FILTER bit will be set until
+	 * no filters are left to delete
+	 */
+	spin_lock_bh(&adapter->cloud_filter_list_lock);
+	list_for_each_entry(cf, &adapter->cloud_filter_list, list) {
 		if (cf->del) {
+			process_fltr = true;
 			*f = cf->f;
 			cf->del = false;
 			cf->state = __IAVF_CF_DEL_PENDING;
-			iavf_send_pf_msg(adapter, VIRTCHNL_OP_DEL_CLOUD_FILTER,
-					 (u8 *)f, len);
+			break;
 		}
 	}
+	spin_unlock_bh(&adapter->cloud_filter_list_lock);
+
+	if (!process_fltr) {
+		/* prevent iavf_del_cloud_filter() from being called when there
+		 * are no filters to delete
+		 */
+		adapter->aq_required &= ~IAVF_FLAG_AQ_DEL_CLOUD_FILTER;
+		kfree(f);
+		return;
+	}
+	adapter->current_op = VIRTCHNL_OP_DEL_CLOUD_FILTER;
+	iavf_send_pf_msg(adapter, VIRTCHNL_OP_DEL_CLOUD_FILTER, (u8 *)f, len);
 	kfree(f);
 }
 
@@ -1331,6 +1351,210 @@ int iavf_request_reset(struct iavf_adapter *adapter)
 	status = iavf_send_pf_msg(adapter, VIRTCHNL_OP_RESET_VF, NULL, 0);
 	adapter->current_op = VIRTCHNL_OP_UNKNOWN;
 	return status;
+}
+
+/**
+ * iavf_clear_chnl_ring_attr - clears  rings attributes specific to channel
+ * @adapter: adapter structure
+ * @ring: Pointer to ring (Tx/Rx)
+ * @tx: TRUE means Tx and FALSE means Rx
+ *
+ * This function clears up ring attributes such as feature flag (optimization
+ * enabled or not, also resets vector feature flags associated with queue)
+ **/
+static void iavf_clear_chnl_ring_attr(struct iavf_adapter *adapter,
+				      struct iavf_ring *ring,
+				      bool tx)
+{
+	struct iavf_q_vector *qv = ring->q_vector;
+
+	ring->ch = NULL;
+	ring->chnl_flags &= ~IAVF_RING_CHNL_PERF_ENA;
+	dev_dbg(&adapter->pdev->dev,
+		"%s_ring %u, ch_ena: %u, perf_ena: %u\n",
+		tx ? "Tx" : "Rx", ring->queue_index, ring_ch_ena(ring),
+		ring_ch_perf_ena(ring));
+
+	if (!qv)
+		return;
+
+	qv->ch = NULL;
+
+	/* revive the vector from ADQ state machine
+	 * by triggering SW interrupt
+	 */
+	iavf_force_wb(&adapter->vsi, qv);
+	qv->chnl_flags &= ~IAVF_VECTOR_CHNL_PERF_ENA;
+	dev_dbg(&adapter->pdev->dev,
+		"vector(idx: %u): ch_ena: %u, perf_ena: %u\n",
+		qv->v_idx, vector_ch_ena(qv), vector_ch_perf_ena(qv));
+}
+
+/**
+ * iavf_clear_ch_info - clears channel specific information and flags_
+ * @adapter: adapter structure
+ *
+ * This function clears channel specific configurations, flags for
+ * Tx, Rx queues, related vectors and triggers software interrupt
+ * to revive the ADQ specific vectors, so that vector is put back in
+ * interrupt state
+ **/
+static void iavf_clear_ch_info(struct iavf_adapter *adapter)
+{
+	int tc, q;
+
+	/* to avoid running iAVF on older HW, do not want to support
+	 * ADQ related performance bits, hence checking the ADQ_V2 as
+	 * run-time type and prevent if ADQ_V2 is not set.
+	 */
+	if (!iavf_is_adq_v2_enabled(adapter))
+		return;
+
+	for (tc = 0; tc < VIRTCHNL_MAX_ADQ_V2_CHANNELS; tc++) {
+		struct iavf_channel_ex *ch;
+		int num_rxq;
+
+		ch = &adapter->ch_config.ch_ex_info[tc];
+		if (!ch)
+			continue;
+
+		/* unlikely but make sure to have non-zero "num_rxq" for
+		 * channel otherwise skip..
+		 */
+		num_rxq = ch->num_rxq;
+		if (!num_rxq)
+			continue;
+
+		/* proceed only when there is no active filter
+		 * for given channel
+		 */
+		if (ch->num_fltr)
+			continue;
+
+		/* do not proceed unless we have vectors >= num_active_queues.
+		 * In future, this is subject to change if interrupt to queue
+		 * assignment policy changesm but for now - expect as many
+		 * vectors as data_queues
+		 */
+		if (adapter->num_msix_vectors <= adapter->num_active_queues)
+			continue;
+
+		for (q = 0; q < num_rxq; q++) {
+			struct iavf_ring *tx_ring, *rx_ring;
+
+			tx_ring = &adapter->tx_rings[ch->base_q + q];
+			rx_ring = &adapter->rx_rings[ch->base_q + q];
+			if (tx_ring)
+				iavf_clear_chnl_ring_attr(adapter, tx_ring,
+							  true);
+			if (rx_ring)
+				iavf_clear_chnl_ring_attr(adapter, rx_ring,
+							  false);
+		}
+	}
+}
+
+/**
+ * iavf_setup_chnl_ring_attr - sets rings attributes specific to channel
+ * @adapter: adapter structure
+ * @flags: adapter specific flags (various feature bits)
+ * @ring: Pointer to ring (Tx/Rx)
+ * @ch: Pointer to channel
+ * @tx: TRUE means Tx and FALSE means Rx
+ *
+ * This function sets up ring attributes such as feature flag (optimization
+ * enabled or not, also sets up vector feature flags associated with queue)
+ **/
+static void iavf_set_chnl_ring_attr(struct iavf_adapter *adapter, u32 flags,
+				    struct iavf_ring *ring,
+				    struct iavf_channel_ex *ch,
+				    bool tx)
+{
+	struct iavf_q_vector *qv = ring->q_vector;
+
+	ring->ch = ch;
+	ring->chnl_flags |= IAVF_RING_CHNL_PERF_ENA;
+	dev_dbg(&adapter->pdev->dev, "%s_ring %u, ch_ena: %u, perf_ena: %u\n",
+		tx ? "Tx" : "Rx", ring->queue_index, ring_ch_ena(ring),
+		ring_ch_perf_ena(ring));
+
+	if (!qv)
+		return;
+
+	qv->ch = ch;
+	qv->chnl_flags |= IAVF_VECTOR_CHNL_PERF_ENA;
+	if (flags & IAVF_FLAG_CHNL_PKT_OPT_ENA)
+		qv->chnl_flags |= IAVF_VECTOR_CHNL_PKT_OPT_ENA;
+	else
+		qv->chnl_flags &= ~IAVF_VECTOR_CHNL_PKT_OPT_ENA;
+	dev_dbg(&adapter->pdev->dev,
+		"vector(idx %u): ch_ena: %u, perf_ena: %u\n",
+		qv->v_idx, vector_ch_ena(qv), vector_ch_perf_ena(qv));
+}
+
+/**
+ * iavf_setup_ch_info - sets channel specific information and flags
+ * @adapter: adapter structure
+ * @flags: adapter specific flags (various feature bits)
+ *
+ * This function sets up queues (Tx and Rx) and vector specific flags
+ * as appliable for ADQ. This function is invoked as soon as filters
+ * were added successfully, so that queues and vectors are setup to engage
+ * for optimized packets processing using ADQ state machine based logic.
+ **/
+void iavf_setup_ch_info(struct iavf_adapter *adapter, u32 flags)
+{
+	int tc;
+
+	/* to avoid running iAVF on older HW, do not want to support
+	 * ADQ related performance bits, hence checking the ADQ_V2 as
+	 * run-time type and prevent if ADQ_V2 is not set.
+	 */
+	if (!iavf_is_adq_v2_enabled(adapter))
+		return;
+
+	for (tc = 0; tc < VIRTCHNL_MAX_ADQ_V2_CHANNELS; tc++) {
+		struct iavf_channel_ex *ch;
+		int num_rxq, q;
+
+		ch = &adapter->ch_config.ch_ex_info[tc];
+		if (!ch)
+			continue;
+
+		/* unlikely but make sure to have non-zero "num_rxq" for
+		 * channel otherwise skip..
+		 */
+		num_rxq = ch->num_rxq;
+		if (!num_rxq)
+			continue;
+
+		/* do not proceed unless there is at least one filter
+		 * for given channel
+		 */
+		if (!ch->num_fltr)
+			continue;
+
+		/* do not proceed unless we have vectors >= num_active_queues.
+		 * In future, this is subject to change if interrupt to queue
+		 * assignment policy changesm but for now - expect as many
+		 * vectors as data_queues
+		 */
+		if (adapter->num_msix_vectors <= adapter->num_active_queues)
+			continue;
+
+		for (q = 0; q < num_rxq; q++) {
+			struct iavf_ring *tx_ring, *rx_ring;
+
+			tx_ring = &adapter->tx_rings[ch->base_q + q];
+			rx_ring = &adapter->rx_rings[ch->base_q + q];
+			if (tx_ring)
+				iavf_set_chnl_ring_attr(adapter, flags,
+							tx_ring, ch, true);
+			if (rx_ring)
+				iavf_set_chnl_ring_attr(adapter, flags,
+							rx_ring, ch, false);
+		}
+	}
 }
 
 /**
@@ -1430,12 +1654,17 @@ void iavf_virtchnl_completion(struct iavf_adapter *adapter,
 	if (ADQ_V2_ALLOWED(adapter) && !v_retval &&
 	    (v_opcode == VIRTCHNL_OP_ENABLE_CHANNELS ||
 	     v_opcode == VIRTCHNL_OP_DISABLE_CHANNELS)) {
-		struct virtchnl_tc_info *ch_info =
-						(struct virtchnl_tc_info *)msg;
-		if (ch_info->num_tc) {
-			dev_info(&adapter->pdev->dev, "Scheduling reset\n");
-			iavf_schedule_reset(adapter);
-		}
+		adapter->flags |= IAVF_FLAG_REINIT_CHNL_NEEDED;
+		dev_info(&adapter->pdev->dev,
+			 "Scheduling reset due to %s retval %d\n",
+			 v_opcode == VIRTCHNL_OP_ENABLE_CHANNELS ?
+			 "VIRTCHNL_OP_ENABLE_CHANNELS" :
+			 "VIRTCHNL_OP_DISABLE_CHANNELS", v_retval);
+		/* schedule reset always if processing ENABLE/DISABLE_CHANNEL
+		 * ops so that as part of reset handling, appropriate steps are
+		 * taken such as num_tc, per TC queue_map, etc...
+		 */
+		iavf_schedule_reset(adapter);
 	}
 
 	if (v_retval) {
@@ -1477,6 +1706,7 @@ void iavf_virtchnl_completion(struct iavf_adapter *adapter,
 		case VIRTCHNL_OP_ADD_CLOUD_FILTER: {
 			struct iavf_cloud_filter *cf, *cftmp;
 
+			spin_lock_bh(&adapter->cloud_filter_list_lock);
 			list_for_each_entry_safe(cf, cftmp,
 						 &adapter->cloud_filter_list,
 						 list) {
@@ -1495,11 +1725,13 @@ void iavf_virtchnl_completion(struct iavf_adapter *adapter,
 					adapter->num_cloud_filters--;
 				}
 			}
+			spin_unlock_bh(&adapter->cloud_filter_list_lock);
 			}
 			break;
 		case VIRTCHNL_OP_DEL_CLOUD_FILTER: {
 			struct iavf_cloud_filter *cf;
 
+			spin_lock_bh(&adapter->cloud_filter_list_lock);
 			list_for_each_entry(cf, &adapter->cloud_filter_list,
 					    list) {
 				if (cf->state == __IAVF_CF_DEL_PENDING) {
@@ -1511,12 +1743,33 @@ void iavf_virtchnl_completion(struct iavf_adapter *adapter,
 								&cf->f);
 				}
 			}
+			spin_unlock_bh(&adapter->cloud_filter_list_lock);
 			}
+			break;
+		case VIRTCHNL_OP_ENABLE_VLAN_STRIPPING:
+		case VIRTCHNL_OP_DISABLE_VLAN_STRIPPING:
+			dev_warn(&adapter->pdev->dev,
+				 "Changing VLAN Stripping is not allowed when Port VLAN is configured\n");
 			break;
 		default:
 			dev_err(&adapter->pdev->dev, "PF returned error %d (%s) to our request %d\n",
 				v_retval, iavf_stat_str(&adapter->hw, v_retval),
 				v_opcode);
+
+			/* Assume that the ADQ configuration caused one of the
+			 * v_opcodes in this if statement to fail.  Set the
+			 * flag so the reset path can return to the pre-ADQ
+			 * configuration and traffic can resume
+			 */
+			if (iavf_is_adq_enabled(adapter) &&
+			    (v_opcode == VIRTCHNL_OP_ENABLE_QUEUES ||
+			     v_opcode == VIRTCHNL_OP_CONFIG_IRQ_MAP ||
+			     v_opcode == VIRTCHNL_OP_CONFIG_VSI_QUEUES)) {
+				dev_err(&adapter->pdev->dev,
+					"ADQ is enabled and opcode %d failed (%d)\n",
+					v_opcode, v_retval);
+				adapter->flags |= IAVF_FLAG_CHNL_CFG_FAILED;
+			}
 		}
 	}
 	switch (v_opcode) {
@@ -1545,7 +1798,6 @@ void iavf_virtchnl_completion(struct iavf_adapter *adapter,
 		break;
 	case VIRTCHNL_OP_GET_VF_RESOURCES: {
 		struct iavf_vlan_filter *vlf;
-		struct iavf_cloud_filter *cf;
 		struct iavf_mac_filter *f;
 		bool was_mac_changed;
 		u16 len = sizeof(struct virtchnl_vf_resource) +
@@ -1588,22 +1840,31 @@ void iavf_virtchnl_completion(struct iavf_adapter *adapter,
 
 		spin_unlock_bh(&adapter->mac_vlan_list_lock);
 
-		/* check if TCs are running and re-add all cloud filters */
-		spin_lock_bh(&adapter->cloud_filter_list_lock);
-		if ((adapter->vf_res->vf_cap_flags & VIRTCHNL_VF_OFFLOAD_ADQ) &&
-		    adapter->num_tc) {
-			list_for_each_entry(cf, &adapter->cloud_filter_list,
-					    list) {
-				cf->add = true;
+		/* check if TCs are running and re-add all cloud filters
+		 * Set ADD_CLOUD_FILTER only if list is not empty so that
+		 * re-add of filters can happen correctly
+		 */
+		if (iavf_is_adq_enabled(adapter) ||
+		    iavf_is_adq_v2_enabled(adapter)) {
+			struct iavf_cloud_filter *cf;
+
+			spin_lock_bh(&adapter->cloud_filter_list_lock);
+			if (!list_empty(&adapter->cloud_filter_list)) {
+				list_for_each_entry(cf,
+						    &adapter->cloud_filter_list,
+						    list) {
+					cf->add = true;
+				}
+				adapter->aq_required |=
+						IAVF_FLAG_AQ_ADD_CLOUD_FILTER;
 			}
+			spin_unlock_bh(&adapter->cloud_filter_list_lock);
 		}
-		spin_unlock_bh(&adapter->cloud_filter_list_lock);
 
 		ether_addr_copy(netdev->dev_addr, adapter->hw.mac.addr);
 
 		adapter->aq_required |= IAVF_FLAG_AQ_ADD_MAC_FILTER;
 		adapter->aq_required |= IAVF_FLAG_AQ_ADD_VLAN_FILTER;
-		adapter->aq_required |= IAVF_FLAG_AQ_ADD_CLOUD_FILTER;
 		}
 		break;
 	case VIRTCHNL_OP_ENABLE_QUEUES:
@@ -1677,30 +1938,48 @@ void iavf_virtchnl_completion(struct iavf_adapter *adapter,
 	case VIRTCHNL_OP_ADD_CLOUD_FILTER: {
 		struct iavf_cloud_filter *cf;
 
+		spin_lock_bh(&adapter->cloud_filter_list_lock);
 		list_for_each_entry(cf, &adapter->cloud_filter_list, list) {
-			if (cf->state == __IAVF_CF_ADD_PENDING)
+			if (cf->state == __IAVF_CF_ADD_PENDING) {
 				cf->state = __IAVF_CF_ACTIVE;
+				if (cf->ch)
+					cf->ch->num_fltr++;
+			}
 		}
+		spin_unlock_bh(&adapter->cloud_filter_list_lock);
 		if (!v_retval)
 			dev_info(&adapter->pdev->dev,
 				 "Cloud filters are added\n");
+			/* if not done, set channel specific attribute
+			 * such as "is it ADQ enabled", "queues are ADD ena",
+			 * "vectors are ADQ ena" or not
+			 */
+			iavf_setup_ch_info(adapter, adapter->flags);
 		}
 		break;
 	case VIRTCHNL_OP_DEL_CLOUD_FILTER: {
 		struct iavf_cloud_filter *cf, *cftmp;
 
+		spin_lock_bh(&adapter->cloud_filter_list_lock);
 		list_for_each_entry_safe(cf, cftmp, &adapter->cloud_filter_list,
 					 list) {
 			if (cf->state == __IAVF_CF_DEL_PENDING) {
 				cf->state = __IAVF_CF_INVALID;
 				list_del(&cf->list);
+				if (cf->ch)
+					cf->ch->num_fltr--;
 				kfree(cf);
 				adapter->num_cloud_filters--;
 			}
 		}
+		spin_unlock_bh(&adapter->cloud_filter_list_lock);
 		if (!v_retval)
 			dev_info(&adapter->pdev->dev,
 				 "Cloud filters are deleted\n");
+			/* if active ADQ filters for channels reached zero,
+			 * put the rings, vectors back in non-ADQ state
+			 */
+			iavf_clear_ch_info(adapter);
 		}
 		break;
 	default:

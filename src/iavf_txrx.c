@@ -124,6 +124,67 @@ u32 iavf_get_tx_pending(struct iavf_ring *ring, bool in_sw)
 }
 
 /**
+ * iavf_chnl_detect_recover - logic to revive ADQ enabled vectors
+ * @vsi: ptr to VSI
+ *
+ * This function implements "jiffy" based logic to revive ADQ enabled
+ * vectors by triggering software interrupt. It is invoked from
+ * "service_task" which typically runs once every second.
+ **/
+void iavf_chnl_detect_recover(struct iavf_vsi *vsi)
+{
+	struct iavf_ring *tx_ring = NULL;
+	struct net_device *netdev;
+	unsigned long end;
+	unsigned int i;
+
+	if (!vsi)
+		return;
+
+	if (test_bit(__IAVF_VSI_DOWN, vsi->state))
+		return;
+
+	netdev = vsi->netdev;
+	if (!netdev)
+		return;
+
+	if (!netif_carrier_ok(netdev))
+		return;
+
+	for (i = 0; i < vsi->back->num_active_queues; i++) {
+		u8 qv_state_flags;
+
+		tx_ring = &vsi->back->tx_rings[i];
+		if (!(tx_ring && tx_ring->desc))
+			continue;
+		if (!tx_ring->q_vector)
+			continue;
+		if (!vector_ch_ena(tx_ring->q_vector) ||
+		    !vector_ch_perf_ena(tx_ring->q_vector))
+			continue;
+
+		end = tx_ring->q_vector->jiffies;
+		if (!end)
+			continue;
+
+		qv_state_flags = tx_ring->q_vector->state_flags;
+
+		/* trigger software interrupt (to revive queue processing) if
+		 * vector is channel enabled and only if current jiffies is at
+		 * least 1 sec (worth of jiffies, hence multiplying by HZ) more
+		 * than old_jiffies
+		 */
+#define IAVF_CH_JIFFY_DELTA_IN_SEC	(1 * HZ)
+		end += IAVF_CH_JIFFY_DELTA_IN_SEC;
+		if (time_is_before_jiffies(end) &&
+		    (qv_state_flags & IAVF_VECTOR_STATE_ONCE_IN_BP)) {
+			iavf_inc_serv_task_sw_intr_counter(tx_ring->q_vector);
+			iavf_force_wb(vsi, tx_ring->q_vector);
+		}
+	}
+}
+
+/**
  * iavf_detect_recover_hung - Function to detect and recover hung_queues
  * @vsi:  pointer to vsi struct with tx queues
  *
@@ -132,7 +193,6 @@ u32 iavf_get_tx_pending(struct iavf_ring *ring, bool in_sw)
  **/
 void iavf_detect_recover_hung(struct iavf_vsi *vsi)
 {
-	struct iavf_ring *tx_ring = NULL;
 	struct net_device *netdev;
 	unsigned int i;
 	int packets;
@@ -151,8 +211,13 @@ void iavf_detect_recover_hung(struct iavf_vsi *vsi)
 		return;
 
 	for (i = 0; i < vsi->back->num_active_queues; i++) {
-		tx_ring = &vsi->back->tx_rings[i];
-		if (tx_ring && tx_ring->desc) {
+		struct iavf_ring *tx_ring = &vsi->back->tx_rings[i];
+
+		if (!tx_ring || !tx_ring->q_vector)
+			continue;
+		if (vector_ch_ena(tx_ring->q_vector))
+			continue;
+		if (tx_ring->desc) {
 			/* If packet counter has not changed the queue is
 			 * likely stalled, so force an interrupt for this
 			 * queue.
@@ -176,6 +241,23 @@ void iavf_detect_recover_hung(struct iavf_vsi *vsi)
 	}
 }
 
+static void iavf_chnl_queue_stats(struct iavf_ring *ring, u64 pkts)
+{
+	u64_stats_update_begin(&ring->syncp);
+	/* separate accounting of packets (either from busy_poll or
+	 * napi_poll depending upon state of vector specific
+	 * flag 'in_bp', 'prev_in_bp'
+	 */
+	if (ring->q_vector->state_flags & IAVF_VECTOR_STATE_IN_BP) {
+		ring->ch_q_stats.poll.pkt_busy_poll += pkts;
+	} else {
+		if (ring->q_vector->state_flags & IAVF_VECTOR_STATE_PREV_IN_BP)
+			ring->ch_q_stats.poll.pkt_busy_poll += pkts;
+		else
+			ring->ch_q_stats.poll.pkt_not_busy_poll += pkts;
+	}
+	u64_stats_update_end(&ring->syncp);
+}
 #define WB_STRIDE 4
 
 /**
@@ -283,6 +365,7 @@ static bool iavf_clean_tx_irq(struct iavf_vsi *vsi,
 	u64_stats_update_end(&tx_ring->syncp);
 	tx_ring->q_vector->tx.total_bytes += total_bytes;
 	tx_ring->q_vector->tx.total_packets += total_packets;
+	iavf_chnl_queue_stats(tx_ring, total_packets);
 
 	if (tx_ring->flags & IAVF_TXR_FLAGS_WB_ON_ITR) {
 		/* check to see if there are < 4 descriptors
@@ -351,54 +434,66 @@ static void iavf_enable_wb_on_itr(struct iavf_vsi *vsi,
 	q_vector->arm_wb_state = true;
 }
 
-/**
- * iavf_force_wb - Issue SW Interrupt so HW does a wb
- * @vsi: the VSI we care about
- * @q_vector: the vector  on which to force writeback
- *
- **/
-void iavf_force_wb(struct iavf_vsi *vsi, struct iavf_q_vector *q_vector)
-{
-	u32 val = IAVF_VFINT_DYN_CTLN1_INTENA_MASK |
-		  IAVF_VFINT_DYN_CTLN1_ITR_INDX_MASK | /* set noitr */
-		  IAVF_VFINT_DYN_CTLN1_SWINT_TRIG_MASK |
-		  IAVF_VFINT_DYN_CTLN1_SW_ITR_INDX_ENA_MASK
-		  /* allow 00 to be written to the index */;
-
-	wr32(&vsi->back->hw,
-	     IAVF_VFINT_DYN_CTLN1(q_vector->reg_idx),
-	     val);
-}
-
 static inline bool iavf_container_is_rx(struct iavf_q_vector *q_vector,
 					struct iavf_ring_container *rc)
 {
 	return &q_vector->rx == rc;
 }
 
-static inline unsigned int iavf_itr_divisor(struct iavf_q_vector *q_vector)
-{
-	unsigned int divisor;
+#define IAVF_AIM_MULTIPLIER_100G	2560
+#define IAVF_AIM_MULTIPLIER_50G		1280
+#define IAVF_AIM_MULTIPLIER_40G		1024
+#define IAVF_AIM_MULTIPLIER_20G		512
+#define IAVF_AIM_MULTIPLIER_10G		256
+#define IAVF_AIM_MULTIPLIER_1G		32
 
-	switch (q_vector->adapter->link_speed) {
+static unsigned int iavf_mbps_itr_multiplier(u32 speed_mbps)
+{
+	switch (speed_mbps) {
+	case SPEED_100000:
+		return IAVF_AIM_MULTIPLIER_100G;
+	case SPEED_50000:
+		return IAVF_AIM_MULTIPLIER_50G;
+	case SPEED_40000:
+		return IAVF_AIM_MULTIPLIER_40G;
+	case SPEED_25000:
+	case SPEED_20000:
+		return IAVF_AIM_MULTIPLIER_20G;
+	case SPEED_10000:
+	default:
+		return IAVF_AIM_MULTIPLIER_10G;
+	case SPEED_1000:
+	case SPEED_100:
+		return IAVF_AIM_MULTIPLIER_1G;
+	}
+}
+
+static unsigned int
+iavf_virtchnl_itr_multiplier(enum virtchnl_link_speed speed_virtchnl)
+{
+	switch (speed_virtchnl) {
 	case VIRTCHNL_LINK_SPEED_40GB:
-		divisor = IAVF_ITR_ADAPTIVE_MIN_INC * 1024;
-		break;
+		return IAVF_AIM_MULTIPLIER_40G;
 	case VIRTCHNL_LINK_SPEED_25GB:
 	case VIRTCHNL_LINK_SPEED_20GB:
-		divisor = IAVF_ITR_ADAPTIVE_MIN_INC * 512;
-		break;
-	default:
+		return IAVF_AIM_MULTIPLIER_20G;
 	case VIRTCHNL_LINK_SPEED_10GB:
-		divisor = IAVF_ITR_ADAPTIVE_MIN_INC * 256;
-		break;
+	default:
+		return IAVF_AIM_MULTIPLIER_10G;
 	case VIRTCHNL_LINK_SPEED_1GB:
 	case VIRTCHNL_LINK_SPEED_100MB:
-		divisor = IAVF_ITR_ADAPTIVE_MIN_INC * 32;
-		break;
+		return IAVF_AIM_MULTIPLIER_1G;
 	}
+}
 
-	return divisor;
+static unsigned int iavf_itr_divisor(struct iavf_adapter *adapter)
+{
+	if (ADV_LINK_SUPPORT(adapter))
+		return IAVF_ITR_ADAPTIVE_MIN_INC *
+			iavf_mbps_itr_multiplier(adapter->link_speed_mbps);
+	else
+		return IAVF_ITR_ADAPTIVE_MIN_INC *
+			iavf_virtchnl_itr_multiplier(adapter->link_speed);
 }
 
 /**
@@ -588,8 +683,9 @@ adjust_by_size:
 	 * Use addition as we have already recorded the new latency flag
 	 * for the ITR value.
 	 */
-	itr += DIV_ROUND_UP(avg_wire_size, iavf_itr_divisor(q_vector)) *
-	       IAVF_ITR_ADAPTIVE_MIN_INC;
+	itr += DIV_ROUND_UP(avg_wire_size,
+			    iavf_itr_divisor(q_vector->adapter)) *
+		IAVF_ITR_ADAPTIVE_MIN_INC;
 
 	if ((itr & IAVF_ITR_MASK) > IAVF_ITR_ADAPTIVE_MAX_USECS) {
 		itr &= IAVF_ITR_ADAPTIVE_LATENCY;
@@ -1630,6 +1726,124 @@ static inline void iavf_xdp_ring_update_tail(struct iavf_ring *xdp_ring)
 }
 
 /**
+ * iavf_is_ctrl_pkt - check if packet is a TCP control packet or data packet
+ * @skb: receive buffer
+ * @rx_ring: ptr to Rx ring
+ *
+ * Returns true for all unsupported protocol/configuration. Supported protocol
+ * is TCP/IPv4[6].  For TCP/IPv6, this function returns true if packet contains
+ * nested header.
+ * Logic to determine control packet:
+ * - packets is control packet if it contains flags like SYN, SYN+ACK, FIN, RST
+ *
+ * Returns true if packet is classified as control packet and for all unhandled
+ * condition otherwise false if packet is classified as data packet
+ */
+static bool iavf_is_ctrl_pkt(struct sk_buff *skb, struct iavf_ring *rx_ring)
+
+{
+	union {
+		unsigned char *network;
+		struct ipv6hdr *ipv6;
+		struct iphdr *ipv4;
+	} hdr;
+	struct tcphdr *th;
+
+	/* at this point, skb->data points to network header since
+	 * ethernet_header was pulled inline due to eth_type_trans
+	 */
+	hdr.network = skb->data;
+
+	/* only support IPv4/IPv6, all other protocol being treated like
+	 * control packets
+	 */
+	if (skb->protocol == htons(ETH_P_IP)) {
+		unsigned int hlen;
+
+		/* access ihl as u8 to avoid unaligned access on ia64 */
+		hlen = (hdr.network[0] & 0x0F) << 2;
+
+		/* for now, assume all non TCP packets are ctrl packets, so that
+		 * they don't get counted to evaluate the likelihood of being
+		 * called back for polling
+		 */
+		if (hdr.ipv4->protocol != IPPROTO_TCP)
+			return true;
+
+		th = (struct tcphdr *)(hdr.network + hlen);
+	} else if (skb->protocol == htons(ETH_P_IPV6)) {
+		/* for now, if next_hdr is not TCP, means it contains nested
+		 * header. IPv6 packets which contains nested header:
+		 * treat them like control packet, so that interrupts gets
+		 * enabled normally, otherwise driver need to duplicate the
+		 * code to parse nested IPv6 header.
+		 */
+		if (hdr.ipv6->nexthdr != IPPROTO_TCP)
+			return true;
+
+		th = (struct tcphdr *)(hdr.network + sizeof(struct ipv6hdr));
+	} else {
+		return true; /* if any other than IPv4[6], ctrl packet */
+	}
+
+	/* definition of control packet is, if packet is TCP/IPv4[6] and
+	 * TCP flags are either SYN | FIN | RST.
+	 * If neither of those flags (SYN|FIN|RST) are set, then it is
+	 * data packet
+	 */
+	if (!th->fin && !th->rst && !th->syn)
+		return false; /* data packet */
+
+	u64_stats_update_begin(&rx_ring->syncp);
+	rx_ring->ch_q_stats.rx.tcp_ctrl_pkts++;
+	if (th->fin)
+		rx_ring->ch_q_stats.rx.tcp_fin_recv++;
+	else if (th->rst)
+		rx_ring->ch_q_stats.rx.tcp_rst_recv++;
+	else if (th->syn)
+		rx_ring->ch_q_stats.rx.tcp_syn_recv++;
+	u64_stats_update_end(&rx_ring->syncp);
+
+	/* at this point based on L4 header (if it is TCP/IPv4[6]:flags,
+	 * packet is detected as control packets
+	 */
+	return true;
+}
+
+static void iavf_chnl_rx_stats(struct iavf_ring *rx_ring, u64 pkts)
+{
+	iavf_chnl_queue_stats(rx_ring, pkts);
+
+	/* if vector is transitioning from BP->INT (due to busy_poll_stop()) and
+	 * we find no packets, in that case: to avoid entering into INTR mode
+	 * (which happens from napi_poll - enabling interrupt if
+	 * unlikely_comeback_to_bp getting set), make "prev_data_pkt_recv" to be
+	 * non-zero, so that interrupts won't be enabled. This is to address the
+	 * issue where num_force_wb on some queues is 2 to 3 times higher than
+	 * other queues and those queues also sees lot of interrupts
+	 */
+	if (vector_ch_ena(rx_ring->q_vector) &&
+	    vector_ch_perf_ena(rx_ring->q_vector) &&
+	    vector_busypoll_intr(rx_ring->q_vector)) {
+		if (!pkts)
+			rx_ring->q_vector->state_flags |=
+					IAVF_VECTOR_STATE_PREV_DATA_PKT_RECV;
+	} else if (vector_ch_ena(rx_ring->q_vector)) {
+		struct iavf_q_vector *q_vector = rx_ring->q_vector;
+		u8 qv_flags = q_vector->state_flags;
+
+		u64_stats_update_begin(&rx_ring->syncp);
+		if (pkts &&
+		    !(qv_flags & IAVF_VECTOR_STATE_PREV_DATA_PKT_RECV))
+			rx_ring->ch_q_stats.rx.only_ctrl_pkts++;
+		if (qv_flags & IAVF_VECTOR_STATE_IN_BP &&
+		    !(qv_flags & IAVF_VECTOR_STATE_PREV_DATA_PKT_RECV))
+			rx_ring->ch_q_stats.rx.bp_no_data_pkt++;
+		u64_stats_update_end(&rx_ring->syncp);
+	}
+}
+
+/**
  * iavf_clean_rx_irq - Clean completed descriptors from Rx ring - bounce buf
  * @rx_ring: rx descriptor ring to transact packets on
  * @budget: Total limit on number of packets to process
@@ -1760,6 +1974,12 @@ static int iavf_clean_rx_irq(struct iavf_ring *rx_ring, int budget)
 
 		vlan_tag = (qword & BIT(IAVF_RX_DESC_STATUS_L2TAG1P_SHIFT)) ?
 			   le16_to_cpu(rx_desc->wb.qword0.lo_dword.l2tag1) : 0;
+		if (vector_ch_ena(rx_ring->q_vector) &&
+		    vector_ch_perf_ena(rx_ring->q_vector)) {
+			if (!iavf_is_ctrl_pkt(skb, rx_ring))
+				rx_ring->q_vector->state_flags |=
+					IAVF_VECTOR_STATE_PREV_DATA_PKT_RECV;
+		}
 
 		iavf_trace(clean_rx_irq_rx, rx_ring, rx_desc, skb);
 		iavf_receive_skb(rx_ring, skb, vlan_tag);
@@ -1784,6 +2004,7 @@ static int iavf_clean_rx_irq(struct iavf_ring *rx_ring, int budget)
 	rx_ring->stats.packets += total_rx_packets;
 	rx_ring->stats.bytes += total_rx_bytes;
 	u64_stats_update_end(&rx_ring->syncp);
+	iavf_chnl_rx_stats(rx_ring, total_rx_packets);
 	rx_ring->q_vector->rx.total_packets += total_rx_packets;
 	rx_ring->q_vector->rx.total_bytes += total_rx_bytes;
 
@@ -1843,6 +2064,16 @@ static inline void iavf_update_enable_itr(struct iavf_vsi *vsi,
 	struct iavf_hw *hw = &vsi->back->hw;
 	u32 intval;
 
+	/* if vector is channel enabled, it doesn't use ITR countdown
+	 * or pseudo-lazy update for ITR update
+	 */
+	if (vector_ch_ena(q_vector) &&
+	    vector_ch_perf_ena(q_vector)) {
+		/* No ITR update */
+		intval = iavf_buildreg_itr(IAVF_ITR_NONE, 0);
+		goto do_write;
+	}
+
 	/* These will do nothing if dynamic updates are not enabled */
 	iavf_update_itr(q_vector, &q_vector->tx);
 	iavf_update_itr(q_vector, &q_vector->rx);
@@ -1883,9 +2114,121 @@ static inline void iavf_update_enable_itr(struct iavf_vsi *vsi,
 		if (q_vector->itr_countdown)
 			q_vector->itr_countdown--;
 	}
-
+do_write:
 	if (!test_bit(__IAVF_VSI_DOWN, vsi->state))
 		wr32(hw, INTREG(q_vector->reg_idx), intval);
+}
+
+/**
+ * iavf_refresh_bp_state - refresh state machine
+ * @napi: ptr to NAPI struct
+ *
+ * Update ADQ state machine, and depending on whether this was called from
+ * busy poll, enable interrupts and update ITR
+ */
+static void iavf_refresh_bp_state(struct napi_struct *napi)
+{
+	struct iavf_q_vector *q_vector =
+			container_of(napi, struct iavf_q_vector, napi);
+
+	/* cache previous state of vector */
+	if (q_vector->state_flags & IAVF_VECTOR_STATE_IN_BP)
+		q_vector->state_flags |= IAVF_VECTOR_STATE_PREV_IN_BP;
+	else
+		q_vector->state_flags &= ~IAVF_VECTOR_STATE_PREV_IN_BP;
+
+#ifdef HAVE_NAPI_STATE_IN_BUSY_POLL
+	/* update current state of vector */
+	if (test_bit(NAPI_STATE_IN_BUSY_POLL, &napi->state))
+		q_vector->state_flags |= IAVF_VECTOR_STATE_IN_BP;
+	else
+		q_vector->state_flags &= ~IAVF_VECTOR_STATE_IN_BP;
+#endif /* HAVE_STATE_IN_BUSY_POLL */
+
+	if (q_vector->state_flags & IAVF_VECTOR_STATE_IN_BP) {
+		q_vector->jiffies = jiffies;
+		/* trigger force_wb by setting WB_ON_ITR only when
+		 * - vector is transitioning from INTR->BUSY_POLL
+		 * - once_in_bp is false, this is to prevent from doing it
+		 * every time whenever vector state is changing from
+		 * INTR->BUSY_POLL because that could be due to legit
+		 * busy_poll stop
+		 */
+		if (!(q_vector->state_flags & IAVF_VECTOR_STATE_ONCE_IN_BP) &&
+		    vector_intr_busypoll(q_vector))
+			iavf_set_wb_on_itr(&q_vector->vsi->back->hw, q_vector);
+
+		q_vector->state_flags |= IAVF_VECTOR_STATE_ONCE_IN_BP;
+		q_vector->ch_stats.in_bp++;
+		/* state transition : INTERRUPT --> BUSY_POLL */
+		if (!(q_vector->state_flags & IAVF_VECTOR_STATE_PREV_IN_BP))
+			q_vector->ch_stats.intr_to_bp++;
+		else
+			q_vector->ch_stats.bp_to_bp++;
+	} else {
+		q_vector->ch_stats.in_intr++;
+		/* state transition : BUSY_POLL --> INTERRUPT */
+		if (q_vector->state_flags & IAVF_VECTOR_STATE_PREV_IN_BP)
+			q_vector->ch_stats.bp_to_intr++;
+		else
+			q_vector->ch_stats.intr_to_intr++;
+	}
+}
+
+/*
+ * iavf_handle_chnl_vector - handle channel enabled vector
+ * @vsi: ptr to VSI
+ * @q_vector: ptr to q_vector
+ * @unlikely_cb_bp: will comeback to busy_poll or not
+ *
+ * This function eithers triggers software interrupt (when unlikely_cb_bp is
+ * true) or enable interrupt normally. unlikely_cb_bp gets determined based
+ * on state machine and packet parsing logic.
+ */
+static void
+iavf_handle_chnl_vector(struct iavf_vsi *vsi, struct iavf_q_vector *q_vector,
+			bool unlikely_cb_bp)
+{
+	struct iavf_q_vector_ch_stats *stats = &q_vector->ch_stats;
+
+	/* caller of this function deteremines next occurrence/execution context
+	 * of napi_poll (means next time whether napi_poll will be invoked from
+	 * busy_poll or SOFT IRQ context). Please refer to the caller of this
+	 * function to see logic for "unlikely_cb_bp" (aka, re-occurrence to
+	 * busy_poll or not).
+	 * If logic determines that, next occurrence of napi_poll will not be
+	 * from busy_poll context, trigger software initiated interrupt on
+	 * channel enabled vector to revive queue(s) processing, otherwise if
+	 * in true interrupt state - just enable interrupt.
+	 */
+	if (unlikely_cb_bp) {
+		stats->unlikely_cb_to_bp++;
+		/* if once_in_bp is set and pkt inspection based optimization
+		 * is off, do not trigger SW interrupt (simply bailout).
+		 * No change in logic from service_task based software
+		 * triggred interrupt - to revive the queue based on jiffy logic
+		 */
+		if (q_vector->state_flags & IAVF_VECTOR_STATE_ONCE_IN_BP) {
+			stats->ucb_once_in_bp_true++;
+			if (!vector_pkt_inspect_opt_ena(q_vector)) {
+				stats->no_sw_intr_opt_off++;
+				return;
+			}
+		}
+
+		/* Since this real BP -> INT transition, reset jiffy snapshot */
+		q_vector->jiffies = 0;
+
+		/* Likewise for real BP -> INT, trigger
+		 * SW interrupt, so that vector is put back
+		 * in sane state, trigger sw interrupt to revive the queue
+		 */
+		iavf_inc_napi_sw_intr_counter(q_vector);
+		iavf_force_wb(vsi, q_vector);
+	} else if (!(q_vector->state_flags & IAVF_VECTOR_STATE_ONCE_IN_BP)) {
+		stats->intr_once_bp_false++;
+		iavf_update_enable_itr(vsi, q_vector);
+	}
 }
 
 /**
@@ -1902,9 +2245,13 @@ int iavf_napi_poll(struct napi_struct *napi, int budget)
 	struct iavf_q_vector *q_vector =
 			       container_of(napi, struct iavf_q_vector, napi);
 	struct iavf_vsi *vsi = q_vector->vsi;
-	struct iavf_ring *ring;
+	bool cleaned_any_data_pkt = false;
 	u64 flags = vsi->back->flags;
+	bool unlikely_cb_bp = false;
 	bool clean_complete = true;
+	bool ch_enabled = false;
+	bool wb_on_itr_enabled;
+	struct iavf_ring *ring;
 	bool arm_wb = false;
 	int budget_per_ring;
 	int work_done = 0;
@@ -1912,6 +2259,55 @@ int iavf_napi_poll(struct napi_struct *napi, int budget)
 	if (test_bit(__IAVF_VSI_DOWN, vsi->state)) {
 		napi_complete(napi);
 		return 0;
+	}
+
+	/* determine if WB_ON_ITR is enabled on not, if not - not need to
+	 * apply any  performance optimization
+	 */
+	wb_on_itr_enabled = true;
+	iavf_for_each_ring(ring, q_vector->tx) {
+		if (!(ring->flags & IAVF_TXR_FLAGS_WB_ON_ITR)) {
+			wb_on_itr_enabled &= false;
+			break;
+		}
+	}
+
+	/* determine once if vector needs to be processed differently */
+	ch_enabled = wb_on_itr_enabled && vector_ch_ena(q_vector) &&
+		     vector_ch_perf_ena(q_vector);
+	if (ch_enabled) {
+		u8 qv_flags;
+
+		/* Refresh state machine */
+		iavf_refresh_bp_state(napi);
+
+		/* check during previous run of napi_poll whether at least one
+		 * data packets is processed or not. If processed at least one
+		 * data packet, set the local flag 'cleaned_any_data_pkt'
+		 * which is used later in this function to determine if
+		 * interrupt should be enabled or deferred (this is applicable
+		 * only in case when busy_poll stop is invoked, means previous
+		 * state of vector is in busy_poll and current state is not
+		 * (aka BUSY_POLL -> INTR))
+		 */
+		qv_flags = q_vector->state_flags;
+		if (qv_flags & IAVF_VECTOR_STATE_PREV_DATA_PKT_RECV) {
+			q_vector->state_flags &=
+					~IAVF_VECTOR_STATE_PREV_DATA_PKT_RECV;
+			/* It is important to check and cache correct\
+			 * information (cleaned any data packets or not) in
+			 * local variable before napi_complete_done is finished.
+			 * Once napi_complete_done is returned, napi_poll
+			 * can get invoked again (means re-entrant) which can
+			 * potentially results to incorrect decision making
+			 * w.r.t. whether interrupt should be enabled or
+			 * deferred)
+			 */
+			if (vector_busypoll_intr(q_vector)) {
+				cleaned_any_data_pkt = true;
+				q_vector->ch_stats.cleaned_any_data_pkt++;
+			}
+		}
 	}
 
 	/* Since the actual Tx work is minimal, we can give the Tx a larger
@@ -1929,6 +2325,20 @@ int iavf_napi_poll(struct napi_struct *napi, int budget)
 	/* Handle case where we are called by netpoll with a budget of 0 */
 	if (budget <= 0)
 		goto tx_only;
+
+	/* state transitioning from BUSY_POLL --> INTERRUPT. This can happen
+	 * due to several reason when stack calls busy_poll_stop
+	 *    1. during last execution of napi_poll returned non-zero packets
+	 *    2. busy_loop ended
+	 *    3. need re-sched set
+	 * driver keeps track of packets were cleaned during last run and if
+	 * that is zero, means most likely napi_poll won't be invoked from
+	 * busy_poll context; in that situation bypass processing of Rx queues
+	 * and enable interrupt and let subsequent run of napi_poll from
+	 * interrupt path handle cleanup of Rx queues
+	 */
+	if (ch_enabled && vector_busypoll_intr(q_vector))
+		goto bypass;
 
 	/* We attempt to distribute budget to each Rx queue fairly, but don't
 	 * allow the budget to go below 1 because that would exit polling early.
@@ -1950,6 +2360,10 @@ int iavf_napi_poll(struct napi_struct *napi, int budget)
 		clean_complete = true;
 
 #endif
+	/* if this vector ever was/is in BUSY_POLL, skip processing  */
+	if (ch_enabled && vector_ever_in_busypoll(q_vector))
+		goto bypass;
+
 	/* If work not completed, return budget and polling will return */
 	if (!clean_complete) {
 #ifdef HAVE_IRQ_AFFINITY_NOTIFY
@@ -1965,7 +2379,7 @@ int iavf_napi_poll(struct napi_struct *napi, int budget)
 		if (!cpumask_test_cpu(cpu_id, &q_vector->affinity_mask)) {
 			/* Tell napi that we are done polling */
 			napi_complete_done(napi, work_done);
-
+			q_vector->ch_stats.intr_en_not_clean_complete++;
 			/* Force an interrupt */
 			iavf_force_wb(vsi, q_vector);
 
@@ -1984,10 +2398,85 @@ tx_only:
 	if (flags & IAVF_TXR_FLAGS_WB_ON_ITR)
 		q_vector->arm_wb_state = false;
 
-	/* Work is done so exit the polling mode and re-enable the interrupt */
-	napi_complete_done(napi, work_done);
+bypass:
+	/* Following block is only for stats, hence guarded by "debug_mask" */
+	if (ch_enabled && vector_busypoll_intr(q_vector)) {
+		struct iavf_q_vector_ch_stats *stats;
 
-	iavf_update_enable_itr(vsi, q_vector);
+		stats = &q_vector->ch_stats;
+		if (unlikely(need_resched())) {
+			stats->bp_stop_need_resched++;
+			if (!cleaned_any_data_pkt)
+				stats->need_resched_no_data_pkt++;
+		} else {
+			/* here , means actually because of 2 reason
+			 * - busy_poll timeout expired
+			 * - last time, cleaned data packets, hence
+			 *  stack asked to stop busy_poll so that packet
+			 *  can be processed by consumer
+			 */
+			stats->bp_stop_timeout++;
+			if (!cleaned_any_data_pkt)
+				stats->timeout_no_data_pkt++;
+		}
+	}
+	/* if state transition from busy_poll to interrupt and during
+	 * last run: did not cleanup TCP data packets -
+	 *      then application unlikely to comeback to busy_poll
+	 */
+	if (ch_enabled && vector_busypoll_intr(q_vector) &&
+	    !cleaned_any_data_pkt) {
+		/* for now, if need_resched is true (it can be either
+		 * due to voluntary/in-voluntary context switches),
+		 * do not trigger SW interrupt.
+		 * if need_resched is not set, safely assuming, it is due
+		 * to possible timeout and unlikely that application/context
+		 * will return to busy_poll, hence set 'unlikely_cb_bp' to
+		 * true which will cause software triggered interrupt
+		 * to reviev the queue/vector
+		 */
+		if (unlikely(need_resched()))
+			unlikely_cb_bp = false;
+		else
+			unlikely_cb_bp = true;
+	}
+
+	/* Work is done so exit the polling mode and re-enable the interrupt */
+	if (likely(napi_complete_done(napi, work_done))) {
+		/* napi_ret : false (means vector is still in POLLING mode
+		 *            true (means out of POLLING)
+		 * NOTE: Generally if napi_ret is TRUE, enable device interrupt
+		 * but there are condition/optimization, where it can be
+		 * optimized. Bascially, if napi_complete_done returns true buti
+		 * last time Rx packets were cleaned, then most likely, consumer
+		 * thread will come back to do busy_polling where cleaning of
+		 * Tx/Rx queue will happen normally. Hence no reason to arm the
+		 * interrupt.
+		 *
+		 * If for some reason, consumer thread/context doesn't comeback
+		 * to busy_poll:napi_poll, there is bail-out mechanism to kick
+		 * start the state machine thru' SW triggered interrupt from
+		 * service task.
+		 */
+		if (ch_enabled) {
+			/* current state of NAPI is INTERRUPT */
+			iavf_handle_chnl_vector(vsi, q_vector, unlikely_cb_bp);
+		} else {
+			iavf_update_enable_itr(vsi, q_vector);
+		}
+	} else {
+		/* if code makes it here, means busy_poll is still ON.
+		 * if vector is channel enabled, setting WB_ON_ITR is handled
+		 * from iavf_refresh_bp_state function.
+		 * otherwise set WB_ON_ITR (if supported)
+		 */
+		if (!ch_enabled) {
+			if (wb_on_itr_enabled)
+				iavf_enable_wb_on_itr(vsi, q_vector);
+			else
+				iavf_update_enable_itr(vsi, q_vector);
+		}
+	}
 
 	return min_t(int, work_done, budget - 1);
 }
