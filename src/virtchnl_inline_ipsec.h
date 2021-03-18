@@ -11,6 +11,10 @@
 #define VIRTCHNL_IPSEC_MAX_KEY_LEN		128
 #define VIRTCHNL_IPSEC_MAX_SA_DESTROY_NUM	8
 #define VIRTCHNL_IPSEC_SA_DESTROY		0
+#define VIRTCHNL_IPSEC_BROADCAST_VFID		0xFFFFFFFF
+#define VIRTCHNL_IPSEC_INVALID_REQ_ID		0xFFFF
+#define VIRTCHNL_IPSEC_INVALID_SA_CFG_RESP	0xFFFFFFFF
+#define VIRTCHNL_IPSEC_INVALID_SP_CFG_RESP	0xFFFFFFFF
 
 /* crypto type */
 #define VIRTCHNL_AUTH		1
@@ -67,6 +71,17 @@
 /* sa ip type */
 #define VIRTCHNL_IPV4	1
 #define VIRTCHNL_IPV6	2
+
+/* for virtchnl_ipsec_resp */
+enum inline_ipsec_resp {
+	INLINE_IPSEC_SUCCESS = 0,
+	INLINE_IPSEC_FAIL = -1,
+	INLINE_IPSEC_ERR_FIFO_FULL = -2,
+	INLINE_IPSEC_ERR_NOT_READY = -3,
+	INLINE_IPSEC_ERR_VF_DOWN = -4,
+	INLINE_IPSEC_ERR_INVALID_PARAMS = -5,
+	INLINE_IPSEC_ERR_NO_MEM = -6,
+};
 
 /* Detailed opcodes for DPDK and IPsec use */
 enum inline_ipsec_ops {
@@ -418,7 +433,7 @@ struct virtchnl_ipsec_sa_read {
 	struct virtchnl_ipsec_sym_crypto_cfg crypto_cfg;
 } __packed;
 
-/* Add whitelist entry in IES */
+/* Add allowlist entry in IES */
 struct virtchnl_ipsec_sp_cfg {
 	u32 spi;
 	u32 dip[4];
@@ -436,14 +451,14 @@ struct virtchnl_ipsec_sp_cfg {
 	u8 set_tc;
 };
 
-/* Delete whitelist entry in IES */
+/* Delete allowlist entry in IES */
 struct virtchnl_ipsec_sp_destroy {
 	/* 0 for IPv4 table, 1 for IPv6 table. */
 	u8 table_id;
 	u32 rule_id;
 } __packed;
 
-/* Response from IES to whitelist operations */
+/* Response from IES to allowlist operations */
 struct virtchnl_ipsec_sp_cfg_resp {
 	u32 rule_id;
 };
