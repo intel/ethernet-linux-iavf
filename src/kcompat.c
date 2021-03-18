@@ -1475,7 +1475,6 @@ static const unsigned char __maybe_unused pcie_link_speed[] = {
 int __kc_pcie_get_minimum_link(struct pci_dev *dev, enum pci_bus_speed *speed,
 			       enum pcie_link_width *width)
 {
-	int ret;
 
 	*speed = PCI_SPEED_UNKNOWN;
 	*width = PCIE_LNK_WIDTH_UNKNOWN;
@@ -1484,8 +1483,8 @@ int __kc_pcie_get_minimum_link(struct pci_dev *dev, enum pci_bus_speed *speed,
 		u16 lnksta;
 		enum pci_bus_speed next_speed;
 		enum pcie_link_width next_width;
+		int ret = pcie_capability_read_word(dev, PCI_EXP_LNKSTA, &lnksta);
 
-		ret = pcie_capability_read_word(dev, PCI_EXP_LNKSTA, &lnksta);
 		if (ret)
 			return ret;
 
@@ -1597,7 +1596,6 @@ int __kc_ipv6_find_hdr(const struct sk_buff *skb, unsigned int *offset,
 {
 	unsigned int start = skb_network_offset(skb) + sizeof(struct ipv6hdr);
 	u8 nexthdr = ipv6_hdr(skb)->nexthdr;
-	unsigned int len;
 	bool found;
 
 #define __KC_IP6_FH_F_FRAG	BIT(0)
@@ -1618,7 +1616,6 @@ int __kc_ipv6_find_hdr(const struct sk_buff *skb, unsigned int *offset,
 		start = *offset + sizeof(struct ipv6hdr);
 		nexthdr = ip6->nexthdr;
 	}
-	len = skb->len - start;
 
 	do {
 		struct ipv6_opt_hdr _hdr, *hp;
@@ -1683,7 +1680,6 @@ int __kc_ipv6_find_hdr(const struct sk_buff *skb, unsigned int *offset,
 
 		if (!found) {
 			nexthdr = hp->nexthdr;
-			len -= hdrlen;
 			start += hdrlen;
 		}
 	} while (!found);
@@ -1980,6 +1976,9 @@ u32 __kc_eth_get_headlen(const struct net_device __always_unused *dev,
 		struct vlan_hdr *vlan;
 		/* l3 headers */
 		struct iphdr *ipv4;
+#ifdef __CHECKER__
+		/* cppcheck-suppress unusedStructMember */
+#endif /* __CHECKER__ */
 		struct ipv6hdr *ipv6;
 	} hdr;
 	__be16 proto;
@@ -2125,6 +2124,9 @@ unsigned int _kc_cpumask_local_spread(unsigned int i, int node)
 	 * cpumask_of_node, so just use for_each_online_cpu()
 	 */
 	for_each_online_cpu(cpu)
+#ifdef __CHECKER__
+		/* cppcheck-suppress unreadVariable */
+#endif /* __CHECKER__ */
 		if (i-- == 0)
 			return cpu;
 
@@ -2357,6 +2359,38 @@ void _kc_ethtool_intersect_link_masks(struct ethtool_link_ksettings *dst,
 	}
 }
 #endif /* 4.15.0 */
+
+/*****************************************************************************/
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(4,16,0))
+#if !(RHEL_RELEASE_CODE >= RHEL_RELEASE_VERSION(8,0)) && \
+     !(SLE_VERSION_CODE >= SLE_VERSION(12,5,0) && \
+       SLE_VERSION_CODE < SLE_VERSION(15,0,0) || \
+       SLE_VERSION_CODE >= SLE_VERSION(15,1,0))
+#if BITS_PER_LONG == 64
+/**
+ * bitmap_from_arr32 - copy the contents of u32 array of bits to bitmap
+ * @bitmap: array of unsigned longs, the destination bitmap
+ * @buf: array of u32 (in host byte order), the source bitmap
+ * @nbits: number of bits in @bitmap
+ */
+void bitmap_from_arr32(unsigned long *bitmap, const u32 *buf, unsigned int nbits)
+{
+	unsigned int i, halfwords;
+
+	halfwords = DIV_ROUND_UP(nbits, 32);
+	for (i = 0; i < halfwords; i++) {
+		bitmap[i/2] = (unsigned long) buf[i];
+		if (++i < halfwords)
+			bitmap[i/2] |= ((unsigned long) buf[i]) << 32;
+	}
+
+	/* Clear tail bits in last word beyond nbits. */
+	if (nbits % BITS_PER_LONG)
+		bitmap[(halfwords - 1) / 2] &= BITMAP_LAST_WORD_MASK(nbits);
+}
+#endif /* BITS_PER_LONG == 64 */
+#endif /* !(RHEL >= 8.0) && !(SLES >= 12.5 && SLES < 15.0 || SLES >= 15.1) */
+#endif /* 4.16.0 */
 
 /*****************************************************************************/
 #if (LINUX_VERSION_CODE < KERNEL_VERSION(4,17,0))

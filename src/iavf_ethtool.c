@@ -41,11 +41,13 @@ static const struct iavf_stats iavf_gstrings_stats[] = {
 	VF_STAT("tx_sctp_cso", tx_sctp_cso),
 	VF_STAT("tx_ip4_cso", tx_ip4_cso),
 	VF_STAT("tx_vlano", tx_vlano),
+	VF_STAT("tx_ad_vlano", tx_ad_vlano),
 	VF_STAT("rx_tcp_cso", rx_tcp_cso),
 	VF_STAT("rx_udp_cso", rx_udp_cso),
 	VF_STAT("rx_sctp_cso", rx_sctp_cso),
 	VF_STAT("rx_ip4_cso", rx_ip4_cso),
 	VF_STAT("rx_vlano", rx_vlano),
+	VF_STAT("rx_ad_vlano", rx_ad_vlano),
 	VF_STAT("rx_tcp_cso_error", rx_tcp_cso_err),
 	VF_STAT("rx_udp_cso_error", rx_udp_cso_err),
 	VF_STAT("rx_sctp_cso_error", rx_sctp_cso_err),
@@ -226,6 +228,9 @@ static void iavf_get_ethtool_stats(struct net_device *netdev,
 {
 	struct iavf_adapter *adapter = netdev_priv(netdev);
 	unsigned int i;
+
+	/* Explicitly request stats refresh */
+	iavf_schedule_request_stats(adapter);
 
 	iavf_add_ethtool_stats(&data, adapter, iavf_gstrings_stats);
 

@@ -1,7 +1,7 @@
 Linux* Driver for Intel(R) Ethernet Adaptive Virtual Function
 =============================================================
 
-June 8, 2020
+January 21, 2021
 
 
 Contents
@@ -29,13 +29,14 @@ SR-IOV requires the correct platform and OS support.
 
 The guest OS loading this driver must support MSI-X interrupts.
 
+
 For questions related to hardware requirements, refer to the documentation
 supplied with your Intel adapter. All hardware requirements listed apply to use
 with Linux.
 
-Driver information can be obtained using ethtool, lspci, and ifconfig.
-Instructions on updating ethtool can be found in the section Additional
-Configurations later in this document.
+Driver information can be obtained using ethtool, lspci, and ip. Instructions
+on updating ethtool can be found in the section Additional Configurations later
+in this document.
 
 
 Adaptive Virtual Function
@@ -70,6 +71,16 @@ which the AVF is associated. The following are base mode features:
 
 Identifying Your Adapter
 ========================
+This driver is compatible with virtual functions bound to devices based on the
+following:
+  * Intel(R) Ethernet Controller E810-C
+  * Intel(R) Ethernet Controller E810-XXV
+  * Intel(R) Ethernet Controller X710
+  * Intel(R) Ethernet Controller XL710
+  * Intel(R) Ethernet Network Connection X722
+  * Intel(R) Ethernet Controller XXV710
+  * Intel(R) Ethernet Controller V710
+
 For information on how to identify your adapter, and for the latest Intel
 network drivers, refer to the Intel Support website:
 http://www.intel.com/support
@@ -212,26 +223,90 @@ IDs within a single Ethernet frame. VLAN IDs are sometimes referred to as
 allow L2 tunneling and the ability to segregate traffic within a particular
 VLAN ID, among other uses.
 
-NOTES:
-- 802.1ad (QinQ) is supported in 3.19 and later kernels.
-- Receive checksum offloads, cloud filters, and VLAN acceleration are not
-supported for 802.1ad (QinQ) packets.
-- 0x88A8 traffic will not be received unless VLAN stripping is disabled with
-the following command:
-  # ethool -K <ethX> rxvlan off
-- 0x88A8/0x8100 double VLANs cannot be used with 0x8100 or 0x8100/0x8100 VLANS
-configured on the same port. 0x88a8/0x8100 traffic will not be received if
-0x8100 VLANs are configured.
-- The VF can only transmit 0x88A8/0x8100 (i.e., 802.1ad/802.1Q) traffic if:
-  1) The VF is not assigned a port VLAN.
-  2) spoofchk is disabled from the PF. If you enable spoofchk, the VF will not
-     transmit 0x88A8/0x8100 traffic.
-
 The following are examples of how to configure 802.1ad (QinQ):
 
 # ip link add link eth0 eth0.24 type vlan proto 802.1ad id 24
 # ip link add link eth0.24 eth0.24.371 type vlan proto 802.1Q id 371
   Where "24" and "371" are example VLAN IDs.
+
+NOTES:
+- 802.1ad (QinQ) is supported in 3.19 and later kernels.
+- VLAN protocols use the following EtherTypes:
+    802.1Q = EtherType 0x8100
+    802.1ad = EtherType 0x88A8
+
+
+Double VLANs
+------------
+Devices based on the Intel(R) Ethernet Controller 800 Series can process up to
+two VLANs in a packet when all the following are installed:
+- ice driver version 1.4.0 or later
+- NVM version 2.4 or later
+- ice DDP package version 1.3.21 or later
+If you don't use the versions above, the only supported VLAN configuration is
+single 802.1Q VLAN traffic.
+
+When two VLAN tags are present in a packet, the outer VLAN tag can be either
+802.1Q or 802.1ad. The inner VLAN tag must always be 802.1Q.
+
+Note the following limitations:
+- For each VF, the PF can only allow VLAN hardware offloads (insertion and
+stripping) of one type, either 802.1Q or 802.1ad.
+
+To enable outer or single 802.1Q VLAN insertion and stripping and disable
+802.1ad VLAN insertion and stripping:
+# ethtool -K <ethX> rxvlan on txvlan on rx-vlan-stag-hw-parse off
+tx-vlan-stag-hw-insert off
+
+To enable outer or single 802.1ad VLAN insertion and stripping and disable
+802.1Q VLAN insertion and stripping:
+# ethtool -K <ethX> rxvlan off txvlan off rx-vlan-stag-hw-parse on
+tx-vlan-stag-hw-insert on
+
+To enable outer or single VLAN filtering if the VF supports modifying VLAN
+filtering:
+# ethtool -K <ethX> rx-vlan-filter on rx-vlan-stag-filter on
+
+To disable outer or single VLAN filtering if the VF supports modifying VLAN
+filtering:
+# ethtool -K <ethX> rx-vlan-filter off rx-vlan-stag-filter off
+
+
+Combining QinQ with SR-IOV VFs
+------------------------------
+We recommend you always configure a port VLAN for the VF from the PF. If a port
+VLAN is not configured, the VF driver may only offload VLANs via software. The
+PF allows all VLAN traffic to reach the VF, and the VF manages all VLAN traffic.
+
+When the device is configured for double VLANs and the PF has configured a port
+VLAN:
+- The VF can only offload guest VLANs for 802.1Q traffic.
+- The VF can only configure VLAN filtering rules for guest VLANs using 802.1Q
+traffic.
+
+However, when the device is configured for double VLANs and the PF has NOT
+configured a port VLAN:
+- You must use iavf driver version 4.1.0 or later to offload and filter VLANs.
+- The PF turns on VLAN pruning and antispoof in the VF's VSI by default. The VF
+will not transmit or receive any tagged traffic until the VF requests a VLAN
+filter.
+- The VF can offload (insert and strip) the outer VLAN tag of 802.1Q or 802.1ad
+traffic.
+- The VF can create filter rules for the outer VLAN tag of both 802.1Q and
+802.1ad traffic.
+
+If the PF does not support double VLANs, the VF can hardware offload single
+802.1Q VLANs without a port VLAN.
+
+When the PF is enabled for double VLANs, for iavf drivers before version 4.1.x:
+- VLAN hardware offloads and filtering are supported only when the PF has
+configured a port VLAN.
+- VLAN filtering, insertion, and stripping will be software offloaded when no
+port VLAN is configured.
+
+To see VLAN filtering and offload capabilities, use the following command:
+
+# ethtool -k <ethX> | grep vlan
 
 
 Application Device Queues (ADQ)
@@ -241,7 +316,7 @@ specific application. This can reduce latency for the specified application,
 and allow Tx traffic to be rate limited per application.
 
 Requirements:
-- Kernel version 4.15 or later
+- Kernel version 4.19.58 or later
 - Depending on the underlying PF device, ADQ cannot be enabled when the
 following features are enabled: Data Center Bridging (DCB), Multiple Functions
 per Port (MFP), or Sideband Filters.
@@ -296,7 +371,7 @@ TCs are configured using mqprio.
 
    # tc qdisc add dev <ethX> ingress
 
-EXAMPLE:
+EXAMPLES:
 See the tc and tc-flower man pages for more information on traffic control and
 TC flower filters.
 
@@ -310,241 +385,17 @@ TC flower filters.
       queues 16@0 16@16: Assigns 16 queues to tc0 at offset 0 and 16 queues
           to tc1 at offset 16
 
+Multiple filters can be added to the device, using the same recipe (and
+requires no additional recipe resources), either on the same interface or on
+different interfaces. Each filter uses the same fields for matching, but can
+have different match values.
+  tc filter add dev <ethX> protocol ip ingress prio 1 flower ip_proto
+   tcp dst_port $app_port skip_sw hw_tc 1
 
-SR-IOV Hypervisor Management Interface
---------------------------------------
-The sysfs file structure below supports the SR-IOV hypervisor management
-interface.
+For example:
 
-/sys/class/net/<ethX>/device/sriov (see 1 below)
-+-- egress_mirror
-+-- ingress_mirror
-+-- tpid
-+-- qos
-| +-- apply
-+-- [VF-id, 0 .. 255] (see 2 below)
-| +-- trunk
-| +-- vlan_mirror
-| +-- egress_mirror
-| +-- ingress_mirror
-| +-- loopback
-| +-- mac
-| +-- mac_list
-| +-- promisc
-| +-- vlan_strip
-| +-- stats
-|| +-- rx_bytes
-|| +-- rx_packets
-|| +-- rx_dropped
-|| +-- tx_bytes
-|| +-- tx_packets
-|| +-- tx_dropped
-|| +-- tx_errors
-| +-- reset_stats
-| +-- link_state
-| +-- max_tx_rate
-| +-- trust
-| +-- enable
-| +-- num_queues
-| +-- allow_untagged
-| +-- qos
-|| +-- share
-
-*1: kobject started from "sriov" is not available from existing kernel
-sysfs, and it requires device driver to implement this interface.
-*2: maximum number of SR-IOV instances is 256. The actual number of instances
-created depends on the value set for /sys/bus/devices/<device pci
-address>/sriov_numvfs
-
-SR-IOV hypervisor functions:
-
-- egress_mirror
-  Mirrors egress traffic from the PF to the specified VF on the same PF.
-  Example 1: add egress traffic mirroring on PF p1p2 to VF 7.
-  # echo add 7 > /sys/class/net/p1p2/device/sriov/egress_mirror
-  Example 2: remove egress traffic mirroring on PF p1p2 to VF 7.
-  # echo rem 7 > /sys/class/net/p1p2/device/sriov/egress_mirror
-
-- ingress_mirror
-  Mirrors ingress traffic from the PF to the specified VF on the same PF.
-  Example 1: add ingress traffic mirroring on PF p1p2 to VF 7.
-  # echo add 7 > /sys/class/net/p1p2/device/sriov/ingress_mirror
-  Example 2: remove ingress traffic mirroring on PF p1p2 to VF 7.
-  # echo rem 7 > /sys/class/net/p1p2/device/sriov/inress_mirror
-
-- tpid
-  Specifies the TPID of the outer VLAN tag (S-tag). Can be set to 0x88A8 or
-  0x8100. This setting affects all VFs configured on the specified PF.
-  Note: This setting is not supported on Intel(R) Ethernet Network Connection
-  X722 based devices.
-  Example 1: set TPID to 0x88A8.
-  # echo 0x88a8 > /sys/class/net/p1p2/device/sriov/tpid
-  Example 2: show the configured value.
-  # cat /sys/class/net/p1p2/device/sriov/tpid
-
-- qos/apply
-  Applies the VF bandwidth configuration for the port. See "qos/share" below
-  for more information.
-
-- trunk
-  Supports two operations: add and rem.
-  - add: adds one or more VLAN IDs into VF VLAN filtering.
-  - rem: removes VLAN IDs from the VF VLAN filtering list.
-  Example 1: add multiple VLAN tags, VLANs 2,4,5,10-20, by PF, p1p2, on
-  a selected VF, 1, for filtering, with the sysfs support:
-  # echo add 2,4,5,10-20 > /sys/class/net/p1p2/device/sriov/1/trunk
-  Example 2: remove VLANs 5, 11-13 from PF p1p2 VF 1 with sysfs:
-  # echo rem 5,11-13 > /sys/class/net/p1p2/device/sriov/1/trunk
-  Note: for rem, if VLAN ID is not on the VLAN filtering list, the
-  VLAN ID will be ignored.
-
-- vlan_mirror
-  Supports both ingress and egress traffic mirroring.
-  Example 1: mirror traffic based upon VLANs 2,4,6,18-22 to VF 3 of PF p1p1.
-  # echo add 2,4,6,18-22 > /sys/class/net/p1p1/device/sriov/3/vlan_mirror
-  Example 2: remove VLAN 4, 15-17 from traffic mirroring at destination VF 3.
-  # echo rem 15-17 > /sys/class/net/p1p1/device/sriov/3/vlan_mirror
-  Example 3: remove all VLANs from mirroring at VF 3.
-  # echo rem 0 - 4095> /sys/class/net/p1p1/device/sriov/3/vlan_mirror
-
-- egress_mirror
-  Supports egress traffic mirroring from this VF to the specified VF.
-  Example 1: add egress traffic mirroring on PF p1p2 VF 1 to VF 7.
-  # echo add 7 > /sys/class/net/p1p2/device/sriov/1/egress_mirror
-  Example 2: remove egress traffic mirroring on PF p1p2 VF 1 to VF 7.
-  # echo rem 7 > /sys/class/net/p1p2/device/sriov/1/egress_mirror
-
-- ingress_mirror
-  Supports ingress traffic mirroring from this VF to the specified VF.
-  Example 1: mirror ingress traffic on PF p1p2 VF 1 to VF 7.
-  # echo add 7 > /sys/class/net/p1p2/device/sriov/1/ingress_mirror
-  Example 2: show current ingress mirroring configuration for VF 1.
-  # cat /sys/class/net/p1p2/device/sriov/1/ingress_mirror
-
-- loopback
-  Supports Enable/Disable VEB/VEPA (Local loopback).
-  Example 1: allow traffic switching between VFs on the same PF.
-  # echo ON > /sys/class/net/p1p2/device/sriov/loopback
-  Example 2: send Hairpin traffic to the switch to which the PF is connected.
-  # echo OFF > /sys/class/net/p1p2/device/sriov/loopback
-  Example 3: show loopback configuration.
-  # cat /sys/class/net/p1p2/device/sriov/loopback
-
-- mac
-  Supports setting default MAC address. If MAC address is set by this
-  command, the PF will not allow VF to change it using an MBOX request.
-  Example 1: set default MAC address to VF 1.
-  # echo "00:11:22:33:44:55" > /sys/class/net/p1p2/device/sriov/1/mac
-  Example 2: show default MAC address.
-  # cat /sys/class/net/p1p2/device/sriov/1/mac
-
-- mac_list
-  Supports adding additional MACs to the VF. The default MAC is taken from
-  "ip link set p1p2 vf 1 mac 00:11:22:33:44:55" if configured. If not, a random
-  address is assigned to the VF by the NIC. If the MAC is configured using
-  the IP LINK command, the VF cannot change it via MBOX/AdminQ requests.
-  Example 1: add mac 00:11:22:33:44:55 and 00:66:55:44:33:22 to PF p1p2 VF 1.
-  # echo add "00:11:22:33:44:55,00:66:55:44:33:22" >
-  /sys/class/net/p1p2/device/sriov/1/mac_list
-  Example 2: delete mac 00:11:22:33:44:55 from above VF device.
-  # echo rem 00:11:22:33:44:55 > /sys/class/net/p1p2/device/sriov/1/mac_list
-  Example 3: display a VF MAC address list.
-  # cat /sys/class/net/p1p2/device/sriov/1/mac_lis
-
-- promisc
-  Supports setting/unsetting VF device unicast promiscuous mode and multicast
-  promiscuous mode.
-  Example 1: set MCAST promiscuous on PF p1p2 VF 1.
-  # echo add mcast > /sys/class/net/p1p2/device/sriov/1/promisc
-  Example 2: set UCAST promiscuous on PF p1p2 VF 1.
-  # echo add ucast > /sys/class/net/p1p2/device/sriov/1/promisc
-  Example 3: unset MCAST promiscuous on PF p1p2 VF 1.
-  # echo rem mcast > /sys/class/net/p1p2/device/sriov/1/promisc
-  Example 4: show current promiscuous mode configuration.
-  # cat /sys/class/net/p1p2/device/sriov/1/promisc
-
-NOTE: VFs set to promiscuous via this sysfs interface may not receive packets
-addressed to another VF on the same port. For another VF to receive the
-packets, you must enable VF true promiscuous mode via ethtool. See "Trusted VFs
-and VF Promiscuous Mode" in this README for more information on enabling true
-promiscuous mode.
-
-- vlan_strip
-  Supports enabling/disabling VF device outer VLAN stripping.
-  Example 1: enable VLAN strip on VF 3.
-  # echo ON > /sys/class/net/p1p1/device/sriov/3/vlan_strip
-  Example 2: disable VLAN striping VF 3.
-  # echo OFF > /sys/class/net/p1p1/device/sriov/3/vlan_strip
-
-- stats
-  Supports getting VF statistics:
-    rx_bytes
-    rx_dropped
-    rx_packets
-    tx_bytes
-    tx_dropped
-    tx_packets
-    tx_errors
-  Example 1: display anti-spoofing violations counter for VF 1.
-  # cat /sys/class/net/p1p2/device/sriov/1/stats/tx_error
-
-- reset_stats
-  Resets the VF's stats counters.
-  Example 1: reset stats for VF 1.
-  # echo 1 > /sys/class/net/p1p2/device/sriov/1/stats/reset_stats
-
-- link_state
-  Sets/displays link status.
-  Example 1: display link status on link speed.
-  # cat /sys/class/net/p1p2/device/sriov/1/link_state
-  Example 2: set VF 1 to track status of PF link.
-  # echo auto > /sys/class/net/p1p2/device/sriov/1/link_state
-  Example 3: disable VF 1.
-  # echo disable > /sys/class/net/p1p2/device/sriov/1/link_state
-
-- enable
-  Enables or disables the VF device.
-  Notes:
-  - Enabling a VF will trigger a VF reset.
-  - Enabling a VF does not start any queues in the hardware.
-  - Disabling a VF will forcibly stop the queues and may lead to Tx timeouts
-    on the VF or VM.
-  - This feature is not designed to manage traffic flow. It's intended to
-    help prevent or handle error conditions.
-  Example 1: enable VF 3.
-  # echo on > /sys/class/net/p1p1/device/sriov/3/enable
-  Example 2: disable VF 3.
-  # echo off > /sys/class/net/p1p1/device/sriov/3/enable
-  Example 3: show VF 3 enable state.
-  # cat /sys/class/net/p1p1/device/sriov/3/enable
-
-- num_queues
-  Sets the number of queues allocated for the VF. To change the number of
-  queues, queue_type must be RSS.
-  Note: Changing this value will trigger a VF reset, which may disrupt
-  traffic. We recommend configuring this setting before traffic starts, not
-  during runtime.
-  Example 1: set 8 queues for VF 5 if queue_type is RSS.
-  # echo 8 > /sys/class/net/p1p1/device/sriov/5/num_queues
-  Example 2: show VF 5 number of queues for VF 5 type.
-  # cat /sys/class/net/p1p1/device/sriov/5/num_queues
-
-- qos/share
-  Sets the share of bandwidth for the specified VF(s).
-  Note: This feature is limited to TC0 only. You cannot revert the share back
-  to 0 once it has been set. You need to apply a change to hardware using
-  the related sysfs node qos/apply.
-  Example 1: allocate 10% of bandwidth to VF 0, 20% to VF 1, and the remaining
-  70% of bandwidth shared equally among the other VFs plus PF. Note: For all
-  the unspecified VFs (or PFs), the default value for "share" is 0.
-  # echo 10 > /sys/class/net/p1p1/device/sriov/0/qos/share
-  # echo 20 > /sys/class/net/p1p1/device/sriov/1/qos/share
-  # echo 1 > /sys/class/net/p1p1/device/sriov/qos/apply (kicks off a
-      recalculation based upon bandwidth distribution parameters specified
-      through qos/share sysfs)
-  Example 2: display current bandwidth allocation for each VF.
-  # cat /sys/class/net/p1p1/device/sriov/0/qos/share (return 10)
-  # cat /sys/class/net/p1p1/device/sriov/1/qos/share (return 20)
+  # tc filter add dev <ethX> protocol ip ingress prio 1 flower ip_proto
+     tcp dst_port 5555 skip_sw hw_tc 1
 
 
 Performance Optimization
@@ -758,7 +609,7 @@ St - Fifth Floor, Boston, MA 02110-1301 USA.
 The full GNU General Public License is included in this distribution in the
 file called "COPYING".
 
-Copyright(c) 2018 - 2020 Intel Corporation.
+Copyright(c) 2018 - 2021 Intel Corporation.
 
 
 Trademarks

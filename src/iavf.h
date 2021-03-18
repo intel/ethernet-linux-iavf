@@ -63,9 +63,10 @@ struct iavf_vsi {
 	struct net_device *netdev;
 #ifdef HAVE_VLAN_RX_REGISTER
 	struct vlan_group *vlgrp;
-#else
-	unsigned long active_vlans[BITS_TO_LONGS(VLAN_N_VID)];
 #endif
+	unsigned long active_cvlans[BITS_TO_LONGS(VLAN_N_VID)];
+	unsigned long active_svlans[BITS_TO_LONGS(VLAN_N_VID)];
+
 	/* dummy pointer - VF plans to add this functionality in the future */
 	struct iavf_ring **xdp_rings;
 	u16 seid;
@@ -107,6 +108,25 @@ struct iavf_vsi {
 #define IAVF_VIRTCHNL_VF_RESOURCE_SIZE	(sizeof(struct virtchnl_vf_resource) + \
 					 (IAVF_MAX_VF_VSI *		       \
 					 sizeof(struct virtchnl_vsi_resource)))
+
+#define IAVF_NETIF_F_HW_VLAN_BITS
+#ifdef NETIF_F_HW_VLAN_CTAG_RX
+#define IAVF_NETIF_F_HW_VLAN_CTAG_RX	NETIF_F_HW_VLAN_CTAG_RX
+#else
+#define IAVF_NETIF_F_HW_VLAN_CTAG_RX	NETIF_F_HW_VLAN_RX
+#endif
+
+#ifdef NETIF_F_HW_VLAN_CTAG_TX
+#define IAVF_NETIF_F_HW_VLAN_CTAG_TX	NETIF_F_HW_VLAN_CTAG_TX
+#else
+#define IAVF_NETIF_F_HW_VLAN_CTAG_TX	NETIF_F_HW_VLAN_TX
+#endif
+
+#ifdef NETIF_F_HW_VLAN_CTAG_FILTER
+#define IAVF_NETIF_F_HW_VLAN_CTAG_FILTER	NETIF_F_HW_VLAN_CTAG_FILTER
+#else
+#define IAVF_NETIF_F_HW_VLAN_CTAG_FILTER	NETIF_F_HW_VLAN_FILTER
+#endif
 
 enum iavf_chnl_vector_state {
 	IAVF_VEC_IN_BP,
@@ -367,9 +387,15 @@ struct iavf_mac_filter {
 	bool add;		/* filter needs to be added */
 };
 
+#define IAVF_VLAN(vid, tpid) ((struct iavf_vlan){ vid, tpid })
+struct iavf_vlan {
+	u16 vid;
+	u16 tpid;
+};
+
 struct iavf_vlan_filter {
 	struct list_head list;
-	u16 vlan;
+	struct iavf_vlan vlan;
 	bool remove;		/* filter needs to be removed */
 	bool add;		/* filter needs to be added */
 };
@@ -402,6 +428,8 @@ enum iavf_state_t {
 	__IAVF_REMOVE,		/* driver is being unloaded */
 	__IAVF_INIT_VERSION_CHECK,	/* aq msg sent, awaiting reply */
 	__IAVF_INIT_GET_RESOURCES,	/* aq msg sent, awaiting reply */
+	__IAVF_INIT_GET_OFFLOAD_VLAN_V2_CAPS,
+	__IAVF_INIT_CONFIG_ADAPTER,
 	__IAVF_INIT_SW,		/* got resources, setting up structs */
 	__IAVF_INIT_FAILED,		/* init failed, restarting procedure */
 	__IAVF_RESETTING,		/* in reset */
@@ -495,8 +523,6 @@ struct iavf_adapter {
 #define IAVF_FLAG_CLIENT_NEEDS_OPEN		BIT(10)
 #define IAVF_FLAG_CLIENT_NEEDS_CLOSE		BIT(11)
 #define IAVF_FLAG_CLIENT_NEEDS_L2_PARAMS	BIT(12)
-#define IAVF_FLAG_PROMISC_ON			BIT(13)
-#define IAVF_FLAG_ALLMULTI_ON			BIT(14)
 #define IAVF_FLAG_LEGACY_RX			BIT(15)
 #define IAVF_FLAG_REINIT_ITR_NEEDED		BIT(16)
 #define IAVF_FLAG_QUEUES_ENABLED		BIT(17)
@@ -504,7 +530,6 @@ struct iavf_adapter {
 #define IAVF_FLAG_REINIT_MSIX_NEEDED		BIT(20)
 #define IAVF_FLAG_REINIT_CHNL_NEEDED		BIT(21)
 #define IAVF_FLAG_RESET_DETECTED		BIT(22)
-#define IAVF_FLAG_CHNL_CFG_FAILED		BIT(23)
 
 
 	u32 chnl_perf_flags;
@@ -513,33 +538,50 @@ struct iavf_adapter {
 /* duplicates for common code */
 #define IAVF_FLAG_DCB_ENABLED			0
 	/* flags for admin queue service task */
-	u32 aq_required;
-#define IAVF_FLAG_AQ_ENABLE_QUEUES		BIT(0)
-#define IAVF_FLAG_AQ_DISABLE_QUEUES		BIT(1)
-#define IAVF_FLAG_AQ_ADD_MAC_FILTER		BIT(2)
-#define IAVF_FLAG_AQ_ADD_VLAN_FILTER		BIT(3)
-#define IAVF_FLAG_AQ_DEL_MAC_FILTER		BIT(4)
-#define IAVF_FLAG_AQ_DEL_VLAN_FILTER		BIT(5)
-#define IAVF_FLAG_AQ_CONFIGURE_QUEUES		BIT(6)
-#define IAVF_FLAG_AQ_MAP_VECTORS		BIT(7)
-#define IAVF_FLAG_AQ_HANDLE_RESET		BIT(8)
-#define IAVF_FLAG_AQ_CONFIGURE_RSS		BIT(9) /* direct AQ config */
-#define IAVF_FLAG_AQ_GET_CONFIG		BIT(10)
+	u64 aq_required;
+#define IAVF_FLAG_AQ_ENABLE_QUEUES			BIT(0)
+#define IAVF_FLAG_AQ_DISABLE_QUEUES			BIT(1)
+#define IAVF_FLAG_AQ_ADD_MAC_FILTER			BIT(2)
+#define IAVF_FLAG_AQ_ADD_VLAN_FILTER			BIT(3)
+#define IAVF_FLAG_AQ_DEL_MAC_FILTER			BIT(4)
+#define IAVF_FLAG_AQ_DEL_VLAN_FILTER			BIT(5)
+#define IAVF_FLAG_AQ_CONFIGURE_QUEUES			BIT(6)
+#define IAVF_FLAG_AQ_MAP_VECTORS			BIT(7)
+#define IAVF_FLAG_AQ_HANDLE_RESET			BIT(8)
+#define IAVF_FLAG_AQ_CONFIGURE_RSS			BIT(9) /* direct AQ config */
+#define IAVF_FLAG_AQ_GET_CONFIG				BIT(10)
 /* Newer style, RSS done by the PF so we can ignore hardware vagaries. */
-#define IAVF_FLAG_AQ_GET_HENA			BIT(11)
-#define IAVF_FLAG_AQ_SET_HENA			BIT(12)
-#define IAVF_FLAG_AQ_SET_RSS_KEY		BIT(13)
-#define IAVF_FLAG_AQ_SET_RSS_LUT		BIT(14)
-#define IAVF_FLAG_AQ_REQUEST_PROMISC		BIT(15)
-#define IAVF_FLAG_AQ_RELEASE_PROMISC		BIT(16)
-#define IAVF_FLAG_AQ_REQUEST_ALLMULTI		BIT(17)
-#define IAVF_FLAG_AQ_RELEASE_ALLMULTI		BIT(18)
-#define IAVF_FLAG_AQ_ENABLE_VLAN_STRIPPING	BIT(19)
-#define IAVF_FLAG_AQ_DISABLE_VLAN_STRIPPING   BIT(20)
-#define IAVF_FLAG_AQ_ENABLE_CHANNELS		BIT(21)
-#define IAVF_FLAG_AQ_DISABLE_CHANNELS		BIT(22)
-#define IAVF_FLAG_AQ_ADD_CLOUD_FILTER		BIT(23)
-#define IAVF_FLAG_AQ_DEL_CLOUD_FILTER		BIT(24)
+#define IAVF_FLAG_AQ_GET_HENA				BIT(11)
+#define IAVF_FLAG_AQ_SET_HENA				BIT(12)
+#define IAVF_FLAG_AQ_SET_RSS_KEY			BIT(13)
+#define IAVF_FLAG_AQ_SET_RSS_LUT			BIT(14)
+#define IAVF_FLAG_AQ_CONFIGURE_PROMISC_MODE		BIT(15)
+#define IAVF_FLAG_AQ_ENABLE_VLAN_STRIPPING		BIT(19)
+#define IAVF_FLAG_AQ_DISABLE_VLAN_STRIPPING		BIT(20)
+#define IAVF_FLAG_AQ_ENABLE_CHANNELS			BIT(21)
+#define IAVF_FLAG_AQ_DISABLE_CHANNELS			BIT(22)
+#define IAVF_FLAG_AQ_ADD_CLOUD_FILTER			BIT(23)
+#define IAVF_FLAG_AQ_DEL_CLOUD_FILTER			BIT(24)
+#define IAVF_FLAG_AQ_REQUEST_STATS			BIT(25)
+#define IAVF_FLAG_AQ_GET_OFFLOAD_VLAN_V2_CAPS		BIT(26)
+#define IAVF_FLAG_AQ_ENABLE_CTAG_VLAN_STRIPPING		BIT(27)
+#define IAVF_FLAG_AQ_DISABLE_CTAG_VLAN_STRIPPING	BIT(28)
+#define IAVF_FLAG_AQ_ENABLE_STAG_VLAN_STRIPPING		BIT(29)
+#define IAVF_FLAG_AQ_DISABLE_STAG_VLAN_STRIPPING	BIT(30)
+#define IAVF_FLAG_AQ_ENABLE_CTAG_VLAN_INSERTION		BIT(31)
+#define IAVF_FLAG_AQ_DISABLE_CTAG_VLAN_INSERTION	BIT(32)
+#define IAVF_FLAG_AQ_ENABLE_STAG_VLAN_INSERTION		BIT(33)
+#define IAVF_FLAG_AQ_DISABLE_STAG_VLAN_INSERTION	BIT(34)
+
+	/* Lock to prevent possible clobbering of
+	 * current_netdev_promisc_flags
+	 */
+	spinlock_t current_netdev_promisc_flags_lock;
+#ifdef HAVE_RHEL6_NET_DEVICE_OPS_EXT
+	u32 current_netdev_promisc_flags;
+#else
+	netdev_features_t current_netdev_promisc_flags;
+#endif /* HAVE_RHEL6_NET_DEVICE_OPS_EXT */
 
 	/* OS defined structs */
 	struct net_device *netdev;
@@ -581,6 +623,14 @@ struct iavf_adapter {
 			VIRTCHNL_VF_OFFLOAD_RSS_PF)))
 #define VLAN_ALLOWED(_a) ((_a)->vf_res->vf_cap_flags & \
 			  VIRTCHNL_VF_OFFLOAD_VLAN)
+#define VLAN_V2_ALLOWED(_a) ((_a)->vf_res->vf_cap_flags & \
+			     VIRTCHNL_VF_OFFLOAD_VLAN_V2)
+#define VLAN_V2_FILTERING_ALLOWED(_a) \
+	(VLAN_V2_ALLOWED((_a)) && \
+	 ((_a)->vlan_v2_caps.filtering.filtering_support.outer || \
+	  (_a)->vlan_v2_caps.filtering.filtering_support.inner))
+#define VLAN_FILTERING_ALLOWED(_a) \
+	(VLAN_ALLOWED((_a)) || VLAN_V2_FILTERING_ALLOWED((_a)))
 #ifdef VIRTCHNL_VF_CAP_ADV_LINK_SPEED
 #define ADV_LINK_SUPPORT(_a) ((_a)->vf_res->vf_cap_flags & \
 			      VIRTCHNL_VF_CAP_ADV_LINK_SPEED)
@@ -594,6 +644,7 @@ struct iavf_adapter {
 	struct virtchnl_version_info pf_version;
 #define PF_IS_V11(_a) (((_a)->pf_version.major == 1) && \
 		       ((_a)->pf_version.minor == 1))
+	struct virtchnl_vlan_caps vlan_v2_caps;
 	u16 msg_enable;
 	struct iavf_eth_stats current_stats;
 	struct iavf_vsi vsi;
@@ -628,11 +679,13 @@ struct iavf_adapter {
 	u64 tx_sctp_cso;
 	u64 tx_ip4_cso;
 	u64 tx_vlano;
+	u64 tx_ad_vlano;
 	u64 rx_tcp_cso;
 	u64 rx_udp_cso;
 	u64 rx_sctp_cso;
 	u64 rx_ip4_cso;
 	u64 rx_vlano;
+	u64 rx_ad_vlano;
 	u64 rx_tcp_cso_err;
 	u64 hw_csum_rx_vxlan;
 	u64 hw_csum_rx_geneve;
@@ -667,7 +720,7 @@ extern struct workqueue_struct *iavf_wq;
 static inline bool iavf_is_adq_enabled(struct iavf_adapter *adapter)
 {
 	return (ADQ_ALLOWED(adapter) &&
-		(adapter->num_tc > IAVF_START_CHNL_TC) &&
+		(adapter->num_tc >= IAVF_START_CHNL_TC) &&
 		(adapter->ch_config.state == __IAVF_TC_RUNNING));
 }
 
@@ -743,7 +796,9 @@ static inline void iavf_force_wb(struct iavf_vsi *vsi,
 int iavf_up(struct iavf_adapter *adapter);
 void iavf_down(struct iavf_adapter *adapter);
 int iavf_process_config(struct iavf_adapter *adapter);
+int iavf_parse_vf_resource_msg(struct iavf_adapter *adapter);
 void iavf_schedule_reset(struct iavf_adapter *adapter);
+void iavf_schedule_request_stats(struct iavf_adapter *adapter);
 void iavf_reset(struct iavf_adapter *adapter);
 void iavf_set_ethtool_ops(struct net_device *netdev);
 void iavf_update_stats(struct iavf_adapter *adapter);
@@ -760,6 +815,9 @@ int iavf_send_api_ver(struct iavf_adapter *adapter);
 int iavf_verify_api_ver(struct iavf_adapter *adapter);
 int iavf_send_vf_config_msg(struct iavf_adapter *adapter);
 int iavf_get_vf_config(struct iavf_adapter *adapter);
+int iavf_get_vf_vlan_v2_caps(struct iavf_adapter *adapter);
+int iavf_send_vf_offload_vlan_v2_msg(struct iavf_adapter *adapter);
+void iavf_set_queue_vlan_tag_loc(struct iavf_adapter *adapter);
 void iavf_irq_enable(struct iavf_adapter *adapter, bool flush);
 void iavf_configure_queues(struct iavf_adapter *adapter);
 void iavf_deconfigure_queues(struct iavf_adapter *adapter);
@@ -771,7 +829,8 @@ void iavf_add_ether_addrs(struct iavf_adapter *adapter);
 void iavf_del_ether_addrs(struct iavf_adapter *adapter);
 void iavf_add_vlans(struct iavf_adapter *adapter);
 void iavf_del_vlans(struct iavf_adapter *adapter);
-void iavf_set_promiscuous(struct iavf_adapter *adapter, int flags);
+void iavf_set_promiscuous(struct iavf_adapter *adapter);
+bool iavf_promiscuous_mode_changed(struct iavf_adapter *adapter);
 void iavf_request_stats(struct iavf_adapter *adapter);
 int iavf_request_reset(struct iavf_adapter *adapter);
 void iavf_get_hena(struct iavf_adapter *adapter);
@@ -788,6 +847,10 @@ void iavf_enable_channels(struct iavf_adapter *adapter);
 void iavf_disable_channels(struct iavf_adapter *adapter);
 void iavf_add_cloud_filter(struct iavf_adapter *adapter);
 void iavf_del_cloud_filter(struct iavf_adapter *adapter);
+void iavf_enable_vlan_stripping_v2(struct iavf_adapter *adapter, u16 tpid);
+void iavf_disable_vlan_stripping_v2(struct iavf_adapter *adapter, u16 tpid);
+void iavf_enable_vlan_insertion_v2(struct iavf_adapter *adapter, u16 tpid);
+void iavf_disable_vlan_insertion_v2(struct iavf_adapter *adapter, u16 tpid);
 void iavf_setup_ch_info(struct iavf_adapter *adapter, u32 flags);
 int iavf_lan_add_device(struct iavf_adapter *adapter);
 int iavf_lan_del_device(struct iavf_adapter *adapter);
