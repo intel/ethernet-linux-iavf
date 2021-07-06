@@ -33,6 +33,8 @@ static const struct iavf_stats iavf_gstrings_stats[] = {
 	VF_STAT("tx_broadcast", current_stats.tx_broadcast),
 	VF_STAT("tx_discards", current_stats.tx_discards),
 	VF_STAT("tx_errors", current_stats.tx_errors),
+	VF_STAT("tx_hwtstamp_skipped", ptp.tx_hwtstamp_skipped),
+	VF_STAT("tx_hwtstamp_timeouts", ptp.tx_hwtstamp_timeouts),
 #ifdef IAVF_ADD_PROBES
 	VF_STAT("tx_tcp_segments", tcp_segs),
 	VF_STAT("tx_udp_segments", udp_segs),
@@ -1166,6 +1168,51 @@ static int iavf_set_rxfh(struct net_device *netdev, const u32 *indir,
 }
 #endif /* ETHTOOL_GRSSH && ETHTOOL_SRSSH */
 
+#ifdef HAVE_ETHTOOL_GET_TS_INFO
+#if IS_ENABLED(CONFIG_PTP_1588_CLOCK)
+/**
+ * iavf_get_ts_info - Report available timestamping capabilities
+ * @netdev: the netdevice to report for
+ * @info: structure to fill in
+ *
+ * Based on device features enabled, report the Tx and Rx timestamp
+ * capabilities, as well as the PTP hardware clock index to user space.
+ */
+static int iavf_get_ts_info(struct net_device *netdev, struct ethtool_ts_info *info)
+{
+	struct iavf_adapter *adapter = netdev_priv(netdev);
+
+	info->so_timestamping = SOF_TIMESTAMPING_TX_SOFTWARE |
+				SOF_TIMESTAMPING_RX_SOFTWARE |
+				SOF_TIMESTAMPING_SOFTWARE;
+
+	if (iavf_ptp_cap_supported(adapter, VIRTCHNL_1588_PTP_CAP_TX_TSTAMP)) {
+		info->so_timestamping |= SOF_TIMESTAMPING_TX_HARDWARE |
+					 SOF_TIMESTAMPING_RAW_HARDWARE;
+		info->tx_types = BIT(HWTSTAMP_TX_OFF) | BIT(HWTSTAMP_TX_ON);
+	}
+
+	/* Rx timestamps are only supported on the flexible descriptors. Do
+	 * not report support unless we both have the capability and
+	 * configured with the appropriate descriptor format
+	 */
+	if (iavf_ptp_cap_supported(adapter, VIRTCHNL_1588_PTP_CAP_RX_TSTAMP) &&
+	    adapter->rxdid == VIRTCHNL_RXDID_2_FLEX_SQ_NIC) {
+		info->so_timestamping |= SOF_TIMESTAMPING_RX_HARDWARE |
+					 SOF_TIMESTAMPING_RAW_HARDWARE;
+		info->rx_filters = BIT(HWTSTAMP_FILTER_NONE) | BIT(HWTSTAMP_FILTER_ALL);
+	}
+
+	if (adapter->ptp.initialized)
+		info->phc_index = ptp_clock_index(adapter->ptp.clock);
+	else
+		info->phc_index = -1;
+
+	return 0;
+}
+#endif /* CONFIG_PTP_1588_CLOCK */
+#endif /* HAVE_ETHTOOL_GET_TS_INFO */
+
 static const struct ethtool_ops iavf_ethtool_ops = {
 #ifdef ETHTOOL_COALESCE_USECS
 	.supported_coalesce_params = ETHTOOL_COALESCE_USECS |
@@ -1222,6 +1269,11 @@ static const struct ethtool_ops iavf_ethtool_ops = {
 #else
 	.get_settings		= iavf_get_settings,
 #endif /* ETHTOOL_GLINKSETTINGS */
+#ifdef HAVE_ETHTOOL_GET_TS_INFO
+#if IS_ENABLED(CONFIG_PTP_1588_CLOCK)
+	.get_ts_info		= iavf_get_ts_info,
+#endif
+#endif
 };
 
 #ifdef HAVE_RHEL6_ETHTOOL_OPS_EXT_STRUCT

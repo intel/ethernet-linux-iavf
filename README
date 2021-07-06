@@ -1,7 +1,7 @@
 Linux* Driver for Intel(R) Ethernet Adaptive Virtual Function
 =============================================================
 
-January 21, 2021
+April 2, 2021
 
 
 Contents
@@ -220,8 +220,8 @@ IEEE 802.1ad (QinQ) Support
 The IEEE 802.1ad standard, informally known as QinQ, allows for multiple VLAN
 IDs within a single Ethernet frame. VLAN IDs are sometimes referred to as
 "tags," and multiple VLAN IDs are thus referred to as a "tag stack." Tag stacks
-allow L2 tunneling and the ability to segregate traffic within a particular
-VLAN ID, among other uses.
+allow L2 tunneling and the ability to separate traffic within a particular VLAN
+ID, among other uses.
 
 The following are examples of how to configure 802.1ad (QinQ):
 
@@ -238,8 +238,8 @@ NOTES:
 
 Double VLANs
 ------------
-Devices based on the Intel(R) Ethernet Controller 800 Series can process up to
-two VLANs in a packet when all the following are installed:
+Devices based on the Intel(R) Ethernet 800 Series can process up to two VLANs
+in a packet when all the following are installed:
 - ice driver version 1.4.0 or later
 - NVM version 2.4 or later
 - ice DDP package version 1.3.21 or later
@@ -333,8 +333,8 @@ the main VSI.
 To create traffic classes (TCs) on the interface:
 NOTE: Run all TC commands from the ../iproute2/tc/ directory.
 1. Use the tc command to create traffic classes. You can create a maximum of
-   16 TCs per interface on Intel(R) Ethernet Controller 800 Series devices and
-   8 TCs per interface on Intel(R) Ethernet Controller 700 Series devices.
+   16 TCs per interface on Intel(R) Ethernet 800 Series devices and
+   8 TCs per interface on Intel(R) Ethernet 700 Series devices.
 
    # tc qdisc add dev <ethX> root mqprio num_tc <tcs> map <priorities>
      queues <count1@offset1 ...> hw 1 mode channel shaper bw_rlimit
@@ -389,8 +389,8 @@ Multiple filters can be added to the device, using the same recipe (and
 requires no additional recipe resources), either on the same interface or on
 different interfaces. Each filter uses the same fields for matching, but can
 have different match values.
-  tc filter add dev <ethX> protocol ip ingress prio 1 flower ip_proto
-   tcp dst_port $app_port skip_sw hw_tc 1
+  # tc filter add dev <ethX> protocol ip ingress prio 1 flower ip_proto
+    tcp dst_port $app_port skip_sw hw_tc 1
 
 For example:
 
@@ -439,16 +439,15 @@ NOTE: After installing the driver, if your Intel Ethernet Network Connection
 is not working, verify that you have installed the correct driver.
 
 
-Linux bonding fails with Virtual Functions bound to an Intel(R) Ethernet
-Controller 700 series based device
-------------------------------------------------------------------------
-If you bind Virtual Functions (VFs) to an Intel(R) Ethernet Controller 700
-series based device, the VF slaves may fail when they become the active slave.
-If the MAC address of the VF is set by the PF (Physical Function) of the
-device, when you add a slave, or change the active-backup slave, Linux bonding
-tries to sync the backup slave's MAC address to the same MAC address as the
-active slave. Linux bonding will fail at this point. This issue will not occur
-if the VF's MAC address is not set by the PF.
+Linux bonding fails with VFs bound to an Intel(R) Ethernet 700 Series device
+----------------------------------------------------------------------------
+If you bind Virtual Functions (VFs) to an Intel(R) Ethernet 700 Series device,
+the VF targets may fail when they become the active target. If the MAC address
+of the VF is set by the PF (Physical Function) of the device, when you add a
+target, or change the active-backup target, Linux bonding tries to sync the
+backup target's MAC address to the same MAC address as the active target. Linux
+bonding will fail at this point. This issue will not occur if the VF's MAC
+address is not set by the PF.
 
 
 Traffic Is Not Being Passed Between VM and Client
@@ -555,12 +554,12 @@ Prior to unloading the PF driver, you must first ensure that all VFs are
 no longer active. Do this by shutting down all VMs and unloading the VF driver.
 
 
-Older VF drivers on Intel Ethernet Controller 800 Series based adapters
------------------------------------------------------------------------
+Older VF drivers on Intel Ethernet 800 Series adapters
+------------------------------------------------------
 Some Windows* VF drivers from Release 22.9 or older may encounter errors when
-loaded on a PF based on the Intel Ethernet Controller 800 Series on Linux KVM.
-You may see errors and the VF may not load. This issue does not occur starting
-with the following Windows VF drivers:
+loaded on a PF based on the Intel Ethernet 800 Series on Linux KVM. You may see
+errors and the VF may not load. This issue does not occur starting with the
+following Windows VF drivers:
 - v40e64, v40e65: Version 1.5.65.0 and newer
 
 To resolve this issue, download and install the latest iavf driver.
