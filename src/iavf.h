@@ -45,6 +45,7 @@
 #include "iavf_type.h"
 #include "virtchnl.h"
 #include "iavf_txrx.h"
+#include "iavf_ptp.h"
 #include <linux/bitmap.h>
 
 #define DEFAULT_DEBUG_LEVEL_SHIFT 3
@@ -75,7 +76,6 @@ struct iavf_vsi {
 	int base_vector;
 	u16 work_limit;
 	u16 qs_handle;
-	void *priv;	/* client driver data reference. */
 };
 
 /* How many Rx Buffers do we bundle into one write to the hardware ? */
@@ -329,7 +329,6 @@ iavf_inc_napi_sw_intr_counter(struct iavf_q_vector *q_vector)
 /**
  * iavf_inc_serv_task_sw_intr_counter
  * @q_vector: pointer to q_vector
- * @napi_codepath: codepath separator for stats purpose
  *
  * Track software interrupt from service_task codeflow.  Caller of this
  * expected to call iavf_force_wb to actually trigger SW intr.
@@ -385,6 +384,7 @@ struct iavf_mac_filter {
 	bool is_new_mac;	/* filter is new, wait for PF decision */
 	bool remove;		/* filter needs to be removed */
 	bool add;		/* filter needs to be added */
+	bool is_primary;	/* filter is a default VF MAC */
 };
 
 #define IAVF_VLAN(vid, tpid) ((struct iavf_vlan){ vid, tpid })
@@ -428,7 +428,7 @@ enum iavf_state_t {
 	__IAVF_REMOVE,		/* driver is being unloaded */
 	__IAVF_INIT_VERSION_CHECK,	/* aq msg sent, awaiting reply */
 	__IAVF_INIT_GET_RESOURCES,	/* aq msg sent, awaiting reply */
-	__IAVF_INIT_GET_OFFLOAD_VLAN_V2_CAPS,
+	__IAVF_INIT_EXTENDED_CAPS,	/* process extended caps which require aq msg exchange */
 	__IAVF_INIT_CONFIG_ADAPTER,
 	__IAVF_INIT_SW,		/* got resources, setting up structs */
 	__IAVF_INIT_FAILED,		/* init failed, restarting procedure */
@@ -443,8 +443,8 @@ enum iavf_state_t {
 
 enum iavf_critical_section_t {
 	__IAVF_IN_CRITICAL_TASK,	/* cannot be interrupted */
-	__IAVF_IN_CLIENT_TASK,
 	__IAVF_IN_REMOVE_TASK,	/* device being removed */
+	__IAVF_TX_TSTAMP_IN_PROGRESS,	/* PTP Tx timestamp request in progress */
 };
 
 #define IAVF_CLOUD_FIELD_OMAC		0x01
@@ -486,7 +486,6 @@ struct iavf_cloud_filter {
 struct iavf_adapter {
 	struct work_struct adminq_task;
 	struct delayed_work watchdog_task;
-	struct delayed_work client_task;
 	wait_queue_head_t down_waitqueue;
 	struct iavf_q_vector *q_vectors;
 	struct list_head vlan_filter_list;
@@ -494,6 +493,7 @@ struct iavf_adapter {
 	/* Lock to protect accesses to MAC and VLAN lists */
 	spinlock_t mac_vlan_list_lock;
 	char misc_vector_name[IFNAMSIZ + 9];
+	u8 rxdid;
 	int num_active_queues;
 	int num_req_queues;
 
@@ -507,10 +507,6 @@ struct iavf_adapter {
 	u64 hw_csum_rx_error;
 	u32 rx_desc_count;
 	int num_msix_vectors;
-	int num_iwarp_msix;
-	int iwarp_base_vector;
-	u32 client_pending;
-	struct iavf_client_instance *cinst;
 	struct msix_entry *msix_entries;
 
 	u32 flags;
@@ -519,10 +515,6 @@ struct iavf_adapter {
 #define IAVF_FLAG_RESET_PENDING			BIT(4)
 #define IAVF_FLAG_RESET_NEEDED			BIT(5)
 #define IAVF_FLAG_WB_ON_ITR_CAPABLE		BIT(6)
-#define IAVF_FLAG_SERVICE_CLIENT_REQUESTED	BIT(9)
-#define IAVF_FLAG_CLIENT_NEEDS_OPEN		BIT(10)
-#define IAVF_FLAG_CLIENT_NEEDS_CLOSE		BIT(11)
-#define IAVF_FLAG_CLIENT_NEEDS_L2_PARAMS	BIT(12)
 #define IAVF_FLAG_LEGACY_RX			BIT(15)
 #define IAVF_FLAG_REINIT_ITR_NEEDED		BIT(16)
 #define IAVF_FLAG_QUEUES_ENABLED		BIT(17)
@@ -572,6 +564,40 @@ struct iavf_adapter {
 #define IAVF_FLAG_AQ_DISABLE_CTAG_VLAN_INSERTION	BIT(32)
 #define IAVF_FLAG_AQ_ENABLE_STAG_VLAN_INSERTION		BIT(33)
 #define IAVF_FLAG_AQ_DISABLE_STAG_VLAN_INSERTION	BIT(34)
+#define IAVF_FLAG_AQ_GET_SUPPORTED_RXDIDS		BIT(35)
+#define IAVF_FLAG_AQ_GET_PTP_CAPS			BIT(36)
+#define IAVF_FLAG_AQ_SEND_PTP_CMD			BIT(37)
+
+	/* AQ messages that must be sent after IAVF_FLAG_AQ_GET_CONFIG, in
+	 * order to negotiated extended capabilities.
+	 */
+#define IAVF_FLAG_AQ_EXTENDED_CAPS			\
+	(IAVF_FLAG_AQ_GET_OFFLOAD_VLAN_V2_CAPS |	\
+	 IAVF_FLAG_AQ_GET_SUPPORTED_RXDIDS |		\
+	 IAVF_FLAG_AQ_GET_PTP_CAPS)
+
+	/* flags for processing extended capability messages during
+	 * __IAVF_INIT_EXTENDED_CAPS. Each capability exchange requires
+	 * both a SEND and a RECV step, which must be processed in sequence.
+	 *
+	 * During the __IAVF_INIT_EXTENDED_CAPS state, the driver will
+	 * process one flag at a time during each state loop.
+	 */
+	u64 extended_caps;
+#define IAVF_EXTENDED_CAP_SEND_VLAN_V2			BIT(0)
+#define IAVF_EXTENDED_CAP_RECV_VLAN_V2			BIT(1)
+#define IAVF_EXTENDED_CAP_SEND_RXDID			BIT(2)
+#define IAVF_EXTENDED_CAP_RECV_RXDID			BIT(3)
+#define IAVF_EXTENDED_CAP_SEND_PTP			BIT(4)
+#define IAVF_EXTENDED_CAP_RECV_PTP			BIT(5)
+
+#define IAVF_EXTENDED_CAPS				\
+	(IAVF_EXTENDED_CAP_SEND_VLAN_V2 |		\
+	 IAVF_EXTENDED_CAP_RECV_VLAN_V2	|		\
+	 IAVF_EXTENDED_CAP_SEND_RXDID |			\
+	 IAVF_EXTENDED_CAP_RECV_RXDID |			\
+	 IAVF_EXTENDED_CAP_SEND_PTP |			\
+	 IAVF_EXTENDED_CAP_RECV_PTP)
 
 	/* Lock to prevent possible clobbering of
 	 * current_netdev_promisc_flags
@@ -639,12 +665,18 @@ struct iavf_adapter {
 			  VIRTCHNL_VF_OFFLOAD_ADQ)
 #define ADQ_V2_ALLOWED(_a) ((_a)->vf_res->vf_cap_flags & \
 			  VIRTCHNL_VF_OFFLOAD_ADQ_V2)
+#define RXDID_ALLOWED(_a) ((_a)->vf_res->vf_cap_flags & \
+			   VIRTCHNL_VF_OFFLOAD_RX_FLEX_DESC)
+#define PTP_ALLOWED(_a) ((_a)->vf_res->vf_cap_flags & \
+			 VIRTCHNL_VF_CAP_PTP)
 	struct virtchnl_vf_resource *vf_res; /* incl. all VSIs */
 	struct virtchnl_vsi_resource *vsi_res; /* our LAN VSI */
 	struct virtchnl_version_info pf_version;
 #define PF_IS_V11(_a) (((_a)->pf_version.major == 1) && \
 		       ((_a)->pf_version.minor == 1))
 	struct virtchnl_vlan_caps vlan_v2_caps;
+	struct virtchnl_supported_rxdids supported_rxdids;
+	struct iavf_ptp ptp;
 	u16 msg_enable;
 	struct iavf_eth_stats current_stats;
 	struct iavf_vsi vsi;
@@ -697,12 +729,6 @@ struct iavf_adapter {
 };
 
 /* Ethtool Private Flags */
-
-/* lan device, used by client interface */
-struct iavf_device {
-	struct list_head list;
-	struct iavf_adapter *vf;
-};
 
 /* needed by iavf_ethtool.c */
 extern char iavf_driver_name[];
@@ -817,6 +843,10 @@ int iavf_send_vf_config_msg(struct iavf_adapter *adapter);
 int iavf_get_vf_config(struct iavf_adapter *adapter);
 int iavf_get_vf_vlan_v2_caps(struct iavf_adapter *adapter);
 int iavf_send_vf_offload_vlan_v2_msg(struct iavf_adapter *adapter);
+int iavf_send_vf_supported_rxdids_msg(struct iavf_adapter *adapter);
+int iavf_get_vf_supported_rxdids(struct iavf_adapter *adapter);
+int iavf_send_vf_ptp_caps_msg(struct iavf_adapter *adapter);
+int iavf_get_vf_ptp_caps(struct iavf_adapter *adapter);
 void iavf_set_queue_vlan_tag_loc(struct iavf_adapter *adapter);
 void iavf_irq_enable(struct iavf_adapter *adapter, bool flush);
 void iavf_configure_queues(struct iavf_adapter *adapter);
@@ -851,14 +881,9 @@ void iavf_enable_vlan_stripping_v2(struct iavf_adapter *adapter, u16 tpid);
 void iavf_disable_vlan_stripping_v2(struct iavf_adapter *adapter, u16 tpid);
 void iavf_enable_vlan_insertion_v2(struct iavf_adapter *adapter, u16 tpid);
 void iavf_disable_vlan_insertion_v2(struct iavf_adapter *adapter, u16 tpid);
+int iavf_replace_primary_mac(struct iavf_adapter *adapter,
+			     const u8 *new_mac);
 void iavf_setup_ch_info(struct iavf_adapter *adapter, u32 flags);
-int iavf_lan_add_device(struct iavf_adapter *adapter);
-int iavf_lan_del_device(struct iavf_adapter *adapter);
-void iavf_client_subtask(struct iavf_adapter *adapter);
-void iavf_notify_client_message(struct iavf_vsi *vsi, u8 *msg, u16 len);
-void iavf_notify_client_l2_params(struct iavf_vsi *vsi);
-void iavf_notify_client_open(struct iavf_vsi *vsi);
-void iavf_notify_client_close(struct iavf_vsi *vsi, bool reset);
 #ifdef CONFIG_DEBUG_FS
 void iavf_dbg_vf_init(struct iavf_adapter *adapter);
 void iavf_dbg_vf_exit(struct iavf_adapter *adapter);

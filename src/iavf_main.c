@@ -4,7 +4,6 @@
 #include "iavf.h"
 #include "iavf_helper.h"
 #include "iavf_prototype.h"
-#include "iavf_client.h"
 /* All iavf tracepoints are defined by the include below, which must
  * be included exactly once across the whole kernel with
  * CREATE_TRACE_POINTS defined
@@ -24,9 +23,9 @@ static const char iavf_driver_string[] =
 	"Intel(R) Ethernet Adaptive Virtual Function Network Driver";
 
 #define DRV_VERSION_MAJOR (4)
-#define DRV_VERSION_MINOR (1)
-#define DRV_VERSION_BUILD (1)
-#define DRV_VERSION "4.1.1"
+#define DRV_VERSION_MINOR (2)
+#define DRV_VERSION_BUILD (7)
+#define DRV_VERSION "4.2.7"
 const char iavf_driver_version[] = DRV_VERSION;
 static const char iavf_copyright[] =
 	"Copyright (c) 2013, Intel Corporation.";
@@ -85,7 +84,7 @@ void iavf_schedule_reset(struct iavf_adapter *adapter)
 void iavf_schedule_request_stats(struct iavf_adapter *adapter)
 {
 	adapter->aq_required |= IAVF_FLAG_AQ_REQUEST_STATS;
-	queue_work(iavf_wq, &adapter->watchdog_task.work);
+	mod_delayed_work(iavf_wq, &adapter->watchdog_task, 0);
 }
 
 /**
@@ -513,6 +512,46 @@ static void iavf_configure_tx(struct iavf_adapter *adapter)
 }
 
 /**
+ * iavf_select_rx_desc_format - Select Rx descriptor format
+ * @adapter: adapter private structure
+ *
+ * Select what Rx descriptor format based on availability and enabled
+ * features.
+ *
+ * Returns the desired RXDID to select for a given Rx queue, as defined by
+ * enum virtchnl_rxdid_format.
+ */
+static u8 iavf_select_rx_desc_format(struct iavf_adapter *adapter)
+{
+	u64 supported_rxdids = adapter->supported_rxdids.supported_rxdids;
+
+	/* If we did not negotiate VIRTCHNL_VF_OFFLOAD_RX_FLEX_DESC, we must
+	 * stick with the default value of the legacy 32 byte format.
+	 */
+	if (!RXDID_ALLOWED(adapter))
+		return VIRTCHNL_RXDID_1_32B_BASE;
+
+	/* Rx timestamping requires the use of flexible NIC descriptors */
+	if (iavf_ptp_cap_supported(adapter, VIRTCHNL_1588_PTP_CAP_RX_TSTAMP)) {
+		if (supported_rxdids & BIT(VIRTCHNL_RXDID_2_FLEX_SQ_NIC))
+			return VIRTCHNL_RXDID_2_FLEX_SQ_NIC;
+
+		dev_dbg(&adapter->pdev->dev, "Unable to negotiate flexible descriptor format.\n");
+	}
+
+	/* Warn if the PF does not list support for the default legacy
+	 * descriptor format. This shouldn't happen, as this is the format
+	 * used if VIRTCHNL_VF_OFFLOAD_RX_FLEX_DESC is not supported. It is
+	 * likely caused by a bug in the PF implementation failing to indicate
+	 * support for the format.
+	 */
+	if (supported_rxdids & BIT(VIRTCHNL_RXDID_1_32B_BASE))
+		dev_warn(&adapter->pdev->dev, "PF does not list support for default Rx descriptor format\n");
+
+	return VIRTCHNL_RXDID_1_32B_BASE;
+}
+
+/**
  * iavf_configure_rx - Configure Receive Unit after Reset
  * @adapter: board private structure
  *
@@ -523,6 +562,11 @@ static void iavf_configure_rx(struct iavf_adapter *adapter)
 	unsigned int rx_buf_len = IAVF_RXBUFFER_2048;
 	struct iavf_hw *hw = &adapter->hw;
 	int i;
+
+	adapter->rxdid = iavf_select_rx_desc_format(adapter);
+
+	dev_dbg(&adapter->pdev->dev, "Configuring Rx using descriptor ID of %u\n",
+		adapter->rxdid);
 
 	/* Legacy Rx will always default to a 2048 buffer size. */
 #if (PAGE_SIZE < 8192)
@@ -548,6 +592,7 @@ static void iavf_configure_rx(struct iavf_adapter *adapter)
 	for (i = 0; i < adapter->num_active_queues; i++) {
 		adapter->rx_rings[i].tail = hw->hw_addr + IAVF_QRX_TAIL1(i);
 		adapter->rx_rings[i].rx_buf_len = rx_buf_len;
+		adapter->rx_rings[i].rxdid = adapter->rxdid;
 
 		if (adapter->flags & IAVF_FLAG_LEGACY_RX)
 			clear_ring_build_skb_enabled(&adapter->rx_rings[i]);
@@ -875,12 +920,57 @@ iavf_mac_filter *iavf_add_filter(struct iavf_adapter *adapter,
 		list_add_tail(&f->list, &adapter->mac_filter_list);
 		f->add = true;
 		f->is_new_mac = true;
+		f->is_primary = false;
 		adapter->aq_required |= IAVF_FLAG_AQ_ADD_MAC_FILTER;
 	} else {
 		f->remove = false;
 	}
 
 	return f;
+}
+
+/**
+ * iavf_replace_primary_mac - Replace current primary address
+ * @adapter: board private structure
+ * @new_mac: new mac address to be applied
+ *
+ * Replace current dev_addr and send request to PF for removal of previous
+ * primary mac address filter and addition of new primary mac filter.
+ * Return 0 for success, -ENOMEM for failure.
+ *
+ * Do not call this with mac_vlan_list_lock!
+ **/
+int iavf_replace_primary_mac(struct iavf_adapter *adapter,
+			     const u8 *new_mac)
+{
+	struct net_device *netdev = adapter->netdev;
+	struct iavf_hw *hw = &adapter->hw;
+	struct iavf_mac_filter *f;
+
+	spin_lock_bh(&adapter->mac_vlan_list_lock);
+
+	f = iavf_find_filter(adapter, hw->mac.addr);
+	if (f) {
+		f->remove = true;
+		f->is_primary = true;
+		adapter->aq_required |= IAVF_FLAG_AQ_DEL_MAC_FILTER;
+	}
+
+	f = iavf_add_filter(adapter, new_mac);
+
+	if (f) {
+		f->is_primary = true;
+		ether_addr_copy(netdev->dev_addr, new_mac);
+	}
+
+	spin_unlock_bh(&adapter->mac_vlan_list_lock);
+
+	/* schedule the watchdog task to immediately process the request */
+	if (f) {
+		queue_work(iavf_wq, &adapter->watchdog_task.work);
+		return 0;
+	}
+	return -ENOMEM;
 }
 
 /**
@@ -893,15 +983,10 @@ iavf_mac_filter *iavf_add_filter(struct iavf_adapter *adapter,
 static int iavf_set_mac(struct net_device *netdev, void *p)
 {
 	struct iavf_adapter *adapter = netdev_priv(netdev);
-	struct iavf_hw *hw = &adapter->hw;
-	struct iavf_mac_filter *f;
 	struct sockaddr *addr = p;
 
 	if (!is_valid_ether_addr(addr->sa_data))
 		return -EADDRNOTAVAIL;
-
-	if (ether_addr_equal(netdev->dev_addr, addr->sa_data))
-		return 0;
 
 	if (iavf_chnl_filters_exist(adapter)) {
 		netdev_err(netdev,
@@ -910,23 +995,7 @@ static int iavf_set_mac(struct net_device *netdev, void *p)
 		return -EAGAIN;
 	}
 
-	spin_lock_bh(&adapter->mac_vlan_list_lock);
-
-	f = iavf_find_filter(adapter, hw->mac.addr);
-	if (f) {
-		f->remove = true;
-		adapter->aq_required |= IAVF_FLAG_AQ_DEL_MAC_FILTER;
-	}
-
-	f = iavf_add_filter(adapter, addr->sa_data);
-
-	spin_unlock_bh(&adapter->mac_vlan_list_lock);
-
-	if (f) {
-		ether_addr_copy(hw->mac.addr, addr->sa_data);
-	}
-
-	return (f == NULL) ? -ENOMEM : 0;
+	return iavf_replace_primary_mac(adapter, addr->sa_data);
 }
 
 /**
@@ -1085,8 +1154,6 @@ static void iavf_up_complete(struct iavf_adapter *adapter)
 	iavf_napi_enable_all(adapter);
 
 	adapter->aq_required |= IAVF_FLAG_AQ_ENABLE_QUEUES;
-	if (CLIENT_ENABLED(adapter))
-		adapter->flags |= IAVF_FLAG_CLIENT_NEEDS_OPEN;
 	mod_delayed_work(iavf_wq, &adapter->watchdog_task, 0);
 }
 
@@ -1194,13 +1261,7 @@ iavf_acquire_msix_vectors(struct iavf_adapter *adapter, int vectors)
 		return v_actual;
 	}
 
-	if (CLIENT_ALLOWED(adapter)) {
-		adapter->num_iwarp_msix = (v_actual - 1) / 2;
-		adapter->num_msix_vectors = v_actual - adapter->num_iwarp_msix;
-		adapter->iwarp_base_vector = adapter->num_msix_vectors;
-	} else {
-		adapter->num_msix_vectors = v_actual;
-	}
+	adapter->num_msix_vectors = v_actual;
 
 	return 0;
 }
@@ -2050,23 +2111,13 @@ static void iavf_init_get_resources(struct iavf_adapter *adapter)
 		goto err_alloc;
 	}
 
-	ret = iavf_send_vf_offload_vlan_v2_msg(adapter);
-	if (ret && ret == -EOPNOTSUPP) {
-		/* underlying PF doesn't support VIRTCHNL_VF_OFFLOAD_VLAN_V2, so
-		 * go directly to finishing initialization
-		 */
-		iavf_change_state(adapter, __IAVF_INIT_CONFIG_ADAPTER);
-		return;
-	} else if (ret) {
-		dev_err(&pdev->dev, "Unable to send offload vlan v2 request (%d)\n",
-			ret);
-		goto err_alloc;
-	}
-
-	/* underlying PF supports VIRTCHNL_VF_OFFLOAD_VLAN_V2, so update the
-	 * state accordingly
+	/* Some features require additional messages to negotiate extended
+	 * capabilities. These are processed in sequence by the
+	 * __IAVF_INIT_EXTENDED_CAPS driver state.
 	 */
-	iavf_change_state(adapter, __IAVF_INIT_GET_OFFLOAD_VLAN_V2_CAPS);
+	adapter->extended_caps = IAVF_EXTENDED_CAPS;
+
+	iavf_change_state(adapter, __IAVF_INIT_EXTENDED_CAPS);
 	return;
 
 err_alloc:
@@ -2077,32 +2128,224 @@ err:
 }
 
 /**
- * iavf_init_get_offload_vlan_v2_caps - part of driver startup
+ * iavf_init_send_offload_vlan_v2_caps - part of initializing VLAN V2 caps
  * @adapter: board private structure
  *
- * Function processes __IAVF_INIT_GET_OFFLOAD_VLAN_V2_CAPS driver state if the
- * VF negotiates VIRTCHNL_VF_OFFLOAD_VLAN_V2. If VIRTCHNL_VF_OFFLOAD_VLAN_V2 is
- * not negotiated, then this state will never be entered.
- **/
-static void iavf_init_get_offload_vlan_v2_caps(struct iavf_adapter *adapter)
+ * Function processes send of the extended VLAN V2 capability message to the
+ * PF. Must clear IAVF_EXTENDED_CAP_RECV_VLAN_V2 if the message is not sent,
+ * e.g. due to PF not negotiating VIRTCHNL_VF_OFFLOAD_VLAN_V2.
+ */
+static void iavf_init_send_offload_vlan_v2_caps(struct iavf_adapter *adapter)
 {
 	int ret;
 
-	WARN_ON(adapter->state != __IAVF_INIT_GET_OFFLOAD_VLAN_V2_CAPS);
+	WARN_ON(!(adapter->extended_caps & IAVF_EXTENDED_CAP_SEND_VLAN_V2));
+
+	ret = iavf_send_vf_offload_vlan_v2_msg(adapter);
+	if (ret && ret == -EOPNOTSUPP) {
+		/* PF does not support VIRTCHNL_VF_OFFLOAD_V2. In this case,
+		 * we did not send the capability exchange message and do not
+		 * expect a response.
+		 */
+		adapter->extended_caps &= ~IAVF_EXTENDED_CAP_RECV_VLAN_V2;
+	}
+
+	/* We sent the message, so move on to the next step */
+	adapter->extended_caps &= ~IAVF_EXTENDED_CAP_SEND_VLAN_V2;
+}
+
+/**
+ * iavf_init_recv_offload_vlan_v2_caps - part of initializing VLAN V2 caps
+ * @adapter: board private structure
+ *
+ * Function processes receipt of the extended VLAN V2 capability message from
+ * the PF.
+ **/
+static void iavf_init_recv_offload_vlan_v2_caps(struct iavf_adapter *adapter)
+{
+	int ret;
+
+	WARN_ON(!(adapter->extended_caps & IAVF_EXTENDED_CAP_RECV_VLAN_V2));
 
 	memset(&adapter->vlan_v2_caps, 0, sizeof(adapter->vlan_v2_caps));
 
 	ret = iavf_get_vf_vlan_v2_caps(adapter);
-	if (ret) {
-		if (ret == IAVF_ERR_ADMIN_QUEUE_NO_WORK)
-			iavf_send_vf_offload_vlan_v2_msg(adapter);
+	if (ret)
 		goto err;
-	}
 
-	iavf_change_state(adapter, __IAVF_INIT_CONFIG_ADAPTER);
+	/* We've processed receipt of the VLAN V2 caps message */
+	adapter->extended_caps &= ~IAVF_EXTENDED_CAP_RECV_VLAN_V2;
 	return;
 err:
+	/* We didn't receive a reply. Make sure we try sending again when
+	 * __IAVF_INIT_FAILED attempts to recover.
+	 */
+	adapter->extended_caps |= IAVF_EXTENDED_CAP_SEND_VLAN_V2;
 	iavf_change_state(adapter, __IAVF_INIT_FAILED);
+}
+
+/**
+ * iavf_init_send_supported_rxdids - part of querying for supported RXDID formats
+ * @adapter: board private structure
+ *
+ * Function processes send of the request for supported RXDIDs to the PF.
+ * Must clear IAVF_EXTENDED_CAP_RECV_RXDID if the message is not sent, e.g.
+ * due to the PF not negotiating VIRTCHNL_VF_OFFLOAD_RX_FLEX_DESC.
+ */
+static void iavf_init_send_supported_rxdids(struct iavf_adapter *adapter)
+{
+	int ret;
+
+	WARN_ON(!(adapter->extended_caps & IAVF_EXTENDED_CAP_SEND_RXDID));
+
+	ret = iavf_send_vf_supported_rxdids_msg(adapter);
+	if (ret && ret == -EOPNOTSUPP) {
+		/* PF does not support VIRTCHNL_VF_OFFLOAD_RX_FLEX_DESC. In this
+		 * case, we did not send the capability exchange message and
+		 * do not expect a response.
+		 */
+		adapter->extended_caps &= ~IAVF_EXTENDED_CAP_RECV_RXDID;
+	}
+
+	/* We sent the message, so move on to the next step */
+	adapter->extended_caps &= ~IAVF_EXTENDED_CAP_SEND_RXDID;
+}
+
+/**
+ * iavf_init_recv_supported_rxdids - part of querying for supported RXDID formats
+ * @adapter: board private structure
+ *
+ * Function processes receipt of the supported RXDIDs message from the PF.
+ **/
+static void iavf_init_recv_supported_rxdids(struct iavf_adapter *adapter)
+{
+	int ret;
+
+	WARN_ON(!(adapter->extended_caps & IAVF_EXTENDED_CAP_RECV_RXDID));
+
+	memset(&adapter->supported_rxdids, 0, sizeof(adapter->supported_rxdids));
+
+	ret = iavf_get_vf_supported_rxdids(adapter);
+	if (ret)
+		goto err;
+
+	/* We've processed the PF response to the VIRTCHNL_OP_GET_SUPPORTED_RXDIDS
+	 * message we sent previously.
+	 */
+	adapter->extended_caps &= ~IAVF_EXTENDED_CAP_RECV_RXDID;
+	return;
+err:
+	/* We didn't receive a reply. Make sure we try sending again when
+	 * __IAVF_INIT_FAILED attempts to recover.
+	 */
+	adapter->extended_caps |= IAVF_EXTENDED_CAP_SEND_RXDID;
+	iavf_change_state(adapter, __IAVF_INIT_FAILED);
+}
+
+/**
+ * iavf_init_send_ptp_caps - part of querying for extended PTP capabilities
+ * @adapter: board private structure
+ *
+ * Function processes send of the request for 1588 PTP capabilities to the PF.
+ * Must clear IAVF_EXTENDED_CAP_SEND_PTP if the message is not sent, e.g.
+ * due to the PF not negotiating VIRTCHNL_VF_PTP_CAP
+ */
+static void iavf_init_send_ptp_caps(struct iavf_adapter *adapter)
+{
+	int ret;
+
+	WARN_ON(!(adapter->extended_caps & IAVF_EXTENDED_CAP_SEND_PTP));
+
+	ret = iavf_send_vf_ptp_caps_msg(adapter);
+	if (ret && ret == -EOPNOTSUPP) {
+		/* PF does not support VIRTCHNL_VF_PTP_CAP. In this case, we
+		 * did not send the capability exchange message and do not
+		 * expect a response.
+		 */
+		adapter->extended_caps &= ~IAVF_EXTENDED_CAP_RECV_PTP;
+	}
+
+	/* We sent the message, so move on to the next step */
+	adapter->extended_caps &= ~IAVF_EXTENDED_CAP_SEND_PTP;
+}
+
+/**
+ * iavf_init_recv_ptp_caps - part of querying for supported PTP capabilities
+ * @adapter: board private structure
+ *
+ * Function processes receipt of the PTP capabilities supported on this VF.
+ **/
+static void iavf_init_recv_ptp_caps(struct iavf_adapter *adapter)
+{
+	int ret;
+
+	WARN_ON(!(adapter->extended_caps & IAVF_EXTENDED_CAP_RECV_PTP));
+
+	memset(&adapter->ptp.hw_caps, 0, sizeof(adapter->ptp.hw_caps));
+
+	ret = iavf_get_vf_ptp_caps(adapter);
+	if (ret)
+		goto err;
+
+	/* We've processed the PF response to the VIRTCHNL_OP_1588_PTP_GET_CAPS
+	 * message we sent previously.
+	 */
+	adapter->extended_caps &= ~IAVF_EXTENDED_CAP_RECV_PTP;
+	return;
+err:
+	/* We didn't receive a reply. Make sure we try sending again when
+	 * __IAVF_INIT_FAILED attempts to recover.
+	 */
+	adapter->extended_caps |= IAVF_EXTENDED_CAP_SEND_PTP;
+	iavf_change_state(adapter, __IAVF_INIT_FAILED);
+}
+
+/**
+ * iavf_init_process_extended_caps - Part of driver startup
+ * @adapter: board private structure
+ *
+ * Function processes __IAVF_INIT_EXTENDED_CAPS driver state. This state
+ * handles negotiating capabilities for features which require an additional
+ * message.
+ *
+ * Once all extended capabilities exchanges are finished, the driver will
+ * transition into __IAVF_INIT_CONFIG_ADAPTER.
+ */
+static void iavf_init_process_extended_caps(struct iavf_adapter *adapter)
+{
+	WARN_ON(adapter->state != __IAVF_INIT_EXTENDED_CAPS);
+
+	/* Process capability exchange for VLAN V2 */
+	if (adapter->extended_caps & IAVF_EXTENDED_CAP_SEND_VLAN_V2) {
+		iavf_init_send_offload_vlan_v2_caps(adapter);
+		return;
+	} else if (adapter->extended_caps & IAVF_EXTENDED_CAP_RECV_VLAN_V2) {
+		iavf_init_recv_offload_vlan_v2_caps(adapter);
+		return;
+	}
+
+	/* Process capability exchange for RXDID formats */
+	if (adapter->extended_caps & IAVF_EXTENDED_CAP_SEND_RXDID) {
+		iavf_init_send_supported_rxdids(adapter);
+		return;
+	} else if (adapter->extended_caps & IAVF_EXTENDED_CAP_RECV_RXDID) {
+		iavf_init_recv_supported_rxdids(adapter);
+		return;
+	}
+
+	/* Process capability exchange for PTP features */
+	if (adapter->extended_caps & IAVF_EXTENDED_CAP_SEND_PTP) {
+		iavf_init_send_ptp_caps(adapter);
+		return;
+	} else if (adapter->extended_caps & IAVF_EXTENDED_CAP_RECV_PTP) {
+		iavf_init_recv_ptp_caps(adapter);
+		return;
+	}
+
+	/* When we reach here, no further extended capabilities exchanges are
+	 * necessary, so we finally transition into __IAVF_INIT_CONFIG_ADAPTER
+	 */
+	iavf_change_state(adapter, __IAVF_INIT_CONFIG_ADAPTER);
 }
 
 /**
@@ -2184,12 +2427,6 @@ static void iavf_init_config_adapter(struct iavf_adapter *adapter)
 	adapter->netdev_registered = true;
 
 	netif_tx_stop_all_queues(netdev);
-	if (CLIENT_ALLOWED(adapter)) {
-		ret = iavf_lan_add_device(adapter);
-		if (ret)
-			dev_info(&pdev->dev, "Failed to add VF to client API service list: %d\n",
-				 ret);
-	}
 	dev_info(&pdev->dev, "MAC address: %pM\n", adapter->hw.mac.addr);
 	if (netdev->features & NETIF_F_GRO)
 		dev_info(&pdev->dev, "GRO is enabled\n");
@@ -2211,6 +2448,9 @@ static void iavf_init_config_adapter(struct iavf_adapter *adapter)
 
 	/* request initial VLAN offload settings */
 	iavf_set_vlan_offload_features(adapter, 0, netdev->features);
+
+	/* Setup initial PTP configuration */
+	iavf_ptp_init(adapter);
 
 	return;
 err_mem:
@@ -2239,6 +2479,10 @@ static int iavf_process_aq_command(struct iavf_adapter *adapter)
 		return iavf_send_vf_config_msg(adapter);
 	if (adapter->aq_required & IAVF_FLAG_AQ_GET_OFFLOAD_VLAN_V2_CAPS)
 		return iavf_send_vf_offload_vlan_v2_msg(adapter);
+	if (adapter->aq_required & IAVF_FLAG_AQ_GET_SUPPORTED_RXDIDS)
+		return iavf_send_vf_supported_rxdids_msg(adapter);
+	if (adapter->aq_required & IAVF_FLAG_AQ_GET_PTP_CAPS)
+		return iavf_send_vf_ptp_caps_msg(adapter);
 	if (adapter->aq_required & IAVF_FLAG_AQ_DISABLE_QUEUES) {
 		iavf_disable_queues(adapter);
 		return 0;
@@ -2358,6 +2602,10 @@ static int iavf_process_aq_command(struct iavf_adapter *adapter)
 		iavf_enable_vlan_insertion_v2(adapter, ETH_P_8021AD);
 		return 0;
 	}
+	if (adapter->aq_required & IAVF_FLAG_AQ_SEND_PTP_CMD) {
+		iavf_virtchnl_send_ptp_cmd(adapter);
+		return 0;
+	}
 
 	/* since only one operation is processed at a time, always keep stats
 	 * requests at the lowest priority so all other operations get processed
@@ -2444,17 +2692,6 @@ static void iavf_watchdog_task(struct work_struct *work)
 		iavf_change_state(adapter, __IAVF_RESETTING);
 		adapter->aq_required = 0;
 		adapter->current_op = VIRTCHNL_OP_UNKNOWN;
-		while (test_and_set_bit(__IAVF_IN_CLIENT_TASK,
-					&adapter->crit_section))
-			usleep_range(500, 1000);
-		if (CLIENT_ENABLED(adapter)) {
-			adapter->flags &= ~(IAVF_FLAG_CLIENT_NEEDS_OPEN |
-					    IAVF_FLAG_CLIENT_NEEDS_CLOSE |
-					    IAVF_FLAG_CLIENT_NEEDS_L2_PARAMS |
-					    IAVF_FLAG_SERVICE_CLIENT_REQUESTED);
-			cancel_delayed_work_sync(&adapter->client_task);
-			iavf_notify_client_close(&adapter->vsi, true);
-		}
 	}
 
 	switch (adapter->state) {
@@ -2476,8 +2713,8 @@ static void iavf_watchdog_task(struct work_struct *work)
 		queue_delayed_work(iavf_wq, &adapter->watchdog_task,
 				   msecs_to_jiffies(1));
 		return;
-	case __IAVF_INIT_GET_OFFLOAD_VLAN_V2_CAPS:
-		iavf_init_get_offload_vlan_v2_caps(adapter);
+	case __IAVF_INIT_EXTENDED_CAPS:
+		iavf_init_process_extended_caps(adapter);
 		clear_bit(__IAVF_IN_CRITICAL_TASK, &adapter->crit_section);
 		queue_delayed_work(iavf_wq, &adapter->watchdog_task,
 				   msecs_to_jiffies(1));
@@ -2567,6 +2804,12 @@ static void iavf_watchdog_task(struct work_struct *work)
 			iavf_detect_recover_hung(&adapter->vsi);
 			iavf_chnl_detect_recover(&adapter->vsi);
 		}
+#ifndef HAVE_PTP_CLOCK_DO_AUX_WORK
+#if IS_ENABLED(CONFIG_PTP_1588_CLOCK)
+		if (adapter->ptp.initialized)
+			iavf_ptp_do_aux_work(&adapter->ptp.info);
+#endif
+#endif
 		break;
 	case __IAVF_REMOVE:
 		clear_bit(__IAVF_IN_CRITICAL_TASK, &adapter->crit_section);
@@ -2586,8 +2829,6 @@ static void iavf_watchdog_task(struct work_struct *work)
 		queue_work(iavf_wq, &adapter->watchdog_task.work);
 		return;
 	}
-
-	schedule_delayed_work(&adapter->client_task, msecs_to_jiffies(5));
 
 	clear_bit(__IAVF_IN_CRITICAL_TASK, &adapter->crit_section);
 restart_watchdog:
@@ -2666,7 +2907,6 @@ static void iavf_disable_vf(struct iavf_adapter *adapter)
 	adapter->flags &= ~IAVF_FLAG_RESET_PENDING;
 	adapter->state = __IAVF_DOWN;
 	clear_bit(__IAVF_IN_CRITICAL_TASK, &adapter->crit_section);
-	clear_bit(__IAVF_IN_CLIENT_TASK, &adapter->crit_section);
 	adapter->flags &= ~IAVF_FLAG_RESET_PENDING;
 	iavf_change_state(adapter, __IAVF_DOWN);
 	wake_up(&adapter->down_waitqueue);
@@ -2812,14 +3052,17 @@ static void iavf_handle_reset(struct iavf_adapter *adapter)
 	}
 
 	adapter->aq_required |= IAVF_FLAG_AQ_GET_CONFIG;
-	/* always set since VIRTCHNL_OP_GET_VF_RESOURCES has not been
-	 * sent/received yet, so VLAN_V2_ALLOWED() cannot is not reliable here,
-	 * however the VIRTCHNL_OP_GET_OFFLOAD_VLAN_V2_CAPS won't be sent until
-	 * VIRTCHNL_OP_GET_VF_RESOURCES and VIRTCHNL_VF_OFFLOAD_VLAN_V2 have
-	 * been successfully sent and negotiated
-	 */
-	adapter->aq_required |= IAVF_FLAG_AQ_GET_OFFLOAD_VLAN_V2_CAPS;
 	adapter->aq_required |= IAVF_FLAG_AQ_MAP_VECTORS;
+
+	/* Certain capabilities require an extended negotiation process using
+	 * extra messages that must be processed after getting the VF
+	 * configuration. The related checks such as VLAN_V2_ALLOWED() are not
+	 * reliable here, since the configuration has not yet been negotiated.
+	 *
+	 * Always set these flags, since them related VIRTCHNL messages won't
+	 * be sent until after VIRTCHNL_OP_GET_VF_RESOURCES.
+	 */
+	adapter->aq_required |= IAVF_FLAG_AQ_EXTENDED_CAPS;
 
 	iavf_misc_irq_enable(adapter);
 
@@ -2862,14 +3105,12 @@ static void iavf_handle_reset(struct iavf_adapter *adapter)
 	adapter->flags &= ~IAVF_FLAG_REINIT_ITR_NEEDED;
 	adapter->flags &= ~IAVF_FLAG_REINIT_CHNL_NEEDED;
 
-	clear_bit(__IAVF_IN_CLIENT_TASK, &adapter->crit_section);
 	return;
 reset_err:
 	if (running) {
 		iavf_change_state(adapter, __IAVF_RUNNING);
 		netdev->flags |= IFF_UP;
 	}
-	clear_bit(__IAVF_IN_CLIENT_TASK, &adapter->crit_section);
 	dev_err(&adapter->pdev->dev, "failed to allocate resources during reinit\n");
 	iavf_close(netdev);
 }
@@ -2968,48 +3209,6 @@ freedom:
 out:
 	/* re-enable Admin queue interrupt cause */
 	iavf_misc_irq_enable(adapter);
-}
-
-/**
- * iavf_client_task - worker thread to perform client work
- * @work: pointer to work_struct containing our data
- *
- * This task handles client interactions. Because client calls can be
- * reentrant, we can't handle them in the watchdog.
- **/
-static void iavf_client_task(struct work_struct *work)
-{
-	struct iavf_adapter *adapter =
-		container_of(work, struct iavf_adapter, client_task.work);
-
-	/* If we can't get the client bit, just give up. We'll be rescheduled
-	 * later.
-	 */
-
-	if (test_and_set_bit(__IAVF_IN_CLIENT_TASK, &adapter->crit_section))
-		return;
-
-	if (adapter->flags & IAVF_FLAG_SERVICE_CLIENT_REQUESTED) {
-		iavf_client_subtask(adapter);
-		adapter->flags &= ~IAVF_FLAG_SERVICE_CLIENT_REQUESTED;
-		goto out;
-	}
-	if (adapter->flags & IAVF_FLAG_CLIENT_NEEDS_L2_PARAMS) {
-		iavf_notify_client_l2_params(&adapter->vsi);
-		adapter->flags &= ~IAVF_FLAG_CLIENT_NEEDS_L2_PARAMS;
-		goto out;
-	}
-	if (adapter->flags & IAVF_FLAG_CLIENT_NEEDS_CLOSE) {
-		iavf_notify_client_close(&adapter->vsi, false);
-		adapter->flags &= ~IAVF_FLAG_CLIENT_NEEDS_CLOSE;
-		goto out;
-	}
-	if (adapter->flags & IAVF_FLAG_CLIENT_NEEDS_OPEN) {
-		iavf_notify_client_open(&adapter->vsi);
-		adapter->flags &= ~IAVF_FLAG_CLIENT_NEEDS_OPEN;
-	}
-out:
-	clear_bit(__IAVF_IN_CLIENT_TASK, &adapter->crit_section);
 }
 
 /**
@@ -3167,7 +3366,7 @@ validate_bw:
 }
 
 /**
- * iavf_validate_channel_config - validate queue mapping info
+ * iavf_validate_ch_config - validate queue mapping info
  * @adapter: board private structure
  * @mqprio_qopt: queue parameters
  * @max_tc_allowed: MAX TC allowed, it could be 4 or 16 depends.
@@ -3807,11 +4006,12 @@ static int iavf_parse_cls_flower(struct iavf_adapter *adapter,
  *
  * Return 0 on success, negative on failure
  */
-static int iavf_handle_tclass(struct iavf_adapter *adapter, u32 tc,
+static int iavf_handle_tclass(struct iavf_adapter *adapter, int tc,
 			      struct iavf_cloud_filter *filter)
 {
-	if (tc == 0)
-		return 0;
+	if (tc < 0)
+		return -EINVAL;
+
 	if (tc < adapter->num_tc && (!iavf_is_adq_v2_enabled(adapter)) &&
 	    !filter->f.data.tcp_spec.dst_port) {
 		dev_err(&adapter->pdev->dev,
@@ -4164,8 +4364,6 @@ static int iavf_close(struct net_device *netdev)
 	}
 
 	set_bit(__IAVF_VSI_DOWN, adapter->vsi.state);
-	if (CLIENT_ENABLED(adapter))
-		adapter->flags |= IAVF_FLAG_CLIENT_NEEDS_CLOSE;
 
 	iavf_down(adapter);
 	iavf_change_state(adapter, __IAVF_DOWN_PENDING);
@@ -4354,7 +4552,7 @@ out_err:
 #endif /* HAVE_NDO_FEATURES_CHECK */
 
 /**
- * iavf_get_netdev_hw_features - get NETDEV VLAN features that can toggle on/off
+ * iavf_get_netdev_vlan_hw_features - get NETDEV VLAN features
  * @adapter: board private structure
  *
  * Depending on whether VIRTHCNL_VF_OFFLOAD_VLAN or VIRTCHNL_VF_OFFLOAD_VLAN_V2
@@ -4421,7 +4619,7 @@ iavf_get_netdev_vlan_hw_features(struct iavf_adapter *adapter)
 }
 
 /**
- * iavf_get_netdev_features - get the enabled NETDEV VLAN fetures
+ * iavf_get_netdev_vlan_features - get the enabled NETDEV VLAN fetures
  * @adapter: board private structure
  *
  * Depending on whether VIRTHCNL_VF_OFFLOAD_VLAN or VIRTCHNL_VF_OFFLOAD_VLAN_V2
@@ -4624,6 +4822,33 @@ static netdev_features_t iavf_fix_features(struct net_device *netdev,
 }
 
 #endif /* HAVE_NDO_SET_FEATURES */
+
+/**
+ * iavf_do_ioctl - Handle network device specific ioctls
+ * @netdev: network interface device structure
+ * @ifr: interface request data
+ * @cmd: ioctl command
+ *
+ * Callback to handle the networking device specific ioctls. Used to handle
+ * the SIOCGHWTSTAMP and SIOCSHWTSTAMP ioctl requests that configure Tx and Rx
+ * timstamping support.
+ */
+static int iavf_do_ioctl(struct net_device *netdev, struct ifreq *ifr, int cmd)
+{
+	struct iavf_adapter *adapter = netdev_priv(netdev);
+
+	switch (cmd) {
+#ifdef SIOCGHWTSTAMP
+	case SIOCGHWTSTAMP:
+		return iavf_ptp_get_ts_config(adapter, ifr);
+#endif
+	case SIOCSHWTSTAMP:
+		return iavf_ptp_set_ts_config(adapter, ifr);
+	default:
+		return -EOPNOTSUPP;
+	}
+}
+
 static const struct net_device_ops iavf_netdev_ops = {
 #ifdef HAVE_RHEL7_NET_DEVICE_OPS_EXT
 /* RHEL7 requires this to be defined to enable extended ops.  RHEL7 uses the
@@ -4640,6 +4865,7 @@ static const struct net_device_ops iavf_netdev_ops = {
 	.ndo_set_rx_mode	= iavf_set_rx_mode,
 	.ndo_validate_addr	= eth_validate_addr,
 	.ndo_set_mac_address	= iavf_set_mac,
+	.ndo_do_ioctl		= iavf_do_ioctl,
 #ifdef HAVE_RHEL7_EXTENDED_MIN_MAX_MTU
 	.extended.ndo_change_mtu = iavf_change_mtu,
 #else
@@ -4998,11 +5224,14 @@ static int iavf_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 
 	INIT_WORK(&adapter->adminq_task, iavf_adminq_task);
 	INIT_DELAYED_WORK(&adapter->watchdog_task, iavf_watchdog_task);
-	INIT_DELAYED_WORK(&adapter->client_task, iavf_client_task);
 	queue_delayed_work(iavf_wq, &adapter->watchdog_task,
 			   msecs_to_jiffies(5 * (pdev->devfn & 0x07)));
 	/* Setup the wait queue for indicating transition to down status */
 	init_waitqueue_head(&adapter->down_waitqueue);
+
+	INIT_LIST_HEAD(&adapter->ptp.aq_cmds);
+	init_waitqueue_head(&adapter->ptp.phc_time_waitqueue);
+	spin_lock_init(&adapter->ptp.aq_cmd_lock);
 
 	/* By default, start the value of priv flags
 	 * "channel-pkt-inspect-optimize" as ON. It's not in effect,
@@ -5195,10 +5424,8 @@ static void iavf_remove(struct pci_dev *pdev)
 	struct iavf_cloud_filter *cf, *cftmp;
 	struct iavf_mac_filter *f, *ftmp;
 	struct iavf_hw *hw = &adapter->hw;
-	int err;
 	/* Indicate we are in remove and not to run/schedule any driver tasks */
 	set_bit(__IAVF_IN_REMOVE_TASK, &adapter->crit_section);
-	cancel_delayed_work_sync(&adapter->client_task);
 	cancel_work_sync(&adapter->adminq_task);
 	cancel_delayed_work_sync(&adapter->watchdog_task);
 
@@ -5216,14 +5443,11 @@ static void iavf_remove(struct pci_dev *pdev)
 		adapter->netdev_registered = false;
 	}
 
-	if (CLIENT_ALLOWED(adapter)) {
-		err = iavf_lan_del_device(adapter);
-		if (err)
-			dev_warn(&pdev->dev, "Failed to delete client device: %d\n",
-				 err);
-	}
 
 	dev_info(&adapter->pdev->dev, "Removing device\n");
+
+	iavf_ptp_release(adapter);
+
 	/* Shut down all the garbage mashers on the detention level */
 	iavf_change_state(adapter, __IAVF_REMOVE);
 	adapter->aq_required = 0;

@@ -5,8 +5,9 @@
 #define _VIRTCHNL_H_
 
 /* Description:
- * This header file describes the VF-PF communication protocol used
- * by the drivers for all devices starting from our 40G product line
+ * This header file describes the Virtual Function (VF) - Physical Function
+ * (PF) communication protocol used by the drivers for all devices starting
+ * from our 40G product line
  *
  * Admin queue buffer usage:
  * desc->opcode is always aqc_opc_send_msg_to_pf
@@ -20,8 +21,8 @@
  * have a maximum of sixteen queues for all of its VSIs.
  *
  * The PF is required to return a status code in v_retval for all messages
- * except RESET_VF, which does not require any response. The return value
- * is of status_code type, defined in the shared type.h.
+ * except RESET_VF, which does not require any response. The returned value
+ * is of virtchnl_status_code type, defined in the shared type.h.
  *
  * In general, VF driver initialization should roughly follow the order of
  * these opcodes. The VF driver must first validate the API version of the
@@ -114,9 +115,7 @@ enum virtchnl_ops {
 	VIRTCHNL_OP_RSVD = 16,
 	VIRTCHNL_OP_EVENT = 17, /* must ALWAYS be 17 */
 	/* opcode 19 is reserved */
-	VIRTCHNL_OP_IWARP = 20, /* advanced opcode */
-	VIRTCHNL_OP_CONFIG_IWARP_IRQ_MAP = 21, /* advanced opcode */
-	VIRTCHNL_OP_RELEASE_IWARP_IRQ_MAP = 22, /* advanced opcode */
+	/* opcodes 20, 21, and 22 are reserved */
 	VIRTCHNL_OP_CONFIG_RSS_KEY = 23,
 	VIRTCHNL_OP_CONFIG_RSS_LUT = 24,
 	VIRTCHNL_OP_GET_RSS_HENA_CAPS = 25,
@@ -130,7 +129,7 @@ enum virtchnl_ops {
 	VIRTCHNL_OP_DEL_CLOUD_FILTER = 33,
 	/* opcode 34 is reserved */
 	/* opcodes 38, 39, 40, 41, 42 and 43 are reserved */
-	/* opcode 44 is reserved */
+	VIRTCHNL_OP_GET_SUPPORTED_RXDIDS = 44,
 	/* opcode 45, 46, 47, 48 and 49 are reserved */
 	VIRTCHNL_OP_GET_MAX_RSS_QREGION = 50,
 	VIRTCHNL_OP_GET_OFFLOAD_VLAN_V2_CAPS = 51,
@@ -142,6 +141,13 @@ enum virtchnl_ops {
 	VIRTCHNL_OP_DISABLE_VLAN_INSERTION_V2 = 57,
 	VIRTCHNL_OP_ENABLE_VLAN_FILTERING_V2 = 58,
 	VIRTCHNL_OP_DISABLE_VLAN_FILTERING_V2 = 59,
+	VIRTCHNL_OP_1588_PTP_GET_CAPS = 60,
+	VIRTCHNL_OP_1588_PTP_GET_TIME = 61,
+	VIRTCHNL_OP_1588_PTP_SET_TIME = 62,
+	VIRTCHNL_OP_1588_PTP_ADJ_TIME = 63,
+	VIRTCHNL_OP_1588_PTP_ADJ_FREQ = 64,
+	VIRTCHNL_OP_1588_PTP_TX_TIMESTAMP = 65,
+	/* opcode 66, 67, 68, and 69 are reserved */
 	VIRTCHNL_OP_ENABLE_QUEUES_V2 = 107,
 	VIRTCHNL_OP_DISABLE_QUEUES_V2 = 108,
 	VIRTCHNL_OP_MAP_QUEUE_VECTOR = 111,
@@ -187,12 +193,6 @@ static inline const char *virtchnl_op_str(enum virtchnl_ops v_opcode)
 		return "VIRTCHNL_OP_RSVD";
 	case VIRTCHNL_OP_EVENT:
 		return "VIRTCHNL_OP_EVENT";
-	case VIRTCHNL_OP_IWARP:
-		return "VIRTCHNL_OP_IWARP";
-	case VIRTCHNL_OP_CONFIG_IWARP_IRQ_MAP:
-		return "VIRTCHNL_OP_CONFIG_IWARP_IRQ_MAP:";
-	case VIRTCHNL_OP_RELEASE_IWARP_IRQ_MAP:
-		return "VIRTCHNL_OP_RELEASE_IWARP_IRQ_MAP";
 	case VIRTCHNL_OP_CONFIG_RSS_KEY:
 		return "VIRTCHNL_OP_CONFIG_RSS_KEY";
 	case VIRTCHNL_OP_CONFIG_RSS_LUT:
@@ -215,6 +215,8 @@ static inline const char *virtchnl_op_str(enum virtchnl_ops v_opcode)
 		return "VIRTCHNL_OP_ADD_CLOUD_FILTER";
 	case VIRTCHNL_OP_DEL_CLOUD_FILTER:
 		return "VIRTCHNL_OP_DEL_CLOUD_FILTER";
+	case VIRTCHNL_OP_GET_SUPPORTED_RXDIDS:
+		return "VIRTCHNL_OP_GET_SUPPORTED_RXDIDS";
 	case VIRTCHNL_OP_GET_MAX_RSS_QREGION:
 		return "VIRTCHNL_OP_GET_MAX_RSS_QREGION";
 	case VIRTCHNL_OP_ENABLE_QUEUES_V2:
@@ -241,6 +243,18 @@ static inline const char *virtchnl_op_str(enum virtchnl_ops v_opcode)
 		return "VIRTCHNL_OP_ENABLE_VLAN_FILTERING_V2";
 	case VIRTCHNL_OP_DISABLE_VLAN_FILTERING_V2:
 		return "VIRTCHNL_OP_DISABLE_VLAN_FILTERING_V2";
+	case VIRTCHNL_OP_1588_PTP_GET_CAPS:
+		return "VIRTCHNL_OP_1588_PTP_GET_CAPS";
+	case VIRTCHNL_OP_1588_PTP_GET_TIME:
+		return "VIRTCHNL_OP_1588_PTP_GET_TIME";
+	case VIRTCHNL_OP_1588_PTP_SET_TIME:
+		return "VIRTCHNL_OP_1588_PTP_SET_TIME";
+	case VIRTCHNL_OP_1588_PTP_ADJ_TIME:
+		return "VIRTCHNL_OP_1588_PTP_ADJ_TIME";
+	case VIRTCHNL_OP_1588_PTP_ADJ_FREQ:
+		return "VIRTCHNL_OP_1588_PTP_ADJ_FREQ";
+	case VIRTCHNL_OP_1588_PTP_TX_TIMESTAMP:
+		return "VIRTCHNL_OP_1588_PTP_TX_TIMESTAMP";
 	case VIRTCHNL_OP_MAX:
 		return "VIRTCHNL_OP_MAX";
 	default:
@@ -258,19 +272,6 @@ static inline const char *virtchnl_op_str(enum virtchnl_ops v_opcode)
 #define VIRTCHNL_CHECK_UNION_LEN(n, X) enum virtchnl_static_asset_enum_##X \
 	{ virtchnl_static_assert_##X = (n)/((sizeof(union X) == (n)) ? 1 : 0) }
 
-/* Virtual channel message descriptor. This overlays the admin queue
- * descriptor. All other data is passed in external buffers.
- */
-
-struct virtchnl_msg {
-	u8 pad[8];			 /* AQ flags/opcode/len/retval fields */
-	enum virtchnl_ops v_opcode; /* avoid confusion with desc->opcode */
-	enum virtchnl_status_code v_retval;  /* ditto for desc->retval */
-	u32 vfid;			 /* used by PF when sending to VF */
-};
-
-VIRTCHNL_CHECK_STRUCT_LEN(20, virtchnl_msg);
-
 /* Message descriptions and data structures. */
 
 /* VIRTCHNL_OP_VERSION
@@ -287,6 +288,8 @@ VIRTCHNL_CHECK_STRUCT_LEN(20, virtchnl_msg);
  */
 #define VIRTCHNL_VERSION_MAJOR		1
 #define VIRTCHNL_VERSION_MINOR		1
+#define VIRTCHNL_VERSION_MAJOR_2	2
+#define VIRTCHNL_VERSION_MINOR_0	0
 #define VIRTCHNL_VERSION_MINOR_NO_VF_CAPS	0
 
 struct virtchnl_version_info {
@@ -331,7 +334,9 @@ enum virtchnl_vsi_type {
 struct virtchnl_vsi_resource {
 	u16 vsi_id;
 	u16 num_queue_pairs;
-	enum virtchnl_vsi_type vsi_type;
+
+	/* see enum virtchnl_vsi_type */
+	s32 vsi_type;
 	u16 qset_handle;
 	u8 default_mac_addr[ETH_ALEN];
 };
@@ -344,14 +349,17 @@ VIRTCHNL_CHECK_STRUCT_LEN(16, virtchnl_vsi_resource);
  */
 #define VIRTCHNL_VF_OFFLOAD_L2			0x00000001
 #define VIRTCHNL_VF_OFFLOAD_IWARP		0x00000002
+#define VIRTCHNL_VF_CAP_RDMA			VIRTCHNL_VF_OFFLOAD_IWARP
 #define VIRTCHNL_VF_OFFLOAD_RSVD		0x00000004
 #define VIRTCHNL_VF_OFFLOAD_RSS_AQ		0x00000008
 #define VIRTCHNL_VF_OFFLOAD_RSS_REG		0x00000010
 #define VIRTCHNL_VF_OFFLOAD_WB_ON_ITR		0x00000020
 #define VIRTCHNL_VF_OFFLOAD_REQ_QUEUES		0x00000040
-#define VIRTCHNL_VF_OFFLOAD_CRC			0x00000080
+/* used to negotiate communicating link speeds in Mbps */
+#define VIRTCHNL_VF_CAP_ADV_LINK_SPEED		0x00000080
 	/* 0X00000100 is reserved */
 #define VIRTCHNL_VF_LARGE_NUM_QPAIRS		0x00000200
+#define VIRTCHNL_VF_OFFLOAD_CRC			0x00000400
 #define VIRTCHNL_VF_OFFLOAD_VLAN_V2		0x00008000
 #define VIRTCHNL_VF_OFFLOAD_VLAN		0x00010000
 #define VIRTCHNL_VF_OFFLOAD_RX_POLLING		0x00020000
@@ -363,13 +371,12 @@ VIRTCHNL_CHECK_STRUCT_LEN(16, virtchnl_vsi_resource);
 #define VIRTCHNL_VF_OFFLOAD_ADQ			0X00800000
 #define VIRTCHNL_VF_OFFLOAD_ADQ_V2		0X01000000
 #define VIRTCHNL_VF_OFFLOAD_USO			0X02000000
-	/* 0x04000000 is reserved */
+#define VIRTCHNL_VF_OFFLOAD_RX_FLEX_DESC	0X04000000
 	/* 0X08000000 and 0X10000000 are reserved */
 	/* 0X20000000 is reserved */
 	/* 0X40000000 is reserved */
+#define VIRTCHNL_VF_CAP_PTP			0X80000000
 
-/* Define below the capability flags that are not offloads */
-#define VIRTCHNL_VF_CAP_ADV_LINK_SPEED		0x00000080
 #define VF_BASE_MODE_OFFLOADS (VIRTCHNL_VF_OFFLOAD_L2 | \
 			       VIRTCHNL_VF_OFFLOAD_VLAN | \
 			       VIRTCHNL_VF_OFFLOAD_RSS_PF)
@@ -407,6 +414,46 @@ struct virtchnl_txq_info {
 
 VIRTCHNL_CHECK_STRUCT_LEN(24, virtchnl_txq_info);
 
+/* RX descriptor IDs (range from 0 to 63) */
+enum virtchnl_rx_desc_ids {
+	VIRTCHNL_RXDID_0_16B_BASE		= 0,
+	VIRTCHNL_RXDID_1_32B_BASE		= 1,
+	VIRTCHNL_RXDID_2_FLEX_SQ_NIC		= 2,
+	VIRTCHNL_RXDID_3_FLEX_SQ_SW		= 3,
+	VIRTCHNL_RXDID_4_FLEX_SQ_NIC_VEB	= 4,
+	VIRTCHNL_RXDID_5_FLEX_SQ_NIC_ACL	= 5,
+	VIRTCHNL_RXDID_6_FLEX_SQ_NIC_2		= 6,
+	VIRTCHNL_RXDID_7_HW_RSVD		= 7,
+	/* 8 through 15 are reserved */
+	VIRTCHNL_RXDID_16_COMMS_GENERIC 	= 16,
+	VIRTCHNL_RXDID_17_COMMS_AUX_VLAN 	= 17,
+	VIRTCHNL_RXDID_18_COMMS_AUX_IPV4 	= 18,
+	VIRTCHNL_RXDID_19_COMMS_AUX_IPV6 	= 19,
+	VIRTCHNL_RXDID_20_COMMS_AUX_FLOW 	= 20,
+	VIRTCHNL_RXDID_21_COMMS_AUX_TCP 	= 21,
+	/* 22 through 63 are reserved */
+};
+
+/* RX descriptor ID bitmasks */
+enum virtchnl_rx_desc_id_bitmasks {
+	VIRTCHNL_RXDID_0_16B_BASE_M		= BIT(VIRTCHNL_RXDID_0_16B_BASE),
+	VIRTCHNL_RXDID_1_32B_BASE_M		= BIT(VIRTCHNL_RXDID_1_32B_BASE),
+	VIRTCHNL_RXDID_2_FLEX_SQ_NIC_M		= BIT(VIRTCHNL_RXDID_2_FLEX_SQ_NIC),
+	VIRTCHNL_RXDID_3_FLEX_SQ_SW_M		= BIT(VIRTCHNL_RXDID_3_FLEX_SQ_SW),
+	VIRTCHNL_RXDID_4_FLEX_SQ_NIC_VEB_M	= BIT(VIRTCHNL_RXDID_4_FLEX_SQ_NIC_VEB),
+	VIRTCHNL_RXDID_5_FLEX_SQ_NIC_ACL_M	= BIT(VIRTCHNL_RXDID_5_FLEX_SQ_NIC_ACL),
+	VIRTCHNL_RXDID_6_FLEX_SQ_NIC_2_M	= BIT(VIRTCHNL_RXDID_6_FLEX_SQ_NIC_2),
+	VIRTCHNL_RXDID_7_HW_RSVD_M		= BIT(VIRTCHNL_RXDID_7_HW_RSVD),
+	/* 8 through 15 are reserved */
+	VIRTCHNL_RXDID_16_COMMS_GENERIC_M	= BIT(VIRTCHNL_RXDID_16_COMMS_GENERIC),
+	VIRTCHNL_RXDID_17_COMMS_AUX_VLAN_M	= BIT(VIRTCHNL_RXDID_17_COMMS_AUX_VLAN),
+	VIRTCHNL_RXDID_18_COMMS_AUX_IPV4_M	= BIT(VIRTCHNL_RXDID_18_COMMS_AUX_IPV4),
+	VIRTCHNL_RXDID_19_COMMS_AUX_IPV6_M	= BIT(VIRTCHNL_RXDID_19_COMMS_AUX_IPV6),
+	VIRTCHNL_RXDID_20_COMMS_AUX_FLOW_M	= BIT(VIRTCHNL_RXDID_20_COMMS_AUX_FLOW),
+	VIRTCHNL_RXDID_21_COMMS_AUX_TCP_M	= BIT(VIRTCHNL_RXDID_21_COMMS_AUX_TCP),
+	/* 22 through 63 are reserved */
+};
+
 /* VIRTCHNL_OP_CONFIG_RX_QUEUE
  * VF sends this message to set up parameters for one RX queue.
  * External data buffer contains one instance of virtchnl_rxq_info.
@@ -429,9 +476,17 @@ struct virtchnl_rxq_info {
 	u32 databuffer_size;
 	u32 max_pkt_size;
 	u8 crc_disable;
-	u8 pad1[3];
+	/* see enum virtchnl_rx_desc_ids;
+	 * only used when VIRTCHNL_VF_OFFLOAD_RX_FLEX_DESC is supported. Note
+	 * that when the offload is not supported, the descriptor format aligns
+	 * with VIRTCHNL_RXDID_1_32B_BASE.
+	 */
+	u8 rxdid;
+	u8 pad1[2];
 	u64 dma_ring_addr;
-	enum virtchnl_rx_hsplit rx_split_pos; /* deprecated with AVF 1.0 */
+
+	/* see enum virtchnl_rx_hsplit; deprecated with AVF 1.0 */
+	s32 rx_split_pos;
 	u32 pad2;
 };
 
@@ -1178,13 +1233,24 @@ enum virtchnl_flow_type {
 struct virtchnl_filter {
 	union	virtchnl_flow_spec data;
 	union	virtchnl_flow_spec mask;
-	enum	virtchnl_flow_type flow_type;
-	enum	virtchnl_action action;
+
+	/* see enum virtchnl_flow_type */
+	s32 	flow_type;
+
+	/* see enum virtchnl_action */
+	s32	action;
 	u32	action_meta;
 	u8	field_flags;
 };
 
 VIRTCHNL_CHECK_STRUCT_LEN(272, virtchnl_filter);
+
+struct virtchnl_supported_rxdids {
+	/* see enum virtchnl_rx_desc_id_bitmasks */
+	u64 supported_rxdids;
+};
+
+VIRTCHNL_CHECK_STRUCT_LEN(8, virtchnl_supported_rxdids);
 
 /* VIRTCHNL_OP_EVENT
  * PF sends this message to inform the VF driver of events that may affect it.
@@ -1202,7 +1268,8 @@ enum virtchnl_event_codes {
 #define PF_EVENT_SEVERITY_CERTAIN_DOOM	255
 
 struct virtchnl_pf_event {
-	enum virtchnl_event_codes event;
+	/* see enum virtchnl_event_codes */
+	s32 event;
 	union {
 		/* If the PF driver does not support the new speed reporting
 		 * capabilities then use link_event else use link_event_adv to
@@ -1214,46 +1281,28 @@ struct virtchnl_pf_event {
 		 */
 		struct {
 			enum virtchnl_link_speed link_speed;
-			u8 link_status;
+			bool link_status;
+			u8 pad[3];
 		} link_event;
 		struct {
 			/* link_speed provided in Mbps */
 			u32 link_speed;
 			u8 link_status;
+			u8 pad[3];
 		} link_event_adv;
+		struct {
+			/* link_speed provided in Mbps */
+			u32 link_speed;
+			u16 vport_id;
+			u8 link_status;
+			u8 pad;
+		} link_event_adv_vport;
 	} event_data;
 
-	int severity;
+	s32 severity;
 };
 
 VIRTCHNL_CHECK_STRUCT_LEN(16, virtchnl_pf_event);
-
-/* VIRTCHNL_OP_CONFIG_IWARP_IRQ_MAP
- * VF uses this message to request PF to map IWARP vectors to IWARP queues.
- * The request for this originates from the VF IWARP driver through
- * a client interface between VF LAN and VF IWARP driver.
- * A vector could have an AEQ and CEQ attached to it although
- * there is a single AEQ per VF IWARP instance in which case
- * most vectors will have an INVALID_IDX for aeq and valid idx for ceq.
- * There will never be a case where there will be multiple CEQs attached
- * to a single vector.
- * PF configures interrupt mapping and returns status.
- */
-struct virtchnl_iwarp_qv_info {
-	u32 v_idx; /* msix_vector */
-	u16 ceq_idx;
-	u16 aeq_idx;
-	u8 itr_idx;
-};
-
-VIRTCHNL_CHECK_STRUCT_LEN(12, virtchnl_iwarp_qv_info);
-
-struct virtchnl_iwarp_qvlist_info {
-	u32 num_vectors;
-	struct virtchnl_iwarp_qv_info qv_info[1];
-};
-
-VIRTCHNL_CHECK_STRUCT_LEN(16, virtchnl_iwarp_qvlist_info);
 
 /* VF reset states - these are written into the RSTAT register:
  * VFGEN_RSTAT on the VF
@@ -1288,7 +1337,8 @@ enum virtchnl_queue_type {
 
 /* structure to specify a chunk of contiguous queues */
 struct virtchnl_queue_chunk {
-	enum virtchnl_queue_type type;
+	/* see enum virtchnl_queue_type */
+	s32 type;
 	u16 start_queue_id;
 	u16 num_queues;
 };
@@ -1308,7 +1358,7 @@ VIRTCHNL_CHECK_STRUCT_LEN(12, virtchnl_queue_chunks);
  * VIRTCHNL_OP_DISABLE_QUEUES_V2
  * VIRTCHNL_OP_DEL_QUEUES
  *
- * If VIRTCHNL_CAP_EXT_FEATURES was negotiated in VIRTCHNL_OP_GET_VF_RESOURCES
+ * If VIRTCHNL version was negotiated in VIRTCHNL_OP_VERSION as 2.0
  * then all of these ops are available.
  *
  * If VIRTCHNL_VF_LARGE_NUM_QPAIRS was negotiated in VIRTCHNL_OP_GET_VF_RESOURCES
@@ -1340,17 +1390,17 @@ struct virtchnl_queue_vector {
 	u16 queue_id;
 	u16 vector_id;
 	u8 pad[4];
-	enum virtchnl_itr_idx itr_idx;
-	enum virtchnl_queue_type queue_type;
+
+	/* see enum virtchnl_itr_idx */
+	s32 itr_idx;
+
+	/* see enum virtchnl_queue_type */
+	s32 queue_type;
 };
 
 VIRTCHNL_CHECK_STRUCT_LEN(16, virtchnl_queue_vector);
 
 /* VIRTCHNL_OP_MAP_QUEUE_VECTOR
- * VIRTCHNL_OP_UNMAP_QUEUE_VECTOR
- *
- * If VIRTCHNL_CAP_EXT_FEATURES was negotiated in VIRTCHNL_OP_GET_VF_RESOURCES
- * then all of these ops are available.
  *
  * If VIRTCHNL_VF_LARGE_NUM_QPAIRS was negotiated in VIRTCHNL_OP_GET_VF_RESOURCES
  * then only VIRTCHNL_OP_MAP_QUEUE_VECTOR is available.
@@ -1369,6 +1419,284 @@ struct virtchnl_queue_vector_maps {
 };
 
 VIRTCHNL_CHECK_STRUCT_LEN(24, virtchnl_queue_vector_maps);
+
+/* VIRTCHNL_VF_CAP_PTP
+ *   VIRTCHNL_OP_1588_PTP_GET_CAPS
+ *   VIRTCHNL_OP_1588_PTP_GET_TIME
+ *   VIRTCHNL_OP_1588_PTP_SET_TIME
+ *   VIRTCHNL_OP_1588_PTP_ADJ_TIME
+ *   VIRTCHNL_OP_1588_PTP_ADJ_FREQ
+ *   VIRTCHNL_OP_1588_PTP_TX_TIMESTAMP
+ *
+ * Support for offloading control of the device PTP hardware clock (PHC) is enabled
+ * by VIRTCHNL_VF_CAP_PTP. This capability allows a VF to request that PF
+ * enable Tx and Rx timestamps, and request access to read and/or write the
+ * PHC on the device, as well as query if the VF has direct access to the PHC
+ * time registers.
+ *
+ * The VF must set VIRTCHNL_VF_CAP_PTP in its capabilities when requesting
+ * resources. If the capability is set in reply, the VF must then send
+ * a VIRTCHNL_OP_1588_PTP_GET_CAPS request during initialization. The VF indicates
+ * what extended capabilities it wants by setting the appropriate flags in the
+ * caps field. The PF reply will indicate what features are enabled for
+ * that VF.
+ */
+#define VIRTCHNL_1588_PTP_CAP_TX_TSTAMP		0X00000001
+#define VIRTCHNL_1588_PTP_CAP_RX_TSTAMP		0X00000002
+#define VIRTCHNL_1588_PTP_CAP_READ_PHC		0X00000004
+#define VIRTCHNL_1588_PTP_CAP_WRITE_PHC		0X00000008
+#define VIRTCHNL_1588_PTP_CAP_PHC_REGS		0X00000010
+
+/**
+ * virtchnl_phc_regs
+ *
+ * Structure defines how the VF should access PHC related registers. The VF
+ * must request VIRTCHNL_1588_PTP_CAP_PHC_REGS. If the VF has access to PHC
+ * registers, the PF will reply with the capability flag set, and with this
+ * structure detailing what PCIe region and what offsets to use. If direct
+ * access is not available, this entire structure is reserved and the fields
+ * will be zero.
+ *
+ * If necessary in a future extension, a separate capability mutually
+ * exclusive with VIRTCHNL_1588_PTP_CAP_PHC_REGS might be used to change the
+ * entire format of this structure within virtchnl_ptp_caps.
+ *
+ * @clock_hi: Register offset of the high 32 bits of clock time
+ * @clock_lo: Register offset of the low 32 bits of clock time
+ * @pcie_region: The PCIe region the registers are located in.
+ * @rsvd: Reserved bits for future extension
+ */
+struct virtchnl_phc_regs {
+	u32 clock_hi;
+	u32 clock_lo;
+	u8 pcie_region;
+	u8 rsvd[15];
+};
+VIRTCHNL_CHECK_STRUCT_LEN(24, virtchnl_phc_regs);
+
+/* timestamp format enumeration
+ *
+ * VIRTCHNL_1588_PTP_TSTAMP_40BIT
+ *
+ *   This format indicates a timestamp that uses the 40bit format from the
+ *   flexible Rx descriptors. It is also the default Tx timestamp format used
+ *   today.
+ *
+ *   Such a timestamp has the following 40bit format:
+ *
+ *   *--------------------------------*-------------------------------*-----------*
+ *   | 32 bits of time in nanoseconds | 7 bits of sub-nanosecond time | valid bit |
+ *   *--------------------------------*-------------------------------*-----------*
+ *
+ *   The timestamp is passed in a u64, with the upper 24bits of the field
+ *   reserved as zero.
+ *
+ *   With this format, in order to report a full 64bit timestamp to userspace
+ *   applications, the VF is responsible for performing timestamp extension by
+ *   carefully comparing the timestamp with the PHC time. This can correctly
+ *   be achieved with a recent cached copy of the PHC time by doing delta
+ *   comparison between the 32bits of nanoseconds in the timestamp with the
+ *   lower 32 bits of the clock time. For this to work, the cached PHC time
+ *   must be from within 2^31 nanoseconds (~2.1 seconds) of when the timestamp
+ *   was captured.
+ *
+ * VIRTCHNL_1588_PTP_TSTAMP_64BIT_NS
+ *
+ *   This format indicates a timestamp that is 64 bits of nanoseconds.
+ */
+enum virtchnl_ptp_tstamp_format {
+	VIRTCHNL_1588_PTP_TSTAMP_40BIT = 0,
+	VIRTCHNL_1588_PTP_TSTAMP_64BIT_NS = 1,
+};
+
+/**
+ * virtchnl_ptp_caps
+ *
+ * Structure that defines the PTP capabilities available to the VF. The VF
+ * sends VIRTCHNL_OP_1588_PTP_GET_CAPS, and must fill in the ptp_caps field
+ * indicating what capabilities it is requesting. The PF will respond with the
+ * same message with the virtchnl_ptp_caps structure indicating what is
+ * enabled for the VF.
+ *
+ * @phc_regs: If VIRTCHNL_1588_PTP_CAP_PHC_REGS is set, contains information
+ *            on the PHC related registers available to the VF.
+ * @caps: On send, VF sets what capabilities it requests. On reply, PF
+ *        indicates what has been enabled for this VF. The PF shall not set
+ *        bits which were not requested by the VF.
+ * @max_adj: The maximum adjustment capable of being requested by
+ *           VIRTCHNL_OP_1588_PTP_ADJ_FREQ, in parts per billion. Note that 1 ppb
+ *           is approximately 65.5 scaled_ppm. The PF shall clamp any
+ *           frequency adjustment in VIRTCHNL_op_1588_ADJ_FREQ to +/- max_adj.
+ *           Use of ppb in this field allows fitting the value into 4 bytes
+ *           instead of potentially requiring 8 if scaled_ppm units were used.
+ * @tx_tstamp_idx: The Tx timestamp index to set in the transmit descriptor
+ *                 when requesting a timestamp for an outgoing packet.
+ *                 Reserved if VIRTCHNL_1588_PTP_CAP_TX_TSTAMP is not enabled.
+ * @n_ext_ts: Reserved. May be used in a future extension to indicate the
+ *            number of programmable external timestamp event functions are
+ *            available to the VF.
+ * @n_per_out: Reserved. May be used in a future extension to indicate number
+ *             programmable output functions are available to the VF.
+ * @n_pins: Reserved. May be used in a future extension to indicate the number
+ *          of programmable SDPs are available to the VF.
+ * @tx_tstamp_format: Format of the Tx timestamps. Valid formats are defined
+ *                    by the virtchnl_ptp_tstamp enumeration. Note that Rx
+ *                    timestamps are tied to the descriptor format, and do not
+ *                    have a separate format field.
+ * @rsvd: Reserved bits for future extension.
+ *
+ * PTP capabilities
+ *
+ * VIRTCHNL_1588_PTP_CAP_TX_TSTAMP indicates that the VF can request transmit
+ * timestamps for packets in its transmit descriptors. If this is unset,
+ * transmit timestamp requests are ignored. Note that only one outstanding Tx
+ * timestamp request will be honored at a time. The PF shall handle receipt of
+ * the timestamp from the hardware, and will forward this to the VF by sending
+ * a VIRTCHNL_OP_1588_TX_TIMESTAMP message.
+ *
+ * VIRTCHNL_1588_PTP_CAP_RX_TSTAMP indicates that the VF receive queues have
+ * receive timestamps enabled in the flexible descriptors. Note that this
+ * requires a VF to also negotiate to enable advanced flexible descriptors in
+ * the receive path instead of the default legacy descriptor format.
+ *
+ * For a detailed description of the current Tx and Rx timestamp format, see
+ * the section on virtchnl_phc_tx_tstamp. Future extensions may indicate
+ * timestamp format in the capability structure.
+ *
+ * VIRTCHNL_1588_PTP_CAP_READ_PHC indicates that the VF may read the PHC time
+ * via the VIRTCHNL_OP_1588_PTP_GET_TIME command, or by directly reading PHC
+ * registers if VIRTCHNL_1588_PTP_CAP_PHC_REGS is also set.
+ *
+ * VIRTCHNL_1588_PTP_CAP_WRITE_PHC indicates that the VF may request updates
+ * to the PHC time via VIRTCHNL_OP_1588_PTP_SET_TIME,
+ * VIRTCHNL_OP_1588_PTP_ADJ_TIME, and VIRTCHNL_OP_1588_PTP_ADJ_FREQ.
+ *
+ * VIRTCHNL_1588_PTP_CAP_PHC_REGS indicates that the VF has direct access to
+ * certain PHC related registers, primarily for lower latency access to the
+ * PHC time. If this is set, the VF shall read the virtchnl_phc_regs section
+ * of the capabilities to determine the location of the clock registers. If
+ * this capability is not set, the entire 24 bytes of virtchnl_phc_regs is
+ * reserved as zero. Future extensions define alternative formats for this
+ * data, in which case they will be mutually exclusive with this capability.
+ *
+ * Note that in the future, additional capability flags may be added such as
+* to indicate support for SDP configuration, or to indicate Rx timestamp
+* format if a descriptor could support multiple formats. All fields marked as
+* reserved in this header will be set to zero, and implementations should
+* verify this.
+ */
+struct virtchnl_ptp_caps {
+	struct virtchnl_phc_regs phc_regs;
+	u32 caps;
+	s32 max_adj;
+	u8 tx_tstamp_idx;
+	u8 n_ext_ts;
+	u8 n_per_out;
+	u8 n_pins;
+	/* see enum virtchnl_ptp_tstamp_format */
+	u8 tx_tstamp_format;
+	u8 rsvd[11];
+};
+VIRTCHNL_CHECK_STRUCT_LEN(48, virtchnl_ptp_caps);
+
+/**
+ * virtchnl_phc_time
+ * @time: PHC time in nanoseconds
+ * @rsvd: Reserved for future extension
+ *
+ * Structure sent with VIRTCHNL_OP_1588_PTP_SET_TIME and received with
+ * VIRTCHNL_OP_1588_PTP_GET_TIME. Contains the 64bits of PHC clock time in
+ * nanoseconds.
+ *
+ * VIRTCHNL_OP_1588_PTP_SET_TIME may be sent by the VF if
+ * VIRTCHNL_1588_PTP_CAP_WRITE_PHC is set. This will request that the PHC time
+ * be set to the requested value. This operation is non-atomic and thus does
+ * not adjust for the delay between request and completion. It is recommended
+ * that the VF use VIRTCHNL_OP_1588_PTP_ADJ_TIME and
+ * VIRTCHNL_OP_1588_PTP_ADJ_FREQ when possible to steer the PHC clock.
+ *
+ * VIRTCHNL_OP_1588_PTP_GET_TIME may be sent to request the current time of
+ * the PHC. This op is available in case direct access via the PHC registers
+ * is not available.
+ */
+struct virtchnl_phc_time {
+	u64 time;
+	u8 rsvd[8];
+};
+VIRTCHNL_CHECK_STRUCT_LEN(16, virtchnl_phc_time);
+
+/**
+ * virtchnl_phc_adj_time
+ * @delta: offset requested to adjust clock by
+ * @rsvd: reserved for future extension
+ *
+ * Sent with VIRTCHNL_OP_1588_PTP_ADJ_TIME. Used to request an adjustment of
+ * the clock time by the provided delta, with negative values representing
+ * subtraction. VIRTCHNL_OP_1588_PTP_ADJ_TIME may not be sent unless
+ * VIRTCHNL_1588_PTP_CAP_WRITE_PHC is set.
+ *
+ * The atomicity of this operation is not guaranteed. The PF should perform an
+ * atomic update using appropriate mechanisms if possible. However, this is
+ * not guaranteed.
+ */
+struct virtchnl_phc_adj_time {
+	s64 delta;
+	u8 rsvd[8];
+};
+VIRTCHNL_CHECK_STRUCT_LEN(16, virtchnl_phc_adj_time);
+
+/**
+ * virtchnl_phc_adj_freq
+ * @scaled_ppm: frequency adjustment represented in scaled parts per million
+ * @rsvd: Reserved for future extension
+ *
+ * Sent with the VIRTCHNL_OP_1588_PTP_ADJ_FREQ to request an adjustment to the
+ * clock frequency. The adjustment is in scaled_ppm, which is parts per
+ * million with a 16bit binary fractional portion. 1 part per billion is
+ * approximately 65.5 scaled_ppm.
+ *
+ *  ppm = scaled_ppm / 2^16
+ *
+ *  ppb = scaled_ppm * 1000 / 2^16 or
+ *
+ *  ppb = scaled_ppm * 125 / 2^13
+ *
+ * The PF shall clamp any adjustment request to plus or minus the specified
+ * max_adj in the PTP capabilities.
+ *
+ * Requests for adjustment are always based off of nominal clock frequency and
+ * not compounding. To reset clock frequency, send a request with a scaled_ppm
+ * of 0.
+ */
+struct virtchnl_phc_adj_freq {
+	s64 scaled_ppm;
+	u8 rsvd[8];
+};
+VIRTCHNL_CHECK_STRUCT_LEN(16, virtchnl_phc_adj_freq);
+
+/**
+ * virtchnl_phc_tx_stamp
+ * @tstamp: timestamp value
+ * @rsvd: Reserved for future extension
+ *
+ * Sent along with VIRTCHNL_OP_1588_PTP_TX_TIMESTAMP from the PF when a Tx
+ * timestamp for the index associated with this VF in the tx_tstamp_idx field
+ * is captured by hardware.
+ *
+ * If VIRTCHNL_1588_PTP_CAP_TX_TSTAMP is set, the VF may request a timestamp
+ * for a packet in its transmit context descriptor by setting the appropriate
+ * flag and setting the timestamp index provided by the PF. On transmission,
+ * the timestamp will be captured and sent to the PF. The PF will forward this
+ * timestamp to the VF via the VIRTCHNL_1588_PTP_CAP_TX_TSTAMP op.
+ *
+ * The timestamp format is defined by the tx_tstamp_format field of the
+ * virtchnl_ptp_caps structure.
+ */
+struct virtchnl_phc_tx_tstamp {
+	u64 tstamp;
+	u8 rsvd[8];
+};
+VIRTCHNL_CHECK_STRUCT_LEN(16, virtchnl_phc_tx_tstamp);
 
 /* Since VF messages are limited by u16 size, precalculate the maximum possible
  * values of nested elements in virtchnl structures that virtual channel can
@@ -1390,10 +1718,6 @@ enum virtchnl_vector_limits {
 	VIRTCHNL_OP_ADD_DEL_VLAN_MAX		=
 		((u16)(~0) - sizeof(struct virtchnl_vlan_filter_list)) /
 		sizeof(u16),
-
-	VIRTCHNL_OP_CONFIG_IWARP_IRQ_MAP_MAX	=
-		((u16)(~0) - sizeof(struct virtchnl_iwarp_qvlist_info)) /
-		sizeof(struct virtchnl_iwarp_qv_info),
 
 	VIRTCHNL_OP_ENABLE_CHANNELS_MAX		=
 		((u16)(~0) - sizeof(struct virtchnl_tc_info)) /
@@ -1523,34 +1847,6 @@ virtchnl_vc_validate_vf_msg(struct virtchnl_version_info *ver, u32 v_opcode,
 	case VIRTCHNL_OP_GET_STATS:
 		valid_len = sizeof(struct virtchnl_queue_select);
 		break;
-	case VIRTCHNL_OP_IWARP:
-		/* These messages are opaque to us and will be validated in
-		 * the RDMA client code. We just need to check for nonzero
-		 * length. The firmware will enforce max length restrictions.
-		 */
-		if (msglen)
-			valid_len = msglen;
-		else
-			err_msg_format = true;
-		break;
-	case VIRTCHNL_OP_RELEASE_IWARP_IRQ_MAP:
-		break;
-	case VIRTCHNL_OP_CONFIG_IWARP_IRQ_MAP:
-		valid_len = sizeof(struct virtchnl_iwarp_qvlist_info);
-		if (msglen >= valid_len) {
-			struct virtchnl_iwarp_qvlist_info *qv =
-				(struct virtchnl_iwarp_qvlist_info *)msg;
-
-			if (qv->num_vectors == 0 || qv->num_vectors >
-			    VIRTCHNL_OP_CONFIG_IWARP_IRQ_MAP_MAX) {
-				err_msg_format = true;
-				break;
-			}
-
-			valid_len += ((qv->num_vectors - 1) *
-				sizeof(struct virtchnl_iwarp_qv_info));
-		}
-		break;
 	case VIRTCHNL_OP_CONFIG_RSS_KEY:
 		valid_len = sizeof(struct virtchnl_rss_key);
 		if (msglen >= valid_len) {
@@ -1612,6 +1908,8 @@ virtchnl_vc_validate_vf_msg(struct virtchnl_version_info *ver, u32 v_opcode,
 	case VIRTCHNL_OP_DEL_CLOUD_FILTER:
 		valid_len = sizeof(struct virtchnl_filter);
 		break;
+	case VIRTCHNL_OP_GET_SUPPORTED_RXDIDS:
+		break;
 	case VIRTCHNL_OP_GET_OFFLOAD_VLAN_V2_CAPS:
 		break;
 	case VIRTCHNL_OP_ADD_VLAN_V2:
@@ -1638,6 +1936,22 @@ virtchnl_vc_validate_vf_msg(struct virtchnl_version_info *ver, u32 v_opcode,
 	case VIRTCHNL_OP_ENABLE_VLAN_FILTERING_V2:
 	case VIRTCHNL_OP_DISABLE_VLAN_FILTERING_V2:
 		valid_len = sizeof(struct virtchnl_vlan_setting);
+		break;
+	case VIRTCHNL_OP_1588_PTP_GET_CAPS:
+		valid_len = sizeof(struct virtchnl_ptp_caps);
+		break;
+	case VIRTCHNL_OP_1588_PTP_GET_TIME:
+	case VIRTCHNL_OP_1588_PTP_SET_TIME:
+		valid_len = sizeof(struct virtchnl_phc_time);
+		break;
+	case VIRTCHNL_OP_1588_PTP_ADJ_TIME:
+		valid_len = sizeof(struct virtchnl_phc_adj_time);
+		break;
+	case VIRTCHNL_OP_1588_PTP_ADJ_FREQ:
+		valid_len = sizeof(struct virtchnl_phc_adj_freq);
+		break;
+	case VIRTCHNL_OP_1588_PTP_TX_TIMESTAMP:
+		valid_len = sizeof(struct virtchnl_phc_tx_tstamp);
 		break;
 	case VIRTCHNL_OP_ENABLE_QUEUES_V2:
 	case VIRTCHNL_OP_DISABLE_QUEUES_V2:

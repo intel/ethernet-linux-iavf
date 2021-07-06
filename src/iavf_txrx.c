@@ -6,8 +6,7 @@
 #include "iavf_trace.h"
 #include "iavf_prototype.h"
 
-static inline __le64 build_ctob(u32 td_cmd, u32 td_offset, unsigned int size,
-				u32 td_tag)
+static __le64 build_ctob(u32 td_cmd, u32 td_offset, unsigned int size, u32 td_tag)
 {
 	return cpu_to_le64(IAVF_TX_DESC_DTYPE_DATA |
 			   ((u64)td_cmd  << IAVF_TXD_QW1_CMD_SHIFT) |
@@ -434,8 +433,7 @@ static void iavf_enable_wb_on_itr(struct iavf_vsi *vsi,
 	q_vector->arm_wb_state = true;
 }
 
-static inline bool iavf_container_is_rx(struct iavf_q_vector *q_vector,
-					struct iavf_ring_container *rc)
+static bool iavf_container_is_rx(struct iavf_q_vector *q_vector, struct iavf_ring_container *rc)
 {
 	return &q_vector->rx == rc;
 }
@@ -899,7 +897,7 @@ err:
  * @rx_ring: ring to bump
  * @val: new head index
  **/
-static inline void iavf_release_rx_desc(struct iavf_ring *rx_ring, u32 val)
+static void iavf_release_rx_desc(struct iavf_ring *rx_ring, u32 val)
 {
 	rx_ring->next_to_use = val;
 
@@ -921,7 +919,7 @@ static inline void iavf_release_rx_desc(struct iavf_ring *rx_ring, u32 val)
  *
  * Returns the offset value for ring into the data buffer.
  */
-static inline unsigned int iavf_rx_offset(struct iavf_ring *rx_ring)
+static unsigned int iavf_rx_offset(struct iavf_ring *rx_ring)
 {
 	return ring_uses_build_skb(rx_ring) ? IAVF_SKB_PAD : 0;
 }
@@ -1088,37 +1086,52 @@ no_buffers:
 	return true;
 }
 
+/*
+ * iavf_rx_csum_decoded
+ *
+ * Checksum offload bits decoded from the receive descriptor.
+ */
+struct iavf_rx_csum_decoded {
+	u8 l3l4p : 1;
+	u8 ipe : 1;
+	u8 eipe : 1;
+	u8 eudpe : 1;
+	u8 ipv6exadd : 1;
+	u8 l4e : 1;
+	u8 pprs : 1;
+	u8 nat : 1;
+};
+
 #ifdef IAVF_ADD_PROBES
-static void iavf_rx_extra_counters(struct iavf_vsi *vsi, u32 rx_error,
-				   const struct iavf_rx_ptype_decoded decoded)
+static void iavf_rx_extra_counters(struct iavf_vsi *vsi,
+				   struct iavf_rx_csum_decoded *csum_bits,
+				   struct iavf_rx_ptype_decoded *decoded)
 {
 	bool ipv4;
 
-	ipv4 = (decoded.outer_ip == IAVF_RX_PTYPE_OUTER_IP) &&
-	       (decoded.outer_ip_ver == IAVF_RX_PTYPE_OUTER_IPV4);
+	ipv4 = (decoded->outer_ip == IAVF_RX_PTYPE_OUTER_IP) &&
+	       (decoded->outer_ip_ver == IAVF_RX_PTYPE_OUTER_IPV4);
 
-	if (ipv4 &&
-	    (rx_error & (BIT(IAVF_RX_DESC_ERROR_IPE_SHIFT) |
-			 BIT(IAVF_RX_DESC_ERROR_EIPE_SHIFT))))
+	if (ipv4 && (csum_bits->ipe | csum_bits->eipe))
 		vsi->back->rx_ip4_cso_err++;
 
-	if (rx_error & BIT(IAVF_RX_DESC_ERROR_L4E_SHIFT)) {
-		if (decoded.inner_prot == IAVF_RX_PTYPE_INNER_PROT_TCP)
+	if (csum_bits->l4e) {
+		if (decoded->inner_prot == IAVF_RX_PTYPE_INNER_PROT_TCP)
 			vsi->back->rx_tcp_cso_err++;
-		else if (decoded.inner_prot == IAVF_RX_PTYPE_INNER_PROT_UDP)
+		else if (decoded->inner_prot == IAVF_RX_PTYPE_INNER_PROT_UDP)
 			vsi->back->rx_udp_cso_err++;
-		else if (decoded.inner_prot == IAVF_RX_PTYPE_INNER_PROT_SCTP)
+		else if (decoded->inner_prot == IAVF_RX_PTYPE_INNER_PROT_SCTP)
 			vsi->back->rx_sctp_cso_err++;
 	}
 
-	if (decoded.outer_ip == IAVF_RX_PTYPE_OUTER_IP &&
-	    decoded.outer_ip_ver == IAVF_RX_PTYPE_OUTER_IPV4)
+	if (decoded->outer_ip == IAVF_RX_PTYPE_OUTER_IP &&
+	    decoded->outer_ip_ver == IAVF_RX_PTYPE_OUTER_IPV4)
 		vsi->back->rx_ip4_cso++;
-	if (decoded.inner_prot == IAVF_RX_PTYPE_INNER_PROT_TCP)
+	if (decoded->inner_prot == IAVF_RX_PTYPE_INNER_PROT_TCP)
 		vsi->back->rx_tcp_cso++;
-	else if (decoded.inner_prot == IAVF_RX_PTYPE_INNER_PROT_UDP)
+	else if (decoded->inner_prot == IAVF_RX_PTYPE_INNER_PROT_UDP)
 		vsi->back->rx_udp_cso++;
-	else if (decoded.inner_prot == IAVF_RX_PTYPE_INNER_PROT_SCTP)
+	else if (decoded->inner_prot == IAVF_RX_PTYPE_INNER_PROT_SCTP)
 		vsi->back->rx_sctp_cso++;
 }
 
@@ -1126,32 +1139,22 @@ static void iavf_rx_extra_counters(struct iavf_vsi *vsi, u32 rx_error,
 #if defined(HAVE_VXLAN_RX_OFFLOAD) || defined(HAVE_GENEVE_RX_OFFLOAD) || defined(HAVE_UDP_ENC_RX_OFFLOAD)
 #define IAVF_TUNNEL_SUPPORT
 #endif
+
 /**
- * iavf_rx_checksum - Indicate in skb if hw indicated a good cksum
+ * iavf_rx_csum - Indicate in skb if hw indicated a good cksum
  * @vsi: the VSI we care about
  * @skb: skb currently being received and modified
- * @rx_desc: the receive descriptor
+ * @ptype: decoded ptype information
+ * @csum_bits: decoded Rx descriptor information
  **/
-static inline void iavf_rx_checksum(struct iavf_vsi *vsi,
-				    struct sk_buff *skb,
-				    union iavf_rx_desc *rx_desc)
+static void
+iavf_rx_csum(struct iavf_vsi *vsi, struct sk_buff *skb,
+	     struct iavf_rx_ptype_decoded *ptype,
+	     struct iavf_rx_csum_decoded *csum_bits)
 {
-	struct iavf_rx_ptype_decoded decoded;
-	u32 rx_error, rx_status;
 	bool ipv4, ipv6;
-	u8 ptype;
-	u64 qword;
-
-	qword = le64_to_cpu(rx_desc->wb.qword1.status_error_len);
-	ptype = (qword & IAVF_RXD_QW1_PTYPE_MASK) >> IAVF_RXD_QW1_PTYPE_SHIFT;
-	rx_error = (qword & IAVF_RXD_QW1_ERROR_MASK) >>
-		   IAVF_RXD_QW1_ERROR_SHIFT;
-	rx_status = (qword & IAVF_RXD_QW1_STATUS_MASK) >>
-		    IAVF_RXD_QW1_STATUS_SHIFT;
-	decoded = decode_rx_desc_ptype(ptype);
 
 	skb->ip_summed = CHECKSUM_NONE;
-
 	skb_checksum_none_assert(skb);
 
 	/* Rx csum enabled and ip headers found? */
@@ -1164,49 +1167,59 @@ static inline void iavf_rx_checksum(struct iavf_vsi *vsi,
 #endif
 
 	/* did the hardware decode the packet and checksum? */
-	if (!(rx_status & BIT(IAVF_RX_DESC_STATUS_L3L4P_SHIFT)))
+	if (!csum_bits->l3l4p)
 		return;
 
 	/* both known and outer_ip must be set for the below code to work */
-	if (!(decoded.known && decoded.outer_ip))
+	if (!(ptype->known && ptype->outer_ip))
 		return;
 #ifdef IAVF_ADD_PROBES
 	vsi->back->hw_csum_rx_outer++;
 #endif
 
-	ipv4 = (decoded.outer_ip == IAVF_RX_PTYPE_OUTER_IP) &&
-	       (decoded.outer_ip_ver == IAVF_RX_PTYPE_OUTER_IPV4);
-	ipv6 = (decoded.outer_ip == IAVF_RX_PTYPE_OUTER_IP) &&
-	       (decoded.outer_ip_ver == IAVF_RX_PTYPE_OUTER_IPV6);
+	ipv4 = (ptype->outer_ip == IAVF_RX_PTYPE_OUTER_IP) &&
+	       (ptype->outer_ip_ver == IAVF_RX_PTYPE_OUTER_IPV4);
+	ipv6 = (ptype->outer_ip == IAVF_RX_PTYPE_OUTER_IP) &&
+	       (ptype->outer_ip_ver == IAVF_RX_PTYPE_OUTER_IPV6);
 
 #ifdef IAVF_ADD_PROBES
-	iavf_rx_extra_counters(vsi, rx_error, decoded);
-
+	iavf_rx_extra_counters(vsi, csum_bits, ptype);
 #endif /* IAVF_ADD_PROBES */
-	if (ipv4 &&
-	    (rx_error & (BIT(IAVF_RX_DESC_ERROR_IPE_SHIFT) |
-			 BIT(IAVF_RX_DESC_ERROR_EIPE_SHIFT))))
+	if (ipv4 && (csum_bits->ipe || csum_bits->eipe))
 		goto checksum_fail;
 
 	/* likely incorrect csum if alternate IP extension headers found */
-	if (ipv6 &&
-	    rx_status & BIT(IAVF_RX_DESC_STATUS_IPV6EXADD_SHIFT))
+	if (ipv6 && csum_bits->ipv6exadd)
 		/* don't increment checksum err here, non-fatal err */
 		return;
 
 	/* there was some L4 error, count error and punt packet to the stack */
-	if (rx_error & BIT(IAVF_RX_DESC_ERROR_L4E_SHIFT))
+	if (csum_bits->l4e)
+		goto checksum_fail;
+
+	if (csum_bits->nat && csum_bits->eudpe)
 		goto checksum_fail;
 
 	/* handle packets that were not able to be checksummed due
 	 * to arrival speed, in this case the stack can compute
 	 * the csum.
 	 */
-	if (rx_error & BIT(IAVF_RX_DESC_ERROR_PPRS_SHIFT))
+	if (csum_bits->pprs)
 		return;
 
+	/* If there is an outer header present that might contain a checksum
+	 * we need to bump the checksum level by 1 to reflect the fact that
+	 * we are indicating we validated the inner checksum.
+	 */
+	if (ptype->tunnel_type >= IAVF_RX_PTYPE_TUNNEL_IP_GRENAT)
+#ifdef HAVE_SKBUFF_CSUM_LEVEL
+		skb->csum_level = 1;
+#else
+		skb->encapsulation = 1;
+#endif
+
 	/* Only report checksum unnecessary for TCP, UDP, or SCTP */
-	switch (decoded.inner_prot) {
+	switch (ptype->inner_prot) {
 	case IAVF_RX_PTYPE_INNER_PROT_TCP:
 	case IAVF_RX_PTYPE_INNER_PROT_UDP:
 	case IAVF_RX_PTYPE_INNER_PROT_SCTP:
@@ -1222,12 +1235,84 @@ checksum_fail:
 }
 
 /**
+ * iavf_legacy_rx_csum - Indicate in skb if hw indicated a good cksum
+ * @vsi: the VSI we care about
+ * @skb: skb currently being received and modified
+ * @rx_desc: the receive descriptor
+ *
+ * This function only operates on the VIRTCHNL_RXDID_1_32B_BASE legacy 32byte
+ * descriptor writeback format.
+ **/
+static void
+iavf_legacy_rx_csum(struct iavf_vsi *vsi, struct sk_buff *skb, union iavf_rx_desc *rx_desc)
+{
+	struct iavf_rx_csum_decoded csum_bits;
+	struct iavf_rx_ptype_decoded decoded;
+	u32 rx_error, rx_status;
+	u64 qword;
+	u16 ptype;
+
+	qword = le64_to_cpu(rx_desc->wb.qword1.status_error_len);
+	ptype = (qword & IAVF_RXD_QW1_PTYPE_MASK) >> IAVF_RXD_QW1_PTYPE_SHIFT;
+	rx_error = (qword & IAVF_RXD_QW1_ERROR_MASK) >>
+		   IAVF_RXD_QW1_ERROR_SHIFT;
+	rx_status = (qword & IAVF_RXD_QW1_STATUS_MASK) >>
+		    IAVF_RXD_QW1_STATUS_SHIFT;
+	decoded = decode_rx_desc_ptype(ptype);
+
+	csum_bits.ipe = rx_error & BIT(IAVF_RX_DESC_ERROR_IPE_SHIFT);
+	csum_bits.eipe = rx_error & BIT(IAVF_RX_DESC_ERROR_EIPE_SHIFT);
+	csum_bits.l4e = rx_error & BIT(IAVF_RX_DESC_ERROR_L4E_SHIFT);
+	csum_bits.pprs = rx_error & BIT(IAVF_RX_DESC_ERROR_PPRS_SHIFT);
+	csum_bits.l3l4p = rx_status & BIT(IAVF_RX_DESC_STATUS_L3L4P_SHIFT);
+	csum_bits.ipv6exadd = rx_status & BIT(IAVF_RX_DESC_STATUS_IPV6EXADD_SHIFT);
+	csum_bits.nat = 0;
+	csum_bits.eudpe = 0;
+
+	iavf_rx_csum(vsi, skb, &decoded, &csum_bits);
+}
+
+/**
+ * iavf_flex_rx_csum - Indicate in skb if hw indicated a good cksum
+ * @vsi: the VSI we care about
+ * @skb: skb currently being received and modified
+ * @rx_desc: the receive descriptor
+ *
+ * This function only operates on the VIRTCHNL_RXDID_2_FLEX_SQ_NIC flexible
+ * descriptor writeback format.
+ **/
+static void
+iavf_flex_rx_csum(struct iavf_vsi *vsi, struct sk_buff *skb, union iavf_rx_desc *rx_desc)
+{
+	struct iavf_rx_csum_decoded csum_bits;
+	struct iavf_rx_ptype_decoded decoded;
+	u16 rx_status0, rx_status1, ptype;
+
+	rx_status0 = le16_to_cpu(rx_desc->flex_wb.status_error0);
+	rx_status1 = le16_to_cpu(rx_desc->flex_wb.status_error1);
+	ptype = le16_to_cpu(rx_desc->flex_wb.ptype_flexi_flags0) &
+		IAVF_RX_FLEX_DESC_PTYPE_M;
+	decoded = decode_rx_desc_ptype(ptype);
+
+	csum_bits.ipe = rx_status0 & BIT(IAVF_RX_FLEX_DESC_STATUS0_XSUM_IPE_S);
+	csum_bits.eipe = rx_status0 & BIT(IAVF_RX_FLEX_DESC_STATUS0_XSUM_EIPE_S);
+	csum_bits.l4e = rx_status0 & BIT(IAVF_RX_FLEX_DESC_STATUS0_XSUM_L4E_S);
+	csum_bits.eudpe = rx_status0 & BIT(IAVF_RX_FLEX_DESC_STATUS0_XSUM_EUDPE_S);
+	csum_bits.pprs = 0;
+	csum_bits.l3l4p = rx_status0 & BIT(IAVF_RX_FLEX_DESC_STATUS0_L3L4P_S);
+	csum_bits.ipv6exadd = rx_status0 & BIT(IAVF_RX_FLEX_DESC_STATUS0_IPV6EXADD_S);
+	csum_bits.nat = rx_status1 & BIT(IAVF_RX_FLEX_DESC_STATUS1_NAT_S);
+
+	iavf_rx_csum(vsi, skb, &decoded, &csum_bits);
+}
+
+/**
  * iavf_ptype_to_htype - get a hash type
  * @ptype: the ptype value from the descriptor
  *
  * Returns a hash type to be used by skb_set_hash
  **/
-static inline enum pkt_hash_types iavf_ptype_to_htype(u8 ptype)
+static enum pkt_hash_types iavf_ptype_to_htype(u16 ptype)
 {
 	struct iavf_rx_ptype_decoded decoded = decode_rx_desc_ptype(ptype);
 
@@ -1245,16 +1330,18 @@ static inline enum pkt_hash_types iavf_ptype_to_htype(u8 ptype)
 }
 
 /**
- * iavf_rx_hash - set the hash value in the skb
+ * iavf_legacy_rx_hash - set the hash value in the skb
  * @ring: descriptor ring
  * @rx_desc: specific descriptor
  * @skb: skb currently being received and modified
  * @rx_ptype: Rx packet type
+ *
+ * This function only operates on the VIRTCHNL_RXDID_1_32B_BASE legacy 32byte
+ * descriptor writeback format.
  **/
-static inline void iavf_rx_hash(struct iavf_ring *ring,
-				union iavf_rx_desc *rx_desc,
-				struct sk_buff *skb,
-				u8 rx_ptype)
+static void
+iavf_legacy_rx_hash(struct iavf_ring *ring, union iavf_rx_desc *rx_desc, struct sk_buff *skb,
+		    u16 rx_ptype)
 {
 #ifdef NETIF_F_RXHASH
 	u32 hash;
@@ -1273,6 +1360,75 @@ static inline void iavf_rx_hash(struct iavf_ring *ring,
 }
 
 /**
+ * iavf_flex_rx_hash - set the hash value in the skb
+ * @ring: descriptor ring
+ * @rx_desc: specific descriptor
+ * @skb: skb currently being received and modified
+ * @rx_ptype: Rx packet type
+ *
+ * This function only operates on the VIRTCHNL_RXDID_2_FLEX_SQ_NIC flexible
+ * descriptor writeback format.
+ **/
+static void
+iavf_flex_rx_hash(struct iavf_ring *ring, union iavf_rx_desc *rx_desc, struct sk_buff *skb,
+		  u16 rx_ptype)
+{
+#ifdef NETIF_F_RXHASH
+	__le16 status0;
+
+	if (!(ring->netdev->features & NETIF_F_RXHASH))
+		return;
+
+	status0 = rx_desc->flex_wb.status_error0;
+	if (status0 & cpu_to_le16(BIT(IAVF_RX_FLEX_DESC_STATUS0_RSS_VALID_S))) {
+		u32 hash = le32_to_cpu(rx_desc->flex_wb.rss_hash);
+
+		skb_set_hash(skb, hash, iavf_ptype_to_htype(rx_ptype));
+	}
+#endif /* NETIF_F_RXHASH */
+}
+
+/**
+ * iavf_flex_rx_tstamp - Capture Rx timestamp from the descriptor
+ * @rx_ring: descriptor ring
+ * @rx_desc: specific descriptor
+ * @skb: skb currently being received
+ *
+ * Read the Rx timestamp value from the descriptor and pass it to the stack.
+ *
+ * This function only operates on the VIRTCHNL_RXDID_2_FLEX_SQ_NIC flexible
+ * descriptor writeback format.
+ */
+static void
+iavf_flex_rx_tstamp(struct iavf_ring *rx_ring, union iavf_rx_desc *rx_desc, struct sk_buff *skb)
+{
+	struct skb_shared_hwtstamps *skb_tstamps;
+	struct iavf_adapter *adapter;
+	u32 tstamp;
+	u64 ns;
+
+	/* Skip processing if timestamps aren't enabled */
+	if (!(rx_ring->flags & IAVF_TXRX_FLAGS_HW_TSTAMP))
+		return;
+
+	/* Check if this Rx descriptor has a valid timestamp */
+	if (!(rx_desc->flex_wb.ts_low & IAVF_PTP_40B_TSTAMP_VALID))
+		return;
+
+	adapter = netdev_priv(rx_ring->netdev);
+
+	/* the ts_low field only contains the valid bit and sub-nanosecond
+	 * precision, so we don't need to extract it.
+	 */
+	tstamp = le32_to_cpu(rx_desc->flex_wb.flex_ts.ts_high);
+	ns = iavf_ptp_extend_32b_timestamp(adapter->ptp.cached_phc_time, tstamp);
+
+	skb_tstamps = skb_hwtstamps(skb);
+	memset(skb_tstamps, 0, sizeof(*skb_tstamps));
+	skb_tstamps->hwtstamp = ns_to_ktime(ns);
+}
+
+/**
  * iavf_process_skb_fields - Populate skb header fields from Rx descriptor
  * @rx_ring: rx descriptor ring packet is being transacted on
  * @rx_desc: pointer to the EOP Rx descriptor
@@ -1283,14 +1439,21 @@ static inline void iavf_rx_hash(struct iavf_ring *ring,
  * order to populate the hash, checksum, VLAN, protocol, and
  * other fields within the skb.
  **/
-static inline
-void iavf_process_skb_fields(struct iavf_ring *rx_ring,
-			     union iavf_rx_desc *rx_desc, struct sk_buff *skb,
-			     u8 rx_ptype)
+static void
+iavf_process_skb_fields(struct iavf_ring *rx_ring, union iavf_rx_desc *rx_desc,
+			struct sk_buff *skb, u16 rx_ptype)
 {
-	iavf_rx_hash(rx_ring, rx_desc, skb, rx_ptype);
+	if (rx_ring->rxdid == VIRTCHNL_RXDID_1_32B_BASE) {
+		iavf_legacy_rx_hash(rx_ring, rx_desc, skb, rx_ptype);
 
-	iavf_rx_checksum(rx_ring->vsi, skb, rx_desc);
+		iavf_legacy_rx_csum(rx_ring->vsi, skb, rx_desc);
+	} else {
+		iavf_flex_rx_hash(rx_ring, rx_desc, skb, rx_ptype);
+
+		iavf_flex_rx_csum(rx_ring->vsi, skb, rx_desc);
+
+		iavf_flex_rx_tstamp(rx_ring, rx_desc, skb);
+	}
 
 	skb_record_rx_queue(skb, rx_ring->queue_index);
 
@@ -1344,7 +1507,7 @@ static bool iavf_cleanup_headers(struct iavf_ring *rx_ring, struct sk_buff *skb,
  * A page is not reusable if it was allocated under low memory
  * conditions, or it's not in the same NUMA node as this CPU.
  */
-static inline bool iavf_page_is_reusable(struct page *page)
+static bool iavf_page_is_reusable(struct page *page)
 {
 	return (page_to_nid(page) == numa_mem_id()) &&
 		!page_is_pfmemalloc(page);
@@ -1713,7 +1876,7 @@ static void iavf_rx_buffer_flip(struct iavf_ring *rx_ring,
 #endif
 }
 
-static inline void iavf_xdp_ring_update_tail(struct iavf_ring *xdp_ring)
+static void iavf_xdp_ring_update_tail(struct iavf_ring *xdp_ring)
 {
 	/* Force memory writes to complete before letting h/w
 	 * know there are new descriptors to fetch.
@@ -1840,6 +2003,86 @@ static void iavf_chnl_rx_stats(struct iavf_ring *rx_ring, u64 pkts)
 	}
 }
 
+struct iavf_rx_extracted {
+	unsigned int size;
+	u16 vlan_tag;
+	u16 rx_ptype;
+};
+
+/**
+ * iavf_extract_legacy_rx_fields - Extract fields from the Rx descriptor
+ * @rx_ring: rx descriptor ring
+ * @rx_desc: the descriptor to process
+ * @fields: storage for extracted values
+ *
+ * Decode the Rx descriptor and extract relevant information including the
+ * size, VLAN tag, and Rx packet type.
+ *
+ * This function only operates on the VIRTCHNL_RXDID_1_32B_BASE legacy 32byte
+ * descriptor writeback format.
+ */
+static void
+iavf_extract_legacy_rx_fields(struct iavf_ring *rx_ring, union iavf_rx_desc *rx_desc,
+			      struct iavf_rx_extracted *fields)
+{
+	u64 qword = le64_to_cpu(rx_desc->wb.qword1.status_error_len);
+
+	fields->size = (qword & IAVF_RXD_QW1_LENGTH_PBUF_MASK) >> IAVF_RXD_QW1_LENGTH_PBUF_SHIFT;
+	fields->rx_ptype = (qword & IAVF_RXD_QW1_PTYPE_MASK) >> IAVF_RXD_QW1_PTYPE_SHIFT;
+
+	if (qword & BIT(IAVF_RX_DESC_STATUS_L2TAG1P_SHIFT) &&
+	    rx_ring->flags & IAVF_TXRX_FLAGS_VLAN_TAG_LOC_L2TAG1)
+		fields->vlan_tag = le16_to_cpu(rx_desc->wb.qword0.lo_dword.l2tag1);
+
+	if (rx_desc->wb.qword2.ext_status &
+	    cpu_to_le16(BIT(IAVF_RX_DESC_EXT_STATUS_L2TAG2P_SHIFT)) &&
+	    rx_ring->flags & IAVF_RXR_FLAGS_VLAN_TAG_LOC_L2TAG2_2)
+		fields->vlan_tag = le16_to_cpu(rx_desc->wb.qword2.l2tag2_2);
+}
+
+/**
+ * iavf_extract_flex_rx_fields - Extract fields from the Rx descriptor
+ * @rx_ring: rx descriptor ring
+ * @rx_desc: the descriptor to process
+ * @fields: storage for extracted values
+ *
+ * Decode the Rx descriptor and extract relevant information including the
+ * size, VLAN tag, and Rx packet type.
+ *
+ * This function only operates on the VIRTCHNL_RXDID_2_FLEX_SQ_NIC flexible
+ * descriptor writeback format.
+ */
+static void
+iavf_extract_flex_rx_fields(struct iavf_ring *rx_ring, union iavf_rx_desc *rx_desc,
+			    struct iavf_rx_extracted *fields)
+{
+	__le16 status0, status1;
+
+	fields->size = le16_to_cpu(rx_desc->flex_wb.pkt_len) & IAVF_RX_FLEX_DESC_PKT_LEN_M;
+	fields->rx_ptype = le16_to_cpu(rx_desc->flex_wb.ptype_flexi_flags0) &
+		IAVF_RX_FLEX_DESC_PTYPE_M;
+
+	status0 = rx_desc->flex_wb.status_error0;
+	if (status0 & cpu_to_le16(BIT(IAVF_RX_FLEX_DESC_STATUS0_L2TAG1P_S)) &&
+	    rx_ring->flags & IAVF_TXRX_FLAGS_VLAN_TAG_LOC_L2TAG1)
+		fields->vlan_tag = le16_to_cpu(rx_desc->flex_wb.l2tag1);
+
+	status1 = rx_desc->flex_wb.status_error1;
+	if (status1 & cpu_to_le16(BIT(IAVF_RX_FLEX_DESC_STATUS1_L2TAG2P_S)) &&
+	    rx_ring->flags & IAVF_RXR_FLAGS_VLAN_TAG_LOC_L2TAG2_2)
+		fields->vlan_tag = le16_to_cpu(rx_desc->flex_wb.l2tag2_2nd);
+}
+
+static void
+iavf_extract_rx_fields(struct iavf_ring *rx_ring, union iavf_rx_desc *rx_desc,
+		       struct iavf_rx_extracted *fields)
+{
+	if (rx_ring->rxdid == VIRTCHNL_RXDID_1_32B_BASE)
+		iavf_extract_legacy_rx_fields(rx_ring, rx_desc, fields);
+	else
+		iavf_extract_flex_rx_fields(rx_ring, rx_desc, fields);
+}
+
 /**
  * iavf_clean_rx_irq - Clean completed descriptors from Rx ring - bounce buf
  * @rx_ring: rx descriptor ring to transact packets on
@@ -1866,12 +2109,9 @@ static int iavf_clean_rx_irq(struct iavf_ring *rx_ring, int budget)
 #endif
 
 	while (likely(total_rx_packets < (unsigned int)budget)) {
+		struct iavf_rx_extracted fields = {};
 		struct iavf_rx_buffer *rx_buffer;
 		union iavf_rx_desc *rx_desc;
-		unsigned int size;
-		u16 vlan_tag = 0;
-		u8 rx_ptype;
-		u64 qword;
 
 		/* return some buffers to hardware, one at a time is too slow */
 		if (cleaned_count >= IAVF_RX_BUFFER_WRITE) {
@@ -1882,13 +2122,6 @@ static int iavf_clean_rx_irq(struct iavf_ring *rx_ring, int budget)
 
 		rx_desc = IAVF_RX_DESC(rx_ring, rx_ring->next_to_clean);
 
-		/* status_error_len will always be zero for unused descriptors
-		 * because it's cleared in cleanup, and overlaps with hdr_addr
-		 * which is always zero because packet split isn't used, if the
-		 * hardware wrote DD then the length will be non-zero
-		 */
-		qword = le64_to_cpu(rx_desc->wb.qword1.status_error_len);
-
 		/* This memory barrier is needed to keep us from reading
 		 * any other fields out of the rx_desc until we have
 		 * verified the descriptor has been written back.
@@ -1898,11 +2131,10 @@ static int iavf_clean_rx_irq(struct iavf_ring *rx_ring, int budget)
 		if (!iavf_test_staterr(rx_desc, IAVF_RXD_DD))
 			break;
 
-		size = (qword & IAVF_RXD_QW1_LENGTH_PBUF_MASK) >>
-		       IAVF_RXD_QW1_LENGTH_PBUF_SHIFT;
+		iavf_extract_rx_fields(rx_ring, rx_desc, &fields);
 
 		iavf_trace(clean_rx_irq, rx_ring, rx_desc, skb);
-		rx_buffer = iavf_get_rx_buffer(rx_ring, size);
+		rx_buffer = iavf_get_rx_buffer(rx_ring, fields.size);
 
 		/* retrieve a buffer from the ring */
 		if (!skb) {
@@ -1911,7 +2143,7 @@ static int iavf_clean_rx_irq(struct iavf_ring *rx_ring, int budget)
 					   rx_buffer->page_offset;
 				xdp.data_hard_start = (void *)((u8 *)xdp.data -
 						      iavf_rx_offset(rx_ring));
-				xdp.data_end = (void *)((u8 *)xdp.data + size);
+				xdp.data_end = (void *)((u8 *)xdp.data + fields.size);
 				skb = iavf_run_xdp(rx_ring, &xdp);
 			} else {
 				break;
@@ -1923,15 +2155,15 @@ static int iavf_clean_rx_irq(struct iavf_ring *rx_ring, int budget)
 
 			if (xdp_res & (IAVF_XDP_TX | IAVF_XDP_REDIR)) {
 				xdp_xmit |= xdp_res;
-				iavf_rx_buffer_flip(rx_ring, rx_buffer, size);
+				iavf_rx_buffer_flip(rx_ring, rx_buffer, fields.size);
 			} else {
 				if (rx_buffer)
 					rx_buffer->pagecnt_bias++;
 			}
-			total_rx_bytes += size;
+			total_rx_bytes += fields.size;
 			total_rx_packets++;
 		} else if (skb) {
-			iavf_add_rx_frag(rx_ring, rx_buffer, skb, size);
+			iavf_add_rx_frag(rx_ring, rx_buffer, skb, fields.size);
 #ifdef HAVE_SWIOTLB_SKIP_CPU_SYNC
 		} else if (ring_uses_build_skb(rx_ring)) {
 			skb = iavf_build_skb(rx_ring, rx_buffer, &xdp);
@@ -1962,21 +2194,9 @@ static int iavf_clean_rx_irq(struct iavf_ring *rx_ring, int budget)
 		/* probably a little skewed due to removing CRC */
 		total_rx_bytes += skb->len;
 
-		qword = le64_to_cpu(rx_desc->wb.qword1.status_error_len);
-		rx_ptype = (qword & IAVF_RXD_QW1_PTYPE_MASK) >>
-			   IAVF_RXD_QW1_PTYPE_SHIFT;
-
 		/* populate checksum, VLAN, and protocol */
-		iavf_process_skb_fields(rx_ring, rx_desc, skb, rx_ptype);
+		iavf_process_skb_fields(rx_ring, rx_desc, skb, fields.rx_ptype);
 
-		if (qword & BIT(IAVF_RX_DESC_STATUS_L2TAG1P_SHIFT) &&
-		    rx_ring->flags & IAVF_TXRX_FLAGS_VLAN_TAG_LOC_L2TAG1)
-			vlan_tag =
-				le16_to_cpu(rx_desc->wb.qword0.lo_dword.l2tag1);
-		if (rx_desc->wb.qword2.ext_status &
-		    cpu_to_le16(BIT(IAVF_RX_DESC_EXT_STATUS_L2TAG2P_SHIFT)) &&
-		    rx_ring->flags & IAVF_RXR_FLAGS_VLAN_TAG_LOC_L2TAG2_2)
-			vlan_tag = le16_to_cpu(rx_desc->wb.qword2.l2tag2_2);
 		if (vector_ch_ena(rx_ring->q_vector) &&
 		    vector_ch_perf_ena(rx_ring->q_vector)) {
 			if (!iavf_is_ctrl_pkt(skb, rx_ring))
@@ -1985,7 +2205,7 @@ static int iavf_clean_rx_irq(struct iavf_ring *rx_ring, int budget)
 		}
 
 		iavf_trace(clean_rx_irq_rx, rx_ring, rx_desc, skb);
-		iavf_receive_skb(rx_ring, skb, vlan_tag);
+		iavf_receive_skb(rx_ring, skb, fields.vlan_tag);
 		skb = NULL;
 
 		/* update budget accounting */
@@ -2015,7 +2235,7 @@ static int iavf_clean_rx_irq(struct iavf_ring *rx_ring, int budget)
 	return failure ? budget : (int)total_rx_packets;
 }
 
-static inline u32 iavf_buildreg_itr(const int type, u16 itr)
+static u32 iavf_buildreg_itr(const int type, u16 itr)
 {
 	u32 val;
 
@@ -2061,8 +2281,7 @@ static inline u32 iavf_buildreg_itr(const int type, u16 itr)
  * @q_vector: q_vector for which itr is being updated and interrupt enabled
  *
  **/
-static inline void iavf_update_enable_itr(struct iavf_vsi *vsi,
-					  struct iavf_q_vector *q_vector)
+static void iavf_update_enable_itr(struct iavf_vsi *vsi, struct iavf_q_vector *q_vector)
 {
 	struct iavf_hw *hw = &vsi->back->hw;
 	u32 intval;
@@ -2906,7 +3125,57 @@ static int iavf_tx_enable_csum(struct sk_buff *skb, u32 *tx_flags,
 }
 
 /**
- * iavf_create_tx_ctx Build the Tx context descriptor
+ * iavf_tstamp - setup context descriptor for timestamping
+ * @tx_ring: ring to send buffer on
+ * @skb: send buffer
+ * @tx_flags: collected send information
+ * @cd_type_cmd_tso_mss: Quad Word 1
+ *
+ * Setup timestamp request for an outbound packet. The request will only be
+ * made if the user has requested it, and if we're not already waiting for
+ * timestamp completion of a previous packet.
+ *
+ * Return 1 if a Tx timestamp will happen, 0 otherwise.
+ */
+static int
+iavf_tstamp(struct iavf_ring *tx_ring, struct sk_buff *skb, u32 tx_flags, u64 *cd_type_cmd_tso_mss)
+{
+	struct iavf_adapter *adapter;
+	struct iavf_ptp *ptp;
+	u64 ts_idx;
+
+	/* Timestamping is not enabled */
+	if (!(tx_ring->flags & IAVF_TXRX_FLAGS_HW_TSTAMP))
+		return 0;
+
+	if (likely(!(skb_shinfo(skb)->tx_flags & SKBTX_HW_TSTAMP)))
+		return 0;
+
+	/* Hardware cannot sample a timestamp when doing TSO */
+	if (tx_flags & IAVF_TX_FLAGS_TSO)
+		return 0;
+
+	adapter = netdev_priv(tx_ring->netdev);
+	ptp = &adapter->ptp;
+
+	if (test_and_set_bit_lock(__IAVF_TX_TSTAMP_IN_PROGRESS, &adapter->crit_section)) {
+		ptp->tx_hwtstamp_skipped++;
+		return 0;
+	}
+
+	skb_shinfo(skb)->tx_flags |= SKBTX_IN_PROGRESS;
+	ptp->tx_start = jiffies;
+	ptp->tx_skb = skb_get(skb);
+
+	ts_idx = ptp->hw_caps.tx_tstamp_idx;
+	*cd_type_cmd_tso_mss |= (IAVF_TX_CTX_DESC_TSYN << IAVF_TXD_CTX_QW1_CMD_SHIFT) |
+				(ts_idx << IAVF_TXD_CTX_QW1_TSO_LEN_SHIFT);
+
+	return 1;
+}
+
+/**
+ * iavf_create_tx_ctx - Build the Tx context descriptor
  * @tx_ring:  ring to create the descriptor on
  * @cd_type_cmd_tso_mss: Quad Word 1
  * @cd_tunneling: Quad Word 0 - bits 0-31
@@ -3055,9 +3324,9 @@ bool __iavf_chk_linearize(struct sk_buff *skb)
  *
  * Returns 0 on success, negative error code on DMA failure.
  **/
-static inline int iavf_tx_map(struct iavf_ring *tx_ring, struct sk_buff *skb,
-			      struct iavf_tx_buffer *first, u32 tx_flags,
-			      const u8 hdr_len, u32 td_cmd, u32 td_offset)
+static int iavf_tx_map(struct iavf_ring *tx_ring, struct sk_buff *skb,
+		       struct iavf_tx_buffer *first, u32 tx_flags,
+		       const u8 hdr_len, u32 td_cmd, u32 td_offset)
 {
 	unsigned int data_len = skb->data_len;
 	unsigned int size = skb_headlen(skb);
@@ -3238,12 +3507,12 @@ static netdev_tx_t iavf_xmit_frame_ring(struct sk_buff *skb,
 	u64 cd_type_cmd_tso_mss = IAVF_TX_DESC_DTYPE_CONTEXT;
 	u32 cd_tunneling = 0, cd_l2tag2 = 0;
 	struct iavf_tx_buffer *first;
+	int tso, tstamp, count;
 	u32 td_offset = 0;
 	u32 tx_flags = 0;
 	__be16 protocol;
 	u32 td_cmd = 0;
 	u8 hdr_len = 0;
-	int tso, count;
 
 	/* prefetch the data, we'll need it later */
 	prefetch(skb->data);
@@ -3308,14 +3577,19 @@ static netdev_tx_t iavf_xmit_frame_ring(struct sk_buff *skb,
 	if (tso < 0)
 		goto out_drop;
 
+	tstamp = iavf_tstamp(tx_ring, skb, tx_flags, &cd_type_cmd_tso_mss);
+	if (tstamp)
+		tx_flags |= IAVF_TX_FLAGS_TSTAMP;
+
 	/* always enable CRC insertion offload */
 	td_cmd |= IAVF_TX_DESC_CMD_ICRC;
 
 	iavf_create_tx_ctx(tx_ring, cd_type_cmd_tso_mss,
 			   cd_tunneling, cd_l2tag2);
 
-	iavf_tx_map(tx_ring, skb, first, tx_flags, hdr_len,
-		    td_cmd, td_offset);
+	if (iavf_tx_map(tx_ring, skb, first, tx_flags, hdr_len,
+			td_cmd, td_offset))
+		goto cleanup_tx_tstamp;
 
 #ifndef HAVE_TRANS_START_IN_QUEUE
 	tx_ring->netdev->trans_start = jiffies;
@@ -3326,6 +3600,15 @@ out_drop:
 	iavf_trace(xmit_frame_ring_drop, first->skb, tx_ring);
 	dev_kfree_skb_any(first->skb);
 	first->skb = NULL;
+cleanup_tx_tstamp:
+	if (unlikely(tx_flags & IAVF_TX_FLAGS_TSTAMP)) {
+		struct iavf_adapter *adapter = netdev_priv(tx_ring->netdev);
+
+		dev_kfree_skb_any(adapter->ptp.tx_skb);
+		adapter->ptp.tx_skb = NULL;
+		clear_bit_unlock(__IAVF_TX_TSTAMP_IN_PROGRESS, &adapter->crit_section);
+	}
+
 	return NETDEV_TX_OK;
 }
 

@@ -3,7 +3,6 @@
 
 #include "iavf.h"
 #include "iavf_prototype.h"
-#include "iavf_client.h"
 
 /* busy wait delay in msec */
 #define IAVF_BUSY_WAIT_DELAY 10
@@ -123,7 +122,6 @@ int iavf_send_vf_config_msg(struct iavf_adapter *adapter)
 	u32 caps;
 
 	caps = VIRTCHNL_VF_OFFLOAD_L2 |
-	       VIRTCHNL_VF_OFFLOAD_IWARP |
 	       VIRTCHNL_VF_OFFLOAD_RSS_PF |
 	       VIRTCHNL_VF_OFFLOAD_RSS_AQ |
 	       VIRTCHNL_VF_OFFLOAD_RSS_REG |
@@ -132,7 +130,9 @@ int iavf_send_vf_config_msg(struct iavf_adapter *adapter)
 	       VIRTCHNL_VF_OFFLOAD_RSS_PCTYPE_V2 |
 	       VIRTCHNL_VF_OFFLOAD_ENCAP |
 	       VIRTCHNL_VF_OFFLOAD_VLAN_V2 |
+	       VIRTCHNL_VF_OFFLOAD_RX_FLEX_DESC |
 	       VIRTCHNL_VF_OFFLOAD_REQ_QUEUES |
+	       VIRTCHNL_VF_CAP_PTP |
 #ifdef __TC_MQPRIO_MODE_MAX
 	       VIRTCHNL_VF_OFFLOAD_ADQ |
 	       VIRTCHNL_VF_OFFLOAD_ADQ_V2 |
@@ -168,6 +168,58 @@ int iavf_send_vf_offload_vlan_v2_msg(struct iavf_adapter *adapter)
 
 	return iavf_send_pf_msg(adapter, VIRTCHNL_OP_GET_OFFLOAD_VLAN_V2_CAPS,
 				NULL, 0);
+}
+
+int iavf_send_vf_supported_rxdids_msg(struct iavf_adapter *adapter)
+{
+	adapter->aq_required &= ~IAVF_FLAG_AQ_GET_SUPPORTED_RXDIDS;
+
+	if (!RXDID_ALLOWED(adapter))
+		return -EOPNOTSUPP;
+
+	adapter->current_op = VIRTCHNL_OP_GET_SUPPORTED_RXDIDS;
+
+	return iavf_send_pf_msg(adapter, VIRTCHNL_OP_GET_SUPPORTED_RXDIDS,
+				NULL, 0);
+}
+
+/**
+ * iavf_send_vf_ptp_caps_msg - Send request for PTP capabilities
+ * @adapter: private adapter structure
+ *
+ * Send the VIRTCHNL_OP_1588_PTP_GET_CAPS command to the PF to request the PTP
+ * capabilities available to this device. This includes the following
+ * potential access:
+ *
+ * * READ_PHC - access to read the PTP hardware clock time
+ * * WRITE_PHC - access to control the PHC time via adjustments
+ * * TX_TSTAMP - access to request up to one transmit timestamp at a time
+ * * RX_TSTAMP - access to request Rx timestamps on all received packets
+ * * PHC_REGS - direct access to the clock time registers for reading PHC
+ *
+ * The PF will reply with the same opcode a filled out copy of the
+ * virtchnl_ptp_caps structure which defines the specifics of which features
+ * are accessible to this device.
+ */
+int iavf_send_vf_ptp_caps_msg(struct iavf_adapter *adapter)
+{
+	struct virtchnl_ptp_caps hw_caps = {};
+
+	adapter->aq_required &= ~IAVF_FLAG_AQ_GET_PTP_CAPS;
+
+	if (!PTP_ALLOWED(adapter))
+		return -EOPNOTSUPP;
+
+	hw_caps.caps = (VIRTCHNL_1588_PTP_CAP_READ_PHC |
+			VIRTCHNL_1588_PTP_CAP_WRITE_PHC |
+			VIRTCHNL_1588_PTP_CAP_TX_TSTAMP |
+			VIRTCHNL_1588_PTP_CAP_RX_TSTAMP |
+			VIRTCHNL_1588_PTP_CAP_PHC_REGS);
+
+	adapter->current_op = VIRTCHNL_OP_1588_PTP_GET_CAPS;
+
+	return iavf_send_pf_msg(adapter, VIRTCHNL_OP_1588_PTP_GET_CAPS,
+				(u8 *)&hw_caps, sizeof(hw_caps));
 }
 
 /**
@@ -297,6 +349,86 @@ out:
 	return err;
 }
 
+int iavf_get_vf_supported_rxdids(struct iavf_adapter *adapter)
+{
+	struct iavf_hw *hw = &adapter->hw;
+	struct iavf_arq_event_info event;
+	enum virtchnl_ops op;
+	enum iavf_status err;
+	u16 len;
+
+	len =  sizeof(struct virtchnl_supported_rxdids);
+	event.buf_len = len;
+	event.msg_buf = kzalloc(event.buf_len, GFP_KERNEL);
+	if (!event.msg_buf) {
+		err = -ENOMEM;
+		goto out;
+	}
+
+	while (1) {
+		/* When the AQ is empty, iavf_clean_arq_element will return
+		 * nonzero and this loop will terminate.
+		 */
+		err = iavf_clean_arq_element(hw, &event, NULL);
+		if (err)
+			goto out_alloc;
+		op =
+		    (enum virtchnl_ops)le32_to_cpu(event.desc.cookie_high);
+		if (op == VIRTCHNL_OP_GET_SUPPORTED_RXDIDS)
+			break;
+	}
+
+	err = (enum iavf_status)le32_to_cpu(event.desc.cookie_low);
+	if (err)
+		goto out_alloc;
+
+	memcpy(&adapter->supported_rxdids, event.msg_buf, min(event.msg_len, len));
+out_alloc:
+	kfree(event.msg_buf);
+out:
+	return err;
+}
+
+int iavf_get_vf_ptp_caps(struct iavf_adapter *adapter)
+{
+	struct iavf_hw *hw = &adapter->hw;
+	struct iavf_arq_event_info event;
+	enum virtchnl_ops op;
+	enum iavf_status err;
+	u16 len;
+
+	len =  sizeof(struct virtchnl_ptp_caps);
+	event.buf_len = len;
+	event.msg_buf = kzalloc(event.buf_len, GFP_KERNEL);
+	if (!event.msg_buf) {
+		err = -ENOMEM;
+		goto out;
+	}
+
+	while (1) {
+		/* When the AQ is empty, iavf_clean_arq_element will return
+		 * nonzero and this loop will terminate.
+		 */
+		err = iavf_clean_arq_element(hw, &event, NULL);
+		if (err)
+			goto out_alloc;
+		op =
+		    (enum virtchnl_ops)le32_to_cpu(event.desc.cookie_high);
+		if (op == VIRTCHNL_OP_1588_PTP_GET_CAPS)
+			break;
+	}
+
+	err = (enum iavf_status)le32_to_cpu(event.desc.cookie_low);
+	if (err)
+		goto out_alloc;
+
+	memcpy(&adapter->ptp.hw_caps, event.msg_buf, min(event.msg_len, len));
+out_alloc:
+	kfree(event.msg_buf);
+out:
+	return err;
+}
+
 /**
  * iavf_configure_queues
  * @adapter: adapter structure
@@ -343,6 +475,8 @@ void iavf_configure_queues(struct iavf_adapter *adapter)
 		vqpi->rxq.databuffer_size =
 			ALIGN(adapter->rx_rings[i].rx_buf_len,
 			      BIT_ULL(IAVF_RXQ_CTX_DBUFF_SHIFT));
+		if (RXDID_ALLOWED(adapter))
+			vqpi->rxq.rxdid = adapter->rxdid;
 		vqpi++;
 	}
 
@@ -487,6 +621,22 @@ int iavf_request_queues(struct iavf_adapter *adapter, int num)
 }
 
 /**
+ * iavf_set_mac_addr_type
+ * @virtchnl_ether_addr: pointer to request list element
+ * @filter: pointer filter being requested
+ *
+ * Set the correct request type.
+ **/
+static void
+iavf_set_mac_addr_type(struct virtchnl_ether_addr *virtchnl_ether_addr,
+		       struct iavf_mac_filter *filter)
+{
+	virtchnl_ether_addr->type = filter->is_primary ?
+		VIRTCHNL_ETHER_ADDR_PRIMARY :
+		VIRTCHNL_ETHER_ADDR_EXTRA;
+}
+
+/**
  * iavf_add_ether_addrs
  * @adapter: adapter structure
  *
@@ -542,6 +692,7 @@ void iavf_add_ether_addrs(struct iavf_adapter *adapter)
 	list_for_each_entry(f, &adapter->mac_filter_list, list) {
 		if (f->add) {
 			ether_addr_copy(veal->list[i].addr, f->macaddr);
+			iavf_set_mac_addr_type(&veal->list[i], f);
 			i++;
 			f->add = false;
 			if (i == count)
@@ -613,6 +764,7 @@ void iavf_del_ether_addrs(struct iavf_adapter *adapter)
 	list_for_each_entry_safe(f, ftmp, &adapter->mac_filter_list, list) {
 		if (f->remove) {
 			ether_addr_copy(veal->list[i].addr, f->macaddr);
+			iavf_set_mac_addr_type(&veal->list[i], f);
 			i++;
 			list_del(&f->list);
 			kfree(f);
@@ -631,7 +783,7 @@ void iavf_del_ether_addrs(struct iavf_adapter *adapter)
 }
 
 /**
- * iavf_is_mac_add_ok
+ * iavf_mac_add_ok
  * @adapter: adapter structure
  *
  * Submit list of filters based on PF response.
@@ -648,7 +800,7 @@ static void iavf_mac_add_ok(struct iavf_adapter *adapter)
 }
 
 /**
- * iavf_is_mac_add_reject
+ * iavf_mac_add_reject
  * @adapter: adapter structure
  *
  * Remove filters from list based on PF response.
@@ -1191,7 +1343,7 @@ static u32 iavf_tpid_to_vc_ethertype(u16 tpid)
 }
 
 /**
- * ice_set_vc_offload_ethertype - set virtchnl ethertype for offload message
+ * iavf_set_vc_offload_ethertype - set virtchnl ethertype for offload message
  * @adapter: adapter structure
  * @msg: message structure used for updating offloads over virtchnl to update
  * @tpid: VLAN TPID (i.e. 0x8100, 0x88a8, etc.)
@@ -1378,6 +1530,62 @@ void iavf_disable_vlan_insertion_v2(struct iavf_adapter *adapter, u16 tpid)
 				  VIRTCHNL_OP_DISABLE_VLAN_INSERTION_V2);
 }
 
+/**
+ * iavf_virtchnl_send_ptp_cmd - Send one queued PTP command
+ * @adapter: adapter private structure
+ *
+ * De-queue one PTP command request and send the command message to the PF.
+ * Clear IAVF_FLAG_AQ_SEND_PTP_CMD if no more messages are left to send.
+ */
+void iavf_virtchnl_send_ptp_cmd(struct iavf_adapter *adapter)
+{
+	struct device *dev = &adapter->pdev->dev;
+	struct iavf_ptp_aq_cmd *cmd;
+	int err;
+
+	if (WARN_ON(!adapter->ptp.initialized)) {
+		/* This shouldn't be possible to hit, since no messages should
+		 * be queued if PTP is not initialized.
+		 */
+		adapter->aq_required &= ~IAVF_FLAG_AQ_SEND_PTP_CMD;
+		return;
+	}
+
+	spin_lock(&adapter->ptp.aq_cmd_lock);
+	cmd = list_first_entry_or_null(&adapter->ptp.aq_cmds, struct iavf_ptp_aq_cmd, list);
+	if (!cmd) {
+		/* no further PTP messages to send */
+		adapter->aq_required &= ~IAVF_FLAG_AQ_SEND_PTP_CMD;
+		goto out_unlock;
+	}
+
+	if (adapter->current_op != VIRTCHNL_OP_UNKNOWN) {
+		/* bail because we already have a command pending */
+		dev_err(dev, "Cannot send PTP command %d, command %d pending\n",
+			cmd->v_opcode, adapter->current_op);
+		goto out_unlock;
+	}
+
+	err = iavf_send_pf_msg(adapter, cmd->v_opcode, cmd->msg, cmd->msglen);
+	if (!err) {
+		/* Command was sent without errors, so we can remove it from
+		 * the list and discard it.
+		 */
+		list_del(&cmd->list);
+		kfree(cmd);
+	} else {
+		/* We failed to send the command, try again next cycle */
+		dev_warn(dev, "Failed to send PTP command %d\n", cmd->v_opcode);
+	}
+
+	if (list_empty(&adapter->ptp.aq_cmds))
+		/* no further PTP messages to send */
+		adapter->aq_required &= ~IAVF_FLAG_AQ_SEND_PTP_CMD;
+
+out_unlock:
+	spin_unlock(&adapter->ptp.aq_cmd_lock);
+}
+
 #define IAVF_MAX_SPEED_STRLEN        13
 
 /**
@@ -1499,7 +1707,7 @@ iavf_set_adapter_link_speed_from_vpe(struct iavf_adapter *adapter,
 
 #endif /* VIRTCHNL_VF_CAP_ADV_LINK_SPEED */
 /**
- * iavf_enable_channel
+ * iavf_enable_channels
  * @adapter: adapter structure
  *
  * Request that the PF enable channels as specified by
@@ -1542,7 +1750,7 @@ void iavf_enable_channels(struct iavf_adapter *adapter)
 }
 
 /**
- * iavf_disable_channel
+ * iavf_disable_channels
  * @adapter: adapter structure
  *
  * Request that the PF disable channels that are configured
@@ -1851,7 +2059,7 @@ static void iavf_clear_ch_info(struct iavf_adapter *adapter)
 }
 
 /**
- * iavf_setup_chnl_ring_attr - sets rings attributes specific to channel
+ * iavf_set_chnl_ring_attr - sets rings attributes specific to channel
  * @adapter: adapter structure
  * @flags: adapter specific flags (various feature bits)
  * @ring: Pointer to ring (Tx/Rx)
@@ -1978,6 +2186,109 @@ static void iavf_netdev_features_vlan_strip_set(struct net_device *netdev,
 }
 
 /**
+ * iavf_virtchnl_ptp_get_time - Respond to VIRTCHNL_OP_1588_PTP_GET_TIME
+ * @adapter: private adapter structure
+ * @data: the message from the PF
+ * @len: length of the message from the PF
+ *
+ * Handle the VIRTCHNL_OP_1588_PTP_GET_TIME message from the PF. This message
+ * is sent by the PF in response to the same op as a request from the VF.
+ * Extract the 64bit nanoseconds time from the message and store it in
+ * cached_phc_time. Then, notify any thread that is waiting for the update via
+ * the wait queue.
+ */
+static void iavf_virtchnl_ptp_get_time(struct iavf_adapter *adapter, void *data, u16 len)
+{
+	struct virtchnl_phc_time *msg;
+
+	if (len == sizeof(*msg)) {
+		msg = (struct virtchnl_phc_time *)data;
+	} else {
+		dev_err_once(&adapter->pdev->dev, "Invalid VIRTCHNL_OP_1588_PTP_GET_TIME from PF. Got size %u, expected %lu\n",
+			     len, sizeof(*msg));
+		return;
+	}
+
+	adapter->ptp.cached_phc_time = msg->time;
+	adapter->ptp.cached_phc_updated = jiffies;
+	adapter->ptp.phc_time_ready = true;
+
+	wake_up(&adapter->ptp.phc_time_waitqueue);
+}
+
+/**
+ * iavf_virtchnl_ptp_tx_timestamp - Handle Tx timestamp events from the PF
+ * @adapter: private adapter structure
+ * @data: message contents from PF
+ * @len: length of the message from the PF
+ *
+ * Handle the VIRTCHNL_OP_1588_PTP_TX_TIMESTAMP op from the PF. This is sent
+ * whenever the PF has detected a transmit timestamp associated with this VF.
+ *
+ * First, check if there is a pending skb that needs a transmit timestamp. If
+ * so, extract the time value from the message and report it to the stack.
+ * Note that 40bit timestamp values must first be extended using
+ * iavf_ptp_extend_40b_timestamp().
+ */
+static void iavf_virtchnl_ptp_tx_timestamp(struct iavf_adapter *adapter, void *data, u16 len)
+{
+	struct skb_shared_hwtstamps skb_tstamps = {};
+	struct device *dev = &adapter->pdev->dev;
+	struct virtchnl_phc_tx_tstamp *msg;
+	struct sk_buff *skb;
+	u64 ns;
+
+	if (len == sizeof(*msg)) {
+		msg = (struct virtchnl_phc_tx_tstamp *)data;
+	} else {
+		dev_err_once(dev, "Invalid VIRTCHNL_OP_1588_PTP_TX_TIMESTAMP from PF. Got size %u, expected %lu\n",
+			     len, sizeof(*msg));
+		return;
+	}
+
+	/* No need to process the event if timestamping isn't on */
+	if (adapter->ptp.hwtstamp_config.tx_type != HWTSTAMP_TX_ON)
+		return;
+
+	/* don't attempt to timestamp if we don't have a pending skb */
+	skb = adapter->ptp.tx_skb;
+	if (!skb)
+		return;
+
+	/* Since we only request one outstanding timestamp at once, we assume
+	 * this event must belong to the saved SKB. Clear the bit lock and the
+	 * skb now prior to notifying the stack via skb_tstamp_tx().
+	 */
+	adapter->ptp.tx_skb = NULL;
+	clear_bit_unlock(__IAVF_TX_TSTAMP_IN_PROGRESS, &adapter->crit_section);
+
+	switch (adapter->ptp.hw_caps.tx_tstamp_format) {
+	case VIRTCHNL_1588_PTP_TSTAMP_40BIT:
+		if (!(msg->tstamp & IAVF_PTP_40B_TSTAMP_VALID)) {
+			dev_warn(dev, "Got a VIRTCHNL_OP_1588_PTP_TX_TIMESTAMP message with an invalid timestamp\n");
+			goto out_free_skb;
+		}
+		ns = iavf_ptp_extend_40b_timestamp(adapter->ptp.cached_phc_time, msg->tstamp);
+		break;
+	case VIRTCHNL_1588_PTP_TSTAMP_64BIT_NS:
+		ns = msg->tstamp;
+		break;
+	default:
+		/* This shouldn't happen since we won't enable Tx timestamps
+		 * if we don't know the timestamp format.
+		 */
+		dev_dbg(dev, "Got a VIRTCHNL_OP_1588_PTP_TX_TIMESTAMP event, when timestamp format is unknown\n");
+		goto out_free_skb;
+	}
+
+	skb_tstamps.hwtstamp = ns_to_ktime(ns);
+	skb_tstamp_tx(skb, &skb_tstamps);
+
+out_free_skb:
+	dev_kfree_skb_any(skb);
+}
+
+/**
  * iavf_virtchnl_completion
  * @adapter: adapter structure
  * @v_opcode: opcode sent by PF
@@ -2045,12 +2356,15 @@ void iavf_virtchnl_completion(struct iavf_adapter *adapter,
 					netif_tx_start_all_queues(netdev);
 					netif_carrier_on(netdev);
 				}
+				if (!ether_addr_equal(netdev->dev_addr,
+						      adapter->hw.mac.addr))
+					iavf_replace_primary_mac
+						(adapter, netdev->dev_addr);
 			} else {
 				netif_tx_stop_all_queues(netdev);
 				netif_carrier_off(netdev);
 			}
 			iavf_print_link_message(adapter);
-			adapter->flags |= IAVF_FLAG_CLIENT_NEEDS_L2_PARAMS;
 			break;
 		case VIRTCHNL_EVENT_RESET_IMPENDING:
 			dev_info(&adapter->pdev->dev, "Reset indication received from the PF\n");
@@ -2098,7 +2412,7 @@ void iavf_virtchnl_completion(struct iavf_adapter *adapter,
 				iavf_stat_str(&adapter->hw, v_retval));
 			iavf_mac_add_reject(adapter);
 			/* restore administratively set mac address */
-			ether_addr_copy(adapter->hw.mac.addr, netdev->dev_addr);
+			ether_addr_copy(netdev->dev_addr, adapter->hw.mac.addr);
 			break;
 		case VIRTCHNL_OP_DEL_VLAN:
 			dev_err(&adapter->pdev->dev, "Failed to delete VLAN filter, error %s\n",
@@ -2216,7 +2530,7 @@ void iavf_virtchnl_completion(struct iavf_adapter *adapter,
 		if (!v_retval)
 			iavf_mac_add_ok(adapter);
 		if (!ether_addr_equal(netdev->dev_addr, adapter->hw.mac.addr))
-			ether_addr_copy(netdev->dev_addr, adapter->hw.mac.addr);
+			ether_addr_copy(adapter->hw.mac.addr, netdev->dev_addr);
 		break;
 	case VIRTCHNL_OP_GET_STATS: {
 		struct iavf_eth_stats *stats =
@@ -2276,12 +2590,21 @@ void iavf_virtchnl_completion(struct iavf_adapter *adapter,
 
 		iavf_process_config(adapter);
 
+		/* Clear 'critical task' bit before acquiring rtnl_lock
+		 * as other process holding rtnl_lock could be waiting
+		 * for the same bit resulting in deadlock
+		 */
+		clear_bit(__IAVF_IN_CRITICAL_TASK, &adapter->crit_section);
 		/* VLAN capabilities can change during VFR, so make sure to
 		 * update the netdev features with the new capabilities
 		 */
 		rtnl_lock();
 		netdev_update_features(netdev);
 		rtnl_unlock();
+		/* Set 'critical task' bit again */
+		while (test_and_set_bit(__IAVF_IN_CRITICAL_TASK,
+					&adapter->crit_section))
+			usleep_range(500, 1000);
 
 		iavf_set_queue_vlan_tag_loc(adapter);
 
@@ -2297,6 +2620,7 @@ void iavf_virtchnl_completion(struct iavf_adapter *adapter,
 				ether_addr_copy(f->macaddr,
 						adapter->hw.mac.addr);
 
+			f->is_new_mac = true;
 			f->add = true;
 			f->remove = false;
 		}
@@ -2339,6 +2663,23 @@ void iavf_virtchnl_completion(struct iavf_adapter *adapter,
 		adapter->aq_required |= IAVF_FLAG_AQ_ADD_VLAN_FILTER;
 		}
 		break;
+	case VIRTCHNL_OP_GET_SUPPORTED_RXDIDS:
+		memcpy(&adapter->supported_rxdids, msg,
+		       min_t(u16, msglen,
+			     sizeof(adapter->supported_rxdids)));
+		break;
+	case VIRTCHNL_OP_1588_PTP_GET_CAPS:
+		memcpy(&adapter->ptp.hw_caps, msg,
+		       min_t(u16, msglen, sizeof(adapter->ptp.hw_caps)));
+		/* process any state change needed due to new capabilities */
+		iavf_ptp_process_caps(adapter);
+		break;
+	case VIRTCHNL_OP_1588_PTP_GET_TIME:
+		iavf_virtchnl_ptp_get_time(adapter, msg, msglen);
+		break;
+	case VIRTCHNL_OP_1588_PTP_TX_TIMESTAMP:
+		iavf_virtchnl_ptp_tx_timestamp(adapter, msg, msglen);
+		break;
 	case VIRTCHNL_OP_ENABLE_QUEUES:
 		/* enable transmits */
 		if (adapter->state == __IAVF_RUNNING) {
@@ -2372,18 +2713,6 @@ void iavf_virtchnl_completion(struct iavf_adapter *adapter,
 		 */
 		if (v_opcode != adapter->current_op)
 			return;
-		break;
-	case VIRTCHNL_OP_IWARP:
-		/* Gobble zero-length replies from the PF. They indicate that
-		 * a previous message was received OK, and the client doesn't
-		 * care about that.
-		 */
-		if (msglen && CLIENT_ENABLED(adapter))
-			iavf_notify_client_message(&adapter->vsi, msg, msglen);
-		break;
-	case VIRTCHNL_OP_CONFIG_IWARP_IRQ_MAP:
-		adapter->client_pending &=
-				~(BIT(VIRTCHNL_OP_CONFIG_IWARP_IRQ_MAP));
 		break;
 	case VIRTCHNL_OP_GET_RSS_HENA_CAPS: {
 		struct virtchnl_rss_hena *vrh = (struct virtchnl_rss_hena *)msg;

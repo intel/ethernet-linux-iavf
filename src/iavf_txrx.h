@@ -272,6 +272,7 @@ static inline unsigned int iavf_txd_use_count(unsigned int size)
 #define IAVF_TX_FLAGS_FD_SB			BIT(9)
 #define IAVF_TX_FLAGS_TUNNEL			BIT(10)
 #define IAVF_TX_FLAGS_HW_OUTER_SINGLE_VLAN	BIT(11)
+#define IAVF_TX_FLAGS_TSTAMP			BIT(12)
 #define IAVF_TX_FLAGS_VLAN_MASK			0xffff0000
 #define IAVF_TX_FLAGS_VLAN_PRIO_MASK		0xe0000000
 #define IAVF_TX_FLAGS_VLAN_PRIO_SHIFT		29
@@ -406,6 +407,8 @@ struct iavf_ring {
 	bool arm_wb;		/* do something to arm write back */
 	u8 packet_stride;
 
+	u8 rxdid;			/* Rx descriptor format */
+
 	u16 flags;
 #define IAVF_TXR_FLAGS_WB_ON_ITR		BIT(0)
 #define IAVF_RXR_FLAGS_BUILD_SKB_ENABLED	BIT(1)
@@ -413,6 +416,7 @@ struct iavf_ring {
 #define IAVF_TXRX_FLAGS_VLAN_TAG_LOC_L2TAG1	BIT(3)
 #define IAVF_TXR_FLAGS_VLAN_TAG_LOC_L2TAG2	BIT(4)
 #define IAVF_RXR_FLAGS_VLAN_TAG_LOC_L2TAG2_2	BIT(5)
+#define IAVF_TXRX_FLAGS_HW_TSTAMP		BIT(6)
 
 	/* stats structs */
 	struct iavf_queue_stats	stats;
@@ -546,7 +550,6 @@ void iavf_xdp_flush(struct net_device *dev);
 /**
  * iavf_xmit_descriptor_count - calculate number of Tx descriptors needed
  * @skb:     send buffer
- * @tx_ring: ring to send buffer on
  *
  * Returns number of data descriptors needed for this skb. Returns 0 to indicate
  * there is not enough descriptors available in this ring since we need at least
