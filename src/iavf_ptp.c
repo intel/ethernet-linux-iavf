@@ -196,46 +196,6 @@ bool iavf_ptp_cap_supported(struct iavf_adapter *adapter, u32 cap)
 }
 
 /**
- * iavf_allocate_ptp_cmd - Allocate a PTP command message structure
- * @v_opcode: the virtchnl opcode
- * @msglen: length in bytes of the associated virtchnl structure
- *
- * Allocates a PTP command message and pre-fills it with the provided message
- * length and opcode.
- */
-static struct iavf_ptp_aq_cmd *iavf_allocate_ptp_cmd(enum virtchnl_ops v_opcode, u16 msglen)
-{
-	struct iavf_ptp_aq_cmd *cmd;
-
-	cmd = kzalloc(struct_size(cmd, msg, msglen), GFP_KERNEL);
-	if (!cmd)
-		return NULL;
-
-	cmd->v_opcode = v_opcode;
-	cmd->msglen = msglen;
-
-	return cmd;
-}
-
-/**
- * iavf_queue_ptp_cmd - Queue PTP command for sending over virtchnl
- * @adapter: private adapter structure
- * @cmd: the command structure to send
- *
- * Queue the given command structure into the PTP virtchnl command queue tos
- * end to the PF.
- */
-static void iavf_queue_ptp_cmd(struct iavf_adapter *adapter, struct iavf_ptp_aq_cmd *cmd)
-{
-	spin_lock(&adapter->ptp.aq_cmd_lock);
-	list_add_tail(&cmd->list, &adapter->ptp.aq_cmds);
-	spin_unlock(&adapter->ptp.aq_cmd_lock);
-
-	adapter->aq_required |= IAVF_FLAG_AQ_SEND_PTP_CMD;
-	mod_delayed_work(iavf_wq, &adapter->watchdog_task, 0);
-}
-
-/**
  * iavf_send_phc_read - Send request to read PHC time
  * @adapter: private adapter structure
  *
@@ -247,17 +207,17 @@ static void iavf_queue_ptp_cmd(struct iavf_adapter *adapter, struct iavf_ptp_aq_
  */
 static int iavf_send_phc_read(struct iavf_adapter *adapter)
 {
-	struct iavf_ptp_aq_cmd *cmd;
+	struct iavf_vc_msg *vc_msg;
 
 	if (!adapter->ptp.initialized)
 		return -EOPNOTSUPP;
 
-	cmd = iavf_allocate_ptp_cmd(VIRTCHNL_OP_1588_PTP_GET_TIME,
-				    sizeof(struct virtchnl_phc_time));
-	if (!cmd)
+	vc_msg = iavf_alloc_vc_msg(VIRTCHNL_OP_1588_PTP_GET_TIME,
+				   sizeof(struct virtchnl_phc_time));
+	if (!vc_msg)
 		return -ENOMEM;
 
-	iavf_queue_ptp_cmd(adapter, cmd);
+	iavf_queue_vc_msg(adapter, vc_msg);
 
 	return 0;
 }
@@ -443,7 +403,7 @@ static int iavf_ptp_settime64(struct ptp_clock_info *ptp, const struct timespec6
 {
 	struct iavf_adapter *adapter = clock_to_adapter(ptp);
 	struct virtchnl_phc_time *msg;
-	struct iavf_ptp_aq_cmd *cmd;
+	struct iavf_vc_msg *vc_msg;
 
 	if (!iavf_ptp_cap_supported(adapter, VIRTCHNL_1588_PTP_CAP_WRITE_PHC))
 		return -EACCES;
@@ -451,14 +411,14 @@ static int iavf_ptp_settime64(struct ptp_clock_info *ptp, const struct timespec6
 	if (!adapter->ptp.initialized)
 		return -ENODEV;
 
-	cmd = iavf_allocate_ptp_cmd(VIRTCHNL_OP_1588_PTP_SET_TIME, sizeof(*msg));
-	if (!cmd)
+	vc_msg = iavf_alloc_vc_msg(VIRTCHNL_OP_1588_PTP_SET_TIME, sizeof(*msg));
+	if (!vc_msg)
 		return -ENOMEM;
 
-	msg = (typeof(msg))cmd->msg;
+	msg = (typeof(msg))vc_msg->msg;
 	msg->time = timespec64_to_ns(ts);
 
-	iavf_queue_ptp_cmd(adapter, cmd);
+	iavf_queue_vc_msg(adapter, vc_msg);
 
 	return 0;
 }
@@ -491,7 +451,7 @@ static int iavf_ptp_adjtime(struct ptp_clock_info *ptp, s64 delta)
 {
 	struct iavf_adapter *adapter = clock_to_adapter(ptp);
 	struct virtchnl_phc_adj_time *msg;
-	struct iavf_ptp_aq_cmd *cmd;
+	struct iavf_vc_msg *vc_msg;
 
 	if (!iavf_ptp_cap_supported(adapter, VIRTCHNL_1588_PTP_CAP_WRITE_PHC))
 		return -EACCES;
@@ -499,14 +459,14 @@ static int iavf_ptp_adjtime(struct ptp_clock_info *ptp, s64 delta)
 	if (!adapter->ptp.initialized)
 		return -ENODEV;
 
-	cmd = iavf_allocate_ptp_cmd(VIRTCHNL_OP_1588_PTP_ADJ_TIME, sizeof(*msg));
-	if (!cmd)
+	vc_msg = iavf_alloc_vc_msg(VIRTCHNL_OP_1588_PTP_ADJ_TIME, sizeof(*msg));
+	if (!vc_msg)
 		return -ENOMEM;
 
-	msg = (typeof(msg))cmd->msg;
+	msg = (typeof(msg))vc_msg->msg;
 	msg->delta = delta;
 
-	iavf_queue_ptp_cmd(adapter, cmd);
+	iavf_queue_vc_msg(adapter, vc_msg);
 
 	return 0;
 }
@@ -523,7 +483,7 @@ static int iavf_ptp_adjfine(struct ptp_clock_info *ptp, long scaled_ppm)
 {
 	struct iavf_adapter *adapter = clock_to_adapter(ptp);
 	struct virtchnl_phc_adj_freq *msg;
-	struct iavf_ptp_aq_cmd *cmd;
+	struct iavf_vc_msg *vc_msg;
 
 	if (!iavf_ptp_cap_supported(adapter, VIRTCHNL_1588_PTP_CAP_WRITE_PHC))
 		return -EACCES;
@@ -531,14 +491,14 @@ static int iavf_ptp_adjfine(struct ptp_clock_info *ptp, long scaled_ppm)
 	if (!adapter->ptp.initialized)
 		return -ENODEV;
 
-	cmd = iavf_allocate_ptp_cmd(VIRTCHNL_OP_1588_PTP_ADJ_FREQ, sizeof(*msg));
-	if (!cmd)
+	vc_msg = iavf_alloc_vc_msg(VIRTCHNL_OP_1588_PTP_ADJ_FREQ, sizeof(*msg));
+	if (!vc_msg)
 		return -ENOMEM;
 
-	msg = (typeof(msg))cmd->msg;
+	msg = (typeof(msg))vc_msg->msg;
 	msg->scaled_ppm = (s64)scaled_ppm;
 
-	iavf_queue_ptp_cmd(adapter, cmd);
+	iavf_queue_vc_msg(adapter, vc_msg);
 
 	return 0;
 }
@@ -858,6 +818,17 @@ void iavf_ptp_init(struct iavf_adapter *adapter)
 	adapter->ptp.initialized = true;
 }
 
+static bool iavf_ptp_op_match(enum virtchnl_ops pending_op)
+{
+	if (pending_op == VIRTCHNL_OP_1588_PTP_GET_TIME ||
+	    pending_op == VIRTCHNL_OP_1588_PTP_SET_TIME ||
+	    pending_op == VIRTCHNL_OP_1588_PTP_ADJ_TIME ||
+	    pending_op == VIRTCHNL_OP_1588_PTP_ADJ_FREQ)
+		return true;
+
+	return false;
+}
+
 /**
  * iavf_ptp_release - Disable PTP support
  * @adapter: private adapter structure
@@ -866,22 +837,13 @@ void iavf_ptp_init(struct iavf_adapter *adapter)
  */
 void iavf_ptp_release(struct iavf_adapter *adapter)
 {
-	struct iavf_ptp_aq_cmd *cmd, *tmp;
-
 	if (!IS_ERR_OR_NULL(adapter->ptp.clock)) {
 		dev_info(&adapter->pdev->dev, "removing PTP clock %s\n", adapter->ptp.info.name);
 		ptp_clock_unregister(adapter->ptp.clock);
 		adapter->ptp.clock = NULL;
 	}
 
-	/* Cancel any remaining uncompleted PTP clock commands */
-	spin_lock(&adapter->ptp.aq_cmd_lock);
-	list_for_each_entry_safe(cmd, tmp, &adapter->ptp.aq_cmds, list) {
-		list_del(&cmd->list);
-		kfree(cmd);
-	}
-	adapter->aq_required &= ~IAVF_FLAG_AQ_SEND_PTP_CMD;
-	spin_unlock(&adapter->ptp.aq_cmd_lock);
+	iavf_flush_vc_msg_queue(adapter, iavf_ptp_op_match);
 
 	iavf_ptp_unmap_phc_addr(adapter);
 

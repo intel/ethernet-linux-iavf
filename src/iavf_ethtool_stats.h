@@ -351,7 +351,7 @@ iavf_add_queue_stats(u64 **data, struct iavf_ring *ring)
  * Format and copy the strings described by stats into the buffer pointed at
  * by p.
  **/
-static void __iavf_add_stat_strings(u8 **p, const struct iavf_stats stats[],
+static void __iavf_add_stat_strings(u8 **p, const struct iavf_stats *stats,
 				    const unsigned int size, ...)
 {
 	unsigned int i;

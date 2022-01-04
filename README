@@ -1,7 +1,7 @@
 Linux* Driver for Intel(R) Ethernet Adaptive Virtual Function
 =============================================================
 
-April 2, 2021
+November 3, 2021
 
 
 Contents
@@ -89,37 +89,6 @@ http://www.intel.com/support
 Building and Installation
 =========================
 
-To build a binary RPM package of this driver
---------------------------------------------
-Note: RPM functionality has only been tested in Red Hat distributions.
-
-1. Run the following command, where <x.x.x> is the version number for the
-   driver tar file.
-
-   # rpmbuild -tb iavf-<x.x.x>.tar.gz
-
-   NOTE: For the build to work properly, the currently running kernel MUST
-   match the version and configuration of the installed kernel sources. If
-   you have just recompiled the kernel, reboot the system before building.
-
-2. After building the RPM, the last few lines of the tool output contain the
-   location of the RPM file that was built. Install the RPM with one of the
-   following commands, where <RPM> is the location of the RPM file:
-
-   # rpm -Uvh <RPM>
-       or
-   # dnf/yum localinstall <RPM>
-
-NOTES:
-- To compile the driver on some kernel/arch combinations, you may need to
-install a package with the development version of libelf (e.g. libelf-dev,
-libelf-devel, elfutilsl-libelf-devel).
-- When compiling an out-of-tree driver, details will vary by distribution.
-However, you will usually need a kernel-devel RPM or some RPM that provides the
-kernel headers at a minimum. The RPM kernel-devel will usually fill in the link
-at /lib/modules/'uname -r'/build.
-
-
 To manually build the driver
 ----------------------------
 1. Move the virtual function driver tar file to the directory of your choice.
@@ -167,6 +136,44 @@ To manually build the driver
    that is being tested:
 
    # ping <IP_address>
+
+ 
+To build a binary RPM package of this driver
+--------------------------------------------
+Note: RPM functionality has only been tested in Red Hat distributions.
+
+1. Run the following command, where <x.x.x> is the version number for the
+   driver tar file.
+
+   # rpmbuild -tb iavf-<x.x.x>.tar.gz
+
+   NOTE: For the build to work properly, the currently running kernel MUST
+   match the version and configuration of the installed kernel sources. If
+   you have just recompiled the kernel, reboot the system before building.
+
+2. After building the RPM, the last few lines of the tool output contain the
+   location of the RPM file that was built. Install the RPM with one of the
+   following commands, where <RPM> is the location of the RPM file:
+
+   # rpm -Uvh <RPM>
+       or
+   # dnf/yum localinstall <RPM>
+
+3. If your distribution or kernel does not contain inbox support for auxiliary
+   bus, you must also install the auxiliary RPM:
+
+   # rpm -Uvh <iavf RPM> <auxiliary RPM>
+       or
+   # dnf/yum localinstall <iavf RPM> <auxiliary RPM>
+
+NOTES:
+- To compile the driver on some kernel/arch combinations, you may need to
+install a package with the development version of libelf (e.g. libelf-dev,
+libelf-devel, elfutilsl-libelf-devel).
+- When compiling an out-of-tree driver, details will vary by distribution.
+However, you will usually need a kernel-devel RPM or some RPM that provides the
+kernel headers at a minimum. The RPM kernel-devel will usually fill in the link
+at /lib/modules/'uname -r'/build.
 
 
 Command Line Parameters
@@ -234,6 +241,11 @@ NOTES:
 - VLAN protocols use the following EtherTypes:
     802.1Q = EtherType 0x8100
     802.1ad = EtherType 0x88A8
+- For QinQ traffic to work at MTU 1500, the L2 peer (switch port or another
+NIC) should be able to receive Ethernet frames of 1526 bytes. Some third-party
+NICs support a maximum Ethernet frame size of 1522 bytes at MTU 1500, which
+will cause QinQ traffic to fail. To work around this issue, restrict the MTU on
+the Intel Ethernet device to 1496.
 
 
 Double VLANs
@@ -333,8 +345,8 @@ the main VSI.
 To create traffic classes (TCs) on the interface:
 NOTE: Run all TC commands from the ../iproute2/tc/ directory.
 1. Use the tc command to create traffic classes. You can create a maximum of
-   16 TCs per interface on Intel(R) Ethernet 800 Series devices and
-   8 TCs per interface on Intel(R) Ethernet 700 Series devices.
+   16 TCs from the VM on Intel(R) Ethernet 800 Series devices and
+   4 TCs from the VM on Intel(R) Ethernet 700 Series devices.
 
    # tc qdisc add dev <ethX> root mqprio num_tc <tcs> map <priorities>
      queues <count1@offset1 ...> hw 1 mode channel shaper bw_rlimit
@@ -396,6 +408,41 @@ For example:
 
   # tc filter add dev <ethX> protocol ip ingress prio 1 flower ip_proto
      tcp dst_port 5555 skip_sw hw_tc 1
+
+
+RDMA in the VF
+--------------
+Devices based on the Intel(R) Ethernet 800 Series support RDMA in a Linux VF,
+on supported Windows or Linux hosts.
+
+The iavf driver supports the following RDMA protocols in the VF:
+- iWARP (Internet Wide Area RDMA Protocol)
+- RoCEv2 (RDMA over Converged Ethernet)
+NOTE: RDMA in the VF is not supported on Intel(R) Ethernet X722 Series devices.
+
+Refer to the README inside the irdma driver tarball for details on configuring
+RDMA in the VF.
+
+NOTE: To support VF RDMA, load the irdma driver on the host before creating
+VFs. Otherwise VF RDMA support may not be negotiated between the VF and PF
+driver.
+
+The iavf driver allocates MSI-X resources for the VF RDMA instance (irdma). The
+LAN iavf driver gets first priority and any leftover MSI-X interrupts are used
+for VF RDMA.
+
+
+Auxiliary Bus
+-------------
+Inter-Driver Communication (IDC) is the mechanism in which LAN drivers (such as
+iavf) communicate with peer drivers (such as irdma). Starting in kernel 5.11,
+Intel LAN and RDMA drivers use an auxiliary bus mechanism for IDC.
+
+RDMA functionality requires use of the auxiliary bus.
+
+If your kernel supports the auxiliary bus, the LAN and RDMA drivers will use
+the inbox auxiliary bus for IDC. For kernels lower than 5.11, the base driver
+will automatically install an out-of-tree auxiliary bus module.
 
 
 Performance Optimization

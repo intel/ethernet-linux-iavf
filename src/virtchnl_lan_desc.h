@@ -11,6 +11,9 @@
 
 /* Rx */
 /* For virtchnl_splitq_base_rx_flex desc members */
+#define VIRTCHNL_RXD_FLEX_RXDID_S		0
+#define VIRTCHNL_RXD_FLEX_RXDID_M		\
+	MAKEMASK(0xFUL, VIRTCHNL_RXD_FLEX_RXDID_S)
 #define VIRTCHNL_RXD_FLEX_PTYPE_S		0
 #define VIRTCHNL_RXD_FLEX_PTYPE_M		\
 	MAKEMASK(0x3FFUL, VIRTCHNL_RXD_FLEX_PTYPE_S)

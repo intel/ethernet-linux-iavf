@@ -15,21 +15,10 @@ struct iavf_adapter;
 /* bit indicating whether a 40bit timestamp is valid */
 #define IAVF_PTP_40B_TSTAMP_VALID BIT(0)
 
-/* structure used to queue PTP commands for processing */
-struct iavf_ptp_aq_cmd {
-	struct list_head list;
-	enum virtchnl_ops v_opcode;
-	u16 msglen;
-	u8 msg[];
-};
-
 /* fields used for PTP support */
 struct iavf_ptp {
 	wait_queue_head_t phc_time_waitqueue;
 	struct virtchnl_ptp_caps hw_caps;
-	struct list_head aq_cmds;
-	/* Lock protecting access to the AQ command list */
-	spinlock_t aq_cmd_lock;
 	struct hwtstamp_config hwtstamp_config;
 	u64 cached_phc_time;
 	unsigned long cached_phc_updated;
@@ -45,8 +34,6 @@ struct iavf_ptp {
 	struct ptp_clock *clock;
 #endif
 };
-
-void iavf_virtchnl_send_ptp_cmd(struct iavf_adapter *adapter);
 
 #if IS_ENABLED(CONFIG_PTP_1588_CLOCK)
 void iavf_ptp_init(struct iavf_adapter *adapter);

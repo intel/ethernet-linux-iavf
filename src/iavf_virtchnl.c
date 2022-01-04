@@ -3,6 +3,7 @@
 
 #include "iavf.h"
 #include "iavf_prototype.h"
+#include "iavf_idc.h"
 
 /* busy wait delay in msec */
 #define IAVF_BUSY_WAIT_DELAY 10
@@ -17,8 +18,8 @@
  *
  * Send message to PF and print status if failure.
  **/
-static int iavf_send_pf_msg(struct iavf_adapter *adapter,
-			    enum virtchnl_ops op, u8 *msg, u16 len)
+static enum iavf_status iavf_send_pf_msg(struct iavf_adapter *adapter,
+					 enum virtchnl_ops op, u8 *msg, u16 len)
 {
 	struct iavf_hw *hw = &adapter->hw;
 	enum iavf_status err;
@@ -55,6 +56,36 @@ int iavf_send_api_ver(struct iavf_adapter *adapter)
 }
 
 /**
+ * iavf_poll_virtchnl_msg - poll for virtchnl msg matching the requested_op
+ * @hw: HW configuration structure
+ * @event: event to populate on success
+ * @op_to_poll: requested virtchnl op to poll for
+ */
+static int
+iavf_poll_virtchnl_msg(struct iavf_hw *hw, struct iavf_arq_event_info *event,
+		       enum virtchnl_ops op_to_poll)
+{
+	enum virtchnl_ops received_op;
+	enum iavf_status status;
+
+	while (1) {
+		/* When the AQ is empty, iavf_clean_arq_element will return
+		 * nonzero and this loop will terminate.
+		 */
+		status = iavf_clean_arq_element(hw, event, NULL);
+		if (status)
+			return status;
+		received_op =
+		    (enum virtchnl_ops)le32_to_cpu(event->desc.cookie_high);
+		if (op_to_poll == received_op)
+			break;
+	}
+
+	status = (enum iavf_status)le32_to_cpu(event->desc.cookie_low);
+	return status;
+}
+
+/**
  * iavf_verify_api_ver
  * @adapter: adapter structure
  *
@@ -65,47 +96,28 @@ int iavf_send_api_ver(struct iavf_adapter *adapter)
  **/
 int iavf_verify_api_ver(struct iavf_adapter *adapter)
 {
-	struct virtchnl_version_info *pf_vvi;
-	struct iavf_hw *hw = &adapter->hw;
 	struct iavf_arq_event_info event;
-	enum virtchnl_ops op;
-	enum iavf_status err;
+	int err;
 
 	event.buf_len = IAVF_MAX_AQ_BUF_SIZE;
-	event.msg_buf = kzalloc(event.buf_len, GFP_KERNEL);
-	if (!event.msg_buf) {
-		err = -ENOMEM;
-		goto out;
+	event.msg_buf = kzalloc(IAVF_MAX_AQ_BUF_SIZE, GFP_KERNEL);
+	if (!event.msg_buf)
+		return -ENOMEM;
+
+	err = iavf_poll_virtchnl_msg(&adapter->hw, &event, VIRTCHNL_OP_VERSION);
+	if (!err) {
+		struct virtchnl_version_info *pf_vvi =
+			(struct virtchnl_version_info *)event.msg_buf;
+
+		adapter->pf_version = *pf_vvi;
+
+		if ((pf_vvi->major > VIRTCHNL_VERSION_MAJOR) ||
+		    ((pf_vvi->major == VIRTCHNL_VERSION_MAJOR) &&
+		     (pf_vvi->minor > VIRTCHNL_VERSION_MINOR)))
+			err = -EIO;
 	}
 
-	while (1) {
-		err = iavf_clean_arq_element(hw, &event, NULL);
-		/* When the AQ is empty, iavf_clean_arq_element will return
-		 * nonzero and this loop will terminate.
-		 */
-		if (err)
-			goto out_alloc;
-		op =
-		    (enum virtchnl_ops)le32_to_cpu(event.desc.cookie_high);
-		if (op == VIRTCHNL_OP_VERSION)
-			break;
-	}
-
-	err = (enum iavf_status)le32_to_cpu(event.desc.cookie_low);
-	if (err)
-		goto out_alloc;
-
-	pf_vvi = (struct virtchnl_version_info *)event.msg_buf;
-	adapter->pf_version = *pf_vvi;
-
-	if ((pf_vvi->major > VIRTCHNL_VERSION_MAJOR) ||
-	    ((pf_vvi->major == VIRTCHNL_VERSION_MAJOR) &&
-	     (pf_vvi->minor > VIRTCHNL_VERSION_MINOR)))
-		err = -EIO;
-
-out_alloc:
 	kfree(event.msg_buf);
-out:
 	return err;
 }
 
@@ -138,6 +150,7 @@ int iavf_send_vf_config_msg(struct iavf_adapter *adapter)
 	       VIRTCHNL_VF_OFFLOAD_ADQ_V2 |
 #endif /* __TC_MQPRIO_MODE_MAX */
 	       VIRTCHNL_VF_OFFLOAD_USO |
+	       VIRTCHNL_VF_CAP_RDMA |
 #ifdef VIRTCHNL_VF_CAP_ADV_LINK_SPEED
 	       VIRTCHNL_VF_OFFLOAD_ENCAP_CSUM |
 	       VIRTCHNL_VF_CAP_ADV_LINK_SPEED;
@@ -268,33 +281,17 @@ int iavf_get_vf_config(struct iavf_adapter *adapter)
 {
 	struct iavf_hw *hw = &adapter->hw;
 	struct iavf_arq_event_info event;
-	enum virtchnl_ops op;
-	enum iavf_status err;
+	int err;
 	u16 len;
 
-	len =  sizeof(struct virtchnl_vf_resource) +
+	len = sizeof(struct virtchnl_vf_resource) +
 		IAVF_MAX_VF_VSI * sizeof(struct virtchnl_vsi_resource);
 	event.buf_len = len;
-	event.msg_buf = kzalloc(event.buf_len, GFP_KERNEL);
-	if (!event.msg_buf) {
-		err = -ENOMEM;
-		goto out;
-	}
+	event.msg_buf = kzalloc(len, GFP_KERNEL);
+	if (!event.msg_buf)
+		return -ENOMEM;
 
-	while (1) {
-		/* When the AQ is empty, iavf_clean_arq_element will return
-		 * nonzero and this loop will terminate.
-		 */
-		err = iavf_clean_arq_element(hw, &event, NULL);
-		if (err)
-			goto out_alloc;
-		op =
-		    (enum virtchnl_ops)le32_to_cpu(event.desc.cookie_high);
-		if (op == VIRTCHNL_OP_GET_VF_RESOURCES)
-			break;
-	}
-
-	err = (enum iavf_status)le32_to_cpu(event.desc.cookie_low);
+	err = iavf_poll_virtchnl_msg(hw, &event, VIRTCHNL_OP_GET_VF_RESOURCES);
 	memcpy(adapter->vf_res, event.msg_buf, min(event.msg_len, len));
 
 	/* some PFs send more queues than we should have so validate that
@@ -303,129 +300,74 @@ int iavf_get_vf_config(struct iavf_adapter *adapter)
 	if (!err)
 		iavf_validate_num_queues(adapter);
 	iavf_vf_parse_hw_config(hw, adapter->vf_res);
-out_alloc:
+
 	kfree(event.msg_buf);
-out:
 	return err;
 }
 
 int iavf_get_vf_vlan_v2_caps(struct iavf_adapter *adapter)
 {
-	struct iavf_hw *hw = &adapter->hw;
 	struct iavf_arq_event_info event;
-	enum virtchnl_ops op;
-	enum iavf_status err;
+	int err;
 	u16 len;
 
-	len =  sizeof(struct virtchnl_vlan_caps);
+	len = sizeof(struct virtchnl_vlan_caps);
 	event.buf_len = len;
-	event.msg_buf = kzalloc(event.buf_len, GFP_KERNEL);
-	if (!event.msg_buf) {
-		err = -ENOMEM;
-		goto out;
-	}
+	event.msg_buf = kzalloc(len, GFP_KERNEL);
+	if (!event.msg_buf)
+		return -ENOMEM;
 
-	while (1) {
-		/* When the AQ is empty, iavf_clean_arq_element will return
-		 * nonzero and this loop will terminate.
-		 */
-		err = iavf_clean_arq_element(hw, &event, NULL);
-		if (err)
-			goto out_alloc;
-		op =
-		    (enum virtchnl_ops)le32_to_cpu(event.desc.cookie_high);
-		if (op == VIRTCHNL_OP_GET_OFFLOAD_VLAN_V2_CAPS)
-			break;
-	}
+	err = iavf_poll_virtchnl_msg(&adapter->hw, &event,
+				     VIRTCHNL_OP_GET_OFFLOAD_VLAN_V2_CAPS);
+	if (!err)
+		memcpy(&adapter->vlan_v2_caps, event.msg_buf,
+		       min(event.msg_len, len));
 
-	err = (enum iavf_status)le32_to_cpu(event.desc.cookie_low);
-	if (err)
-		goto out_alloc;
-
-	memcpy(&adapter->vlan_v2_caps, event.msg_buf, min(event.msg_len, len));
-out_alloc:
 	kfree(event.msg_buf);
-out:
 	return err;
 }
 
 int iavf_get_vf_supported_rxdids(struct iavf_adapter *adapter)
 {
-	struct iavf_hw *hw = &adapter->hw;
 	struct iavf_arq_event_info event;
-	enum virtchnl_ops op;
-	enum iavf_status err;
+	int err;
 	u16 len;
 
-	len =  sizeof(struct virtchnl_supported_rxdids);
+	len = sizeof(struct virtchnl_supported_rxdids);
 	event.buf_len = len;
-	event.msg_buf = kzalloc(event.buf_len, GFP_KERNEL);
-	if (!event.msg_buf) {
-		err = -ENOMEM;
-		goto out;
-	}
+	event.msg_buf = kzalloc(len, GFP_KERNEL);
+	if (!event.msg_buf)
+		return -ENOMEM;
 
-	while (1) {
-		/* When the AQ is empty, iavf_clean_arq_element will return
-		 * nonzero and this loop will terminate.
-		 */
-		err = iavf_clean_arq_element(hw, &event, NULL);
-		if (err)
-			goto out_alloc;
-		op =
-		    (enum virtchnl_ops)le32_to_cpu(event.desc.cookie_high);
-		if (op == VIRTCHNL_OP_GET_SUPPORTED_RXDIDS)
-			break;
-	}
+	err = iavf_poll_virtchnl_msg(&adapter->hw, &event,
+				     VIRTCHNL_OP_GET_SUPPORTED_RXDIDS);
+	if (!err)
+		memcpy(&adapter->supported_rxdids, event.msg_buf,
+		       min(event.msg_len, len));
 
-	err = (enum iavf_status)le32_to_cpu(event.desc.cookie_low);
-	if (err)
-		goto out_alloc;
-
-	memcpy(&adapter->supported_rxdids, event.msg_buf, min(event.msg_len, len));
-out_alloc:
 	kfree(event.msg_buf);
-out:
 	return err;
 }
 
 int iavf_get_vf_ptp_caps(struct iavf_adapter *adapter)
 {
-	struct iavf_hw *hw = &adapter->hw;
 	struct iavf_arq_event_info event;
-	enum virtchnl_ops op;
-	enum iavf_status err;
+	int err;
 	u16 len;
 
-	len =  sizeof(struct virtchnl_ptp_caps);
+	len = sizeof(struct virtchnl_ptp_caps);
 	event.buf_len = len;
-	event.msg_buf = kzalloc(event.buf_len, GFP_KERNEL);
-	if (!event.msg_buf) {
-		err = -ENOMEM;
-		goto out;
-	}
+	event.msg_buf = kzalloc(len, GFP_KERNEL);
+	if (!event.msg_buf)
+		return -ENOMEM;
 
-	while (1) {
-		/* When the AQ is empty, iavf_clean_arq_element will return
-		 * nonzero and this loop will terminate.
-		 */
-		err = iavf_clean_arq_element(hw, &event, NULL);
-		if (err)
-			goto out_alloc;
-		op =
-		    (enum virtchnl_ops)le32_to_cpu(event.desc.cookie_high);
-		if (op == VIRTCHNL_OP_1588_PTP_GET_CAPS)
-			break;
-	}
+	err = iavf_poll_virtchnl_msg(&adapter->hw, &event,
+				     VIRTCHNL_OP_1588_PTP_GET_CAPS);
+	if (!err)
+		memcpy(&adapter->ptp.hw_caps, event.msg_buf,
+		       min(event.msg_len, len));
 
-	err = (enum iavf_status)le32_to_cpu(event.desc.cookie_low);
-	if (err)
-		goto out_alloc;
-
-	memcpy(&adapter->ptp.hw_caps, event.msg_buf, min(event.msg_len, len));
-out_alloc:
 	kfree(event.msg_buf);
-out:
 	return err;
 }
 
@@ -795,6 +737,8 @@ static void iavf_mac_add_ok(struct iavf_adapter *adapter)
 	spin_lock_bh(&adapter->mac_vlan_list_lock);
 	list_for_each_entry_safe(f, ftmp, &adapter->mac_filter_list, list) {
 		f->is_new_mac = false;
+		if (!f->add && !f->add_handled)
+			f->add_handled = true;
 	}
 	spin_unlock_bh(&adapter->mac_vlan_list_lock);
 }
@@ -814,6 +758,9 @@ static void iavf_mac_add_reject(struct iavf_adapter *adapter)
 	list_for_each_entry_safe(f, ftmp, &adapter->mac_filter_list, list) {
 		if (f->remove && ether_addr_equal(f->macaddr, netdev->dev_addr))
 			f->remove = false;
+
+		if (!f->add && !f->add_handled)
+			f->add_handled = true;
 
 		if (f->is_new_mac) {
 			list_del(&f->list);
@@ -1531,59 +1478,124 @@ void iavf_disable_vlan_insertion_v2(struct iavf_adapter *adapter, u16 tpid)
 }
 
 /**
- * iavf_virtchnl_send_ptp_cmd - Send one queued PTP command
+ * iavf_send_vc_msg - Send one queued virtchnl message
  * @adapter: adapter private structure
  *
- * De-queue one PTP command request and send the command message to the PF.
- * Clear IAVF_FLAG_AQ_SEND_PTP_CMD if no more messages are left to send.
+ * De-queue one command request and send the command message to the PF.
+ * Clear IAVF_FLAG_AQ_MSG_QUEUE_PENDING if no more messages are left to send.
  */
-void iavf_virtchnl_send_ptp_cmd(struct iavf_adapter *adapter)
+void iavf_send_vc_msg(struct iavf_adapter *adapter)
 {
 	struct device *dev = &adapter->pdev->dev;
-	struct iavf_ptp_aq_cmd *cmd;
+	struct iavf_vc_msg *vc_msg;
 	int err;
 
-	if (WARN_ON(!adapter->ptp.initialized)) {
-		/* This shouldn't be possible to hit, since no messages should
-		 * be queued if PTP is not initialized.
-		 */
-		adapter->aq_required &= ~IAVF_FLAG_AQ_SEND_PTP_CMD;
-		return;
-	}
-
-	spin_lock(&adapter->ptp.aq_cmd_lock);
-	cmd = list_first_entry_or_null(&adapter->ptp.aq_cmds, struct iavf_ptp_aq_cmd, list);
-	if (!cmd) {
-		/* no further PTP messages to send */
-		adapter->aq_required &= ~IAVF_FLAG_AQ_SEND_PTP_CMD;
+	spin_lock(&adapter->vc_msg_queue.lock);
+	vc_msg = list_first_entry_or_null(&adapter->vc_msg_queue.msgs,
+					  struct iavf_vc_msg, list);
+	if (!vc_msg) {
+		/* no further messages to send */
+		adapter->aq_required &= ~IAVF_FLAG_AQ_MSG_QUEUE_PENDING;
 		goto out_unlock;
 	}
 
 	if (adapter->current_op != VIRTCHNL_OP_UNKNOWN) {
 		/* bail because we already have a command pending */
-		dev_err(dev, "Cannot send PTP command %d, command %d pending\n",
-			cmd->v_opcode, adapter->current_op);
+		dev_err(dev, "Cannot send virtchnl command %s-%d, command %s-%d pending\n",
+			virtchnl_op_str(vc_msg->v_opcode), vc_msg->v_opcode,
+			virtchnl_op_str(adapter->current_op),
+			adapter->current_op);
 		goto out_unlock;
 	}
 
-	err = iavf_send_pf_msg(adapter, cmd->v_opcode, cmd->msg, cmd->msglen);
+	err = iavf_send_pf_msg(adapter, vc_msg->v_opcode, vc_msg->msg,
+			       vc_msg->msglen);
 	if (!err) {
 		/* Command was sent without errors, so we can remove it from
 		 * the list and discard it.
 		 */
-		list_del(&cmd->list);
-		kfree(cmd);
+		list_del(&vc_msg->list);
+		kfree(vc_msg);
 	} else {
 		/* We failed to send the command, try again next cycle */
-		dev_warn(dev, "Failed to send PTP command %d\n", cmd->v_opcode);
+		dev_warn(dev, "Failed to send virtchnl command %s-%d\n",
+			 virtchnl_op_str(vc_msg->v_opcode), vc_msg->v_opcode);
 	}
 
-	if (list_empty(&adapter->ptp.aq_cmds))
-		/* no further PTP messages to send */
-		adapter->aq_required &= ~IAVF_FLAG_AQ_SEND_PTP_CMD;
+	if (list_empty(&adapter->vc_msg_queue.msgs))
+		/* no further messages to send */
+		adapter->aq_required &= ~IAVF_FLAG_AQ_MSG_QUEUE_PENDING;
 
 out_unlock:
-	spin_unlock(&adapter->ptp.aq_cmd_lock);
+	spin_unlock(&adapter->vc_msg_queue.lock);
+}
+
+/**
+ * iavf_flush_vc_msg_queue - remove and delete any/all matching command(s)
+ * @adapter: private adapter structure
+ * @op_match: function pointer used for finding ops that match pending_op
+ *
+ * All commands that match based on the op_match function passed in will be
+ * removed from the queue and deleted.
+ */
+void
+iavf_flush_vc_msg_queue(struct iavf_adapter *adapter,
+			bool (*op_match)(enum virtchnl_ops pending_op))
+{
+	struct iavf_vc_msg *vc_msg, *tmp;
+
+	/* Cancel any remaining uncompleted commands that match */
+	spin_lock(&adapter->vc_msg_queue.lock);
+	list_for_each_entry_safe(vc_msg, tmp, &adapter->vc_msg_queue.msgs,
+				 list) {
+		if (op_match(vc_msg->v_opcode)) {
+			list_del(&vc_msg->list);
+			kfree(vc_msg);
+		}
+	}
+	if (list_empty(&adapter->vc_msg_queue.msgs))
+		adapter->aq_required &= ~IAVF_FLAG_AQ_MSG_QUEUE_PENDING;
+	spin_unlock(&adapter->vc_msg_queue.lock);
+}
+
+/**
+ * iavf_alloc_vc_msg - Allocate a virtchnl message for the message queue
+ * @v_opcode: the virtchnl opcode
+ * @msglen: length in bytes of the associated virtchnl structure
+ *
+ * Allocates a virtchnl message for the message queue and pre-fills it with the
+ * provided message length and opcode.
+ */
+struct iavf_vc_msg *iavf_alloc_vc_msg(enum virtchnl_ops v_opcode, u16 msglen)
+{
+	struct iavf_vc_msg *vc_msg;
+
+	vc_msg = kzalloc(struct_size(vc_msg, msg, msglen), GFP_KERNEL);
+	if (!vc_msg)
+		return NULL;
+
+	vc_msg->v_opcode = v_opcode;
+	vc_msg->msglen = msglen;
+
+	return vc_msg;
+}
+
+/**
+ * iavf_queue_vc_msg - Queue message to send over virtchnl
+ * @adapter: private adapter structure
+ * @vc_msg: the virtchnl message to queue
+ *
+ * Queue the given command structure into the virtchnl message queue to
+ * send to the PF.
+ */
+void iavf_queue_vc_msg(struct iavf_adapter *adapter, struct iavf_vc_msg *vc_msg)
+{
+	spin_lock(&adapter->vc_msg_queue.lock);
+	list_add_tail(&vc_msg->list, &adapter->vc_msg_queue.msgs);
+	spin_unlock(&adapter->vc_msg_queue.lock);
+
+	adapter->aq_required |= IAVF_FLAG_AQ_MSG_QUEUE_PENDING;
+	mod_delayed_work(iavf_wq, &adapter->watchdog_task, 0);
 }
 
 #define IAVF_MAX_SPEED_STRLEN        13
@@ -1948,7 +1960,7 @@ void iavf_del_cloud_filter(struct iavf_adapter *adapter)
  *
  * Request that the PF reset this VF. No response is expected.
  **/
-int iavf_request_reset(struct iavf_adapter *adapter)
+enum iavf_status iavf_request_reset(struct iavf_adapter *adapter)
 {
 	enum iavf_status status;
 	/* Don't check CURRENT_OP - this is always higher priority */
@@ -2289,6 +2301,30 @@ out_free_skb:
 }
 
 /**
+ * iavf_virtchnl_rdma_irq_map - Handle receive of IRQ mapping message from PF
+ * @adapter: private adapter structure
+ * @status: result of the received virtchnl message
+ *
+ * Called when the VF gets a VIRTCHNL_OP_RDMA_CONFIG_IRQ_MAP or
+ * VIRTCHNL_OP_RDMA_RELEASE_IRQ_MAP message from the PF.
+ */
+static void
+iavf_virtchnl_rdma_irq_map(struct iavf_adapter *adapter,
+			   enum iavf_status status)
+{
+	if (adapter->rdma.vc_op_state != IAVF_RDMA_VC_OP_PENDING)
+		dev_warn(&adapter->pdev->dev, "Unexpected vc_op_state %u\n",
+			 adapter->rdma.vc_op_state);
+
+	if (!status)
+		adapter->rdma.vc_op_state = IAVF_RDMA_VC_OP_COMPLETE;
+	else
+		adapter->rdma.vc_op_state = IAVF_RDMA_VC_OP_FAILED;
+
+	wake_up(&adapter->rdma.vc_op_waitqueue);
+}
+
+/**
  * iavf_virtchnl_completion
  * @adapter: adapter structure
  * @v_opcode: opcode sent by PF
@@ -2356,10 +2392,6 @@ void iavf_virtchnl_completion(struct iavf_adapter *adapter,
 					netif_tx_start_all_queues(netdev);
 					netif_carrier_on(netdev);
 				}
-				if (!ether_addr_equal(netdev->dev_addr,
-						      adapter->hw.mac.addr))
-					iavf_replace_primary_mac
-						(adapter, netdev->dev_addr);
 			} else {
 				netif_tx_stop_all_queues(netdev);
 				netif_carrier_off(netdev);
@@ -2412,7 +2444,8 @@ void iavf_virtchnl_completion(struct iavf_adapter *adapter,
 				iavf_stat_str(&adapter->hw, v_retval));
 			iavf_mac_add_reject(adapter);
 			/* restore administratively set mac address */
-			ether_addr_copy(netdev->dev_addr, adapter->hw.mac.addr);
+			ether_addr_copy(adapter->hw.mac.addr, netdev->dev_addr);
+			wake_up(&adapter->vc_waitqueue);
 			break;
 		case VIRTCHNL_OP_DEL_VLAN:
 			dev_err(&adapter->pdev->dev, "Failed to delete VLAN filter, error %s\n",
@@ -2529,8 +2562,12 @@ void iavf_virtchnl_completion(struct iavf_adapter *adapter,
 	case VIRTCHNL_OP_ADD_ETH_ADDR:
 		if (!v_retval)
 			iavf_mac_add_ok(adapter);
-		if (!ether_addr_equal(netdev->dev_addr, adapter->hw.mac.addr))
-			ether_addr_copy(adapter->hw.mac.addr, netdev->dev_addr);
+		if (!ether_addr_equal(netdev->dev_addr, adapter->hw.mac.addr)) {
+			netif_addr_lock_bh(netdev);
+			ether_addr_copy(netdev->dev_addr, adapter->hw.mac.addr);
+			netif_addr_unlock_bh(netdev);
+		}
+		wake_up(&adapter->vc_waitqueue);
 		break;
 	case VIRTCHNL_OP_GET_STATS: {
 		struct iavf_eth_stats *stats =
@@ -2561,9 +2598,11 @@ void iavf_virtchnl_completion(struct iavf_adapter *adapter,
 			/* restore current mac address */
 			ether_addr_copy(adapter->hw.mac.addr, netdev->dev_addr);
 		} else {
+			netif_addr_lock_bh(netdev);
 			/* refresh current mac address if changed */
 			ether_addr_copy(netdev->perm_addr,
 					adapter->hw.mac.addr);
+			netif_addr_unlock_bh(netdev);
 		}
 
 		iavf_parse_vf_resource_msg(adapter);
@@ -2606,6 +2645,11 @@ void iavf_virtchnl_completion(struct iavf_adapter *adapter,
 					&adapter->crit_section))
 			usleep_range(500, 1000);
 
+		/* Request VLAN offload settings */
+		if (VLAN_V2_ALLOWED(adapter))
+			iavf_set_vlan_offload_features(adapter, 0,
+						       netdev->features);
+
 		iavf_set_queue_vlan_tag_loc(adapter);
 
 		was_mac_changed = !ether_addr_equal(netdev->dev_addr,
@@ -2622,6 +2666,7 @@ void iavf_virtchnl_completion(struct iavf_adapter *adapter,
 
 			f->is_new_mac = true;
 			f->add = true;
+			f->add_handled = false;
 			f->remove = false;
 		}
 
@@ -2657,7 +2702,9 @@ void iavf_virtchnl_completion(struct iavf_adapter *adapter,
 			spin_unlock_bh(&adapter->cloud_filter_list_lock);
 		}
 
+		netif_addr_lock_bh(netdev);
 		ether_addr_copy(netdev->dev_addr, adapter->hw.mac.addr);
+		netif_addr_unlock_bh(netdev);
 
 		adapter->aq_required |= IAVF_FLAG_AQ_ADD_MAC_FILTER;
 		adapter->aq_required |= IAVF_FLAG_AQ_ADD_VLAN_FILTER;
@@ -2749,13 +2796,13 @@ void iavf_virtchnl_completion(struct iavf_adapter *adapter,
 		}
 		spin_unlock_bh(&adapter->cloud_filter_list_lock);
 		if (!v_retval)
-			dev_info(&adapter->pdev->dev,
-				 "Cloud filters are added\n");
-			/* if not done, set channel specific attribute
-			 * such as "is it ADQ enabled", "queues are ADD ena",
-			 * "vectors are ADQ ena" or not
-			 */
-			iavf_setup_ch_info(adapter, adapter->flags);
+			dev_dbg(&adapter->pdev->dev,
+				"Cloud filters are added\n");
+		/* if not done, set channel specific attribute
+		 * such as "is it ADQ enabled", "queues are ADD ena",
+		 * "vectors are ADQ ena" or not
+		 */
+		iavf_setup_ch_info(adapter, adapter->flags);
 		}
 		break;
 	case VIRTCHNL_OP_DEL_CLOUD_FILTER: {
@@ -2775,12 +2822,12 @@ void iavf_virtchnl_completion(struct iavf_adapter *adapter,
 		}
 		spin_unlock_bh(&adapter->cloud_filter_list_lock);
 		if (!v_retval)
-			dev_info(&adapter->pdev->dev,
-				 "Cloud filters are deleted\n");
-			/* if active ADQ filters for channels reached zero,
-			 * put the rings, vectors back in non-ADQ state
-			 */
-			iavf_clear_ch_info(adapter);
+			dev_dbg(&adapter->pdev->dev,
+				"Cloud filters are deleted\n");
+		/* if active ADQ filters for channels reached zero,
+		 * put the rings, vectors back in non-ADQ state
+		 */
+		iavf_clear_ch_info(adapter);
 		}
 		break;
 	case VIRTCHNL_OP_ENABLE_VLAN_STRIPPING:
@@ -2798,6 +2845,37 @@ void iavf_virtchnl_completion(struct iavf_adapter *adapter,
 		 */
 		if (!v_retval)
 			iavf_netdev_features_vlan_strip_set(netdev, false);
+		break;
+	case VIRTCHNL_OP_RDMA:
+		/* IAVF_RDMA_VC_OP_PENDING is only set for the synchronous
+		 * version of vc_send, so make sure we handle both cases
+		 */
+		if (adapter->rdma.vc_op_state == IAVF_RDMA_VC_OP_PENDING) {
+			if (!v_retval) {
+				memcpy(adapter->rdma.recv_sync_msg, msg,
+				       msglen);
+				adapter->rdma.recv_sync_msg_size = msglen;
+				adapter->rdma.vc_op_state =
+					IAVF_RDMA_VC_OP_COMPLETE;
+			} else {
+				adapter->rdma.vc_op_state =
+					IAVF_RDMA_VC_OP_FAILED;
+				dev_err(&adapter->pdev->dev, "PF returned error %d to our request %s-%d\n",
+					v_retval, virtchnl_op_str(v_opcode),
+					v_opcode);
+			}
+
+			wake_up(&adapter->rdma.vc_op_waitqueue);
+		} else {
+			/* asynchronous version of vc_send expects vc_receive to
+			 * be called on reception of a VIRTCHNL_OP_RDMA message
+			 */
+			iavf_idc_vc_receive(adapter, msg, msglen);
+		}
+		break;
+	case VIRTCHNL_OP_CONFIG_RDMA_IRQ_MAP:
+	case VIRTCHNL_OP_RELEASE_RDMA_IRQ_MAP:
+		iavf_virtchnl_rdma_irq_map(adapter, v_retval);
 		break;
 	default:
 		if (adapter->current_op && (v_opcode != adapter->current_op))
