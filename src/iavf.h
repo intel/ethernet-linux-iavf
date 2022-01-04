@@ -381,10 +381,14 @@ iavf_set_wb_on_itr(struct iavf_hw *hw, struct iavf_q_vector *qv)
 struct iavf_mac_filter {
 	struct list_head list;
 	u8 macaddr[ETH_ALEN];
-	bool is_new_mac;	/* filter is new, wait for PF decision */
-	bool remove;		/* filter needs to be removed */
-	bool add;		/* filter needs to be added */
-	bool is_primary;	/* filter is a default VF MAC */
+	struct {
+		u8 is_new_mac:1;    /* filter is new, wait for PF decision */
+		u8 remove:1;	    /* filter needs to be removed */
+		u8 add:1;	    /* filter needs to be added */
+		u8 is_primary:1;    /* filter is a default VF MAC */
+		u8 add_handled:1;   /* received response from PF for filter add */
+		u8 padding:3;
+	};
 };
 
 #define IAVF_VLAN(vid, tpid) ((struct iavf_vlan){ vid, tpid })
@@ -482,11 +486,45 @@ struct iavf_cloud_filter {
 #define IAVF_RESET_WAIT_DETECTED_COUNT	500
 #define IAVF_RESET_WAIT_COMPLETE_COUNT	2000
 
+/* structure used for the virtchnl message queue */
+struct iavf_vc_msg {
+	struct list_head list;
+	enum virtchnl_ops v_opcode;
+	u16 msglen;
+	u8 msg[];
+};
+
+struct iavf_vc_msg_queue {
+	struct list_head msgs;
+	/* Lock protecting access to the virtchnl message queue */
+	spinlock_t lock;
+};
+
+enum iavf_rdma_vc_op_state {
+	IAVF_RDMA_VC_OP_NO_WORK = 0,
+	IAVF_RDMA_VC_OP_PENDING,
+	IAVF_RDMA_VC_OP_COMPLETE,
+	IAVF_RDMA_VC_OP_FAILED,
+};
+
+struct iavf_rdma {
+	struct iidc_core_dev_info *cdev_info;
+	int aux_idx;
+	u16 num_msix;
+	u16 recv_sync_msg_size;
+	u8 recv_sync_msg[IAVF_MAX_AQ_BUF_SIZE];
+	wait_queue_head_t vc_op_waitqueue;
+	enum iavf_rdma_vc_op_state vc_op_state;
+	struct iavf_adapter *adapter;
+	struct delayed_work init_task;
+};
+
 /* board specific private data structure */
 struct iavf_adapter {
 	struct work_struct adminq_task;
 	struct delayed_work watchdog_task;
 	wait_queue_head_t down_waitqueue;
+	wait_queue_head_t vc_waitqueue;
 	struct iavf_q_vector *q_vectors;
 	struct list_head vlan_filter_list;
 	struct list_head mac_filter_list;
@@ -522,6 +560,7 @@ struct iavf_adapter {
 #define IAVF_FLAG_REINIT_MSIX_NEEDED		BIT(20)
 #define IAVF_FLAG_REINIT_CHNL_NEEDED		BIT(21)
 #define IAVF_FLAG_RESET_DETECTED		BIT(22)
+#define IAVF_FLAG_INITIAL_MAC_SET		BIT(23)
 
 
 	u32 chnl_perf_flags;
@@ -566,7 +605,7 @@ struct iavf_adapter {
 #define IAVF_FLAG_AQ_DISABLE_STAG_VLAN_INSERTION	BIT(34)
 #define IAVF_FLAG_AQ_GET_SUPPORTED_RXDIDS		BIT(35)
 #define IAVF_FLAG_AQ_GET_PTP_CAPS			BIT(36)
-#define IAVF_FLAG_AQ_SEND_PTP_CMD			BIT(37)
+#define IAVF_FLAG_AQ_MSG_QUEUE_PENDING			BIT(37)
 
 	/* AQ messages that must be sent after IAVF_FLAG_AQ_GET_CONFIG, in
 	 * order to negotiated extended capabilities.
@@ -634,11 +673,10 @@ struct iavf_adapter {
 #endif /* VIRTCHNL_VF_CAP_ADV_LINK_SPEED */
 
 	enum virtchnl_ops current_op;
-#define CLIENT_ALLOWED(_a) ((_a)->vf_res ? \
-			    (_a)->vf_res->vf_cap_flags & \
-				VIRTCHNL_VF_OFFLOAD_IWARP : \
-			    0)
-#define CLIENT_ENABLED(_a) ((_a)->cinst != NULL)
+	struct iavf_vc_msg_queue vc_msg_queue;
+
+#define RDMA_ALLOWED(_a) ((_a)->vf_res->vf_cap_flags & \
+			  VIRTCHNL_VF_CAP_RDMA)
 /* RSS by the PF should be preferred over RSS via other methods. */
 #define RSS_PF(_a) ((_a)->vf_res->vf_cap_flags & \
 		    VIRTCHNL_VF_OFFLOAD_RSS_PF)
@@ -726,6 +764,7 @@ struct iavf_adapter {
 	u64 rx_sctp_cso_err;
 	u64 rx_ip4_cso_err;
 #endif
+	struct iavf_rdma rdma;
 };
 
 /* Ethtool Private Flags */
@@ -734,6 +773,37 @@ struct iavf_adapter {
 extern char iavf_driver_name[];
 extern const char iavf_driver_version[];
 extern struct workqueue_struct *iavf_wq;
+static inline const char *iavf_state_str(enum iavf_state_t state)
+{
+	switch (state) {
+	case __IAVF_STARTUP:
+		return "__IAVF_STARTUP";
+	case __IAVF_REMOVE:
+		return "__IAVF_REMOVE";
+	case __IAVF_INIT_VERSION_CHECK:
+		return "__IAVF_INIT_VERSION_CHECK";
+	case __IAVF_INIT_GET_RESOURCES:
+		return "__IAVF_INIT_GET_RESOURCES";
+	case __IAVF_INIT_SW:
+		return "__IAVF_INIT_SW";
+	case __IAVF_INIT_FAILED:
+		return "__IAVF_INIT_FAILED";
+	case __IAVF_RESETTING:
+		return "__IAVF_RESETTING";
+	case __IAVF_COMM_FAILED:
+		return "__IAVF_COMM_FAILED";
+	case __IAVF_DOWN:
+		return "__IAVF_DOWN";
+	case __IAVF_DOWN_PENDING:
+		return "__IAVF_DOWN_PENDING";
+	case __IAVF_TESTING:
+		return "__IAVF_TESTING";
+	case __IAVF_RUNNING:
+		return "__IAVF_RUNNING";
+	default:
+		return "__IAVF_UNKNOWN_STATE";
+	}
+}
 
 /**
  * iavf_is_adq_enabled - adq enabled or not
@@ -782,6 +852,11 @@ static inline void iavf_change_state(struct iavf_adapter *adapter,
 		adapter->last_state = adapter->state;
 		adapter->state = state;
 	}
+
+	dev_dbg(&adapter->pdev->dev,
+		"state transition from:%s to:%s\n",
+		iavf_state_str(adapter->last_state),
+		iavf_state_str(adapter->state));
 }
 
 /**
@@ -819,6 +894,7 @@ static inline void iavf_force_wb(struct iavf_vsi *vsi,
 	     val);
 }
 
+struct iavf_adapter *iavf_pdev_to_adapter(struct pci_dev *pdev);
 int iavf_up(struct iavf_adapter *adapter);
 void iavf_down(struct iavf_adapter *adapter);
 int iavf_process_config(struct iavf_adapter *adapter);
@@ -826,6 +902,8 @@ int iavf_parse_vf_resource_msg(struct iavf_adapter *adapter);
 void iavf_schedule_reset(struct iavf_adapter *adapter);
 void iavf_schedule_request_stats(struct iavf_adapter *adapter);
 void iavf_reset(struct iavf_adapter *adapter);
+bool iavf_is_reset_in_progress(struct iavf_adapter *adapter);
+bool iavf_is_remove_in_progress(struct iavf_adapter *adapter);
 void iavf_set_ethtool_ops(struct net_device *netdev);
 void iavf_update_stats(struct iavf_adapter *adapter);
 void iavf_reset_interrupt_capability(struct iavf_adapter *adapter);
@@ -862,7 +940,7 @@ void iavf_del_vlans(struct iavf_adapter *adapter);
 void iavf_set_promiscuous(struct iavf_adapter *adapter);
 bool iavf_promiscuous_mode_changed(struct iavf_adapter *adapter);
 void iavf_request_stats(struct iavf_adapter *adapter);
-int iavf_request_reset(struct iavf_adapter *adapter);
+enum iavf_status iavf_request_reset(struct iavf_adapter *adapter);
 void iavf_get_hena(struct iavf_adapter *adapter);
 void iavf_set_hena(struct iavf_adapter *adapter);
 void iavf_set_rss_key(struct iavf_adapter *adapter);
@@ -883,7 +961,23 @@ void iavf_enable_vlan_insertion_v2(struct iavf_adapter *adapter, u16 tpid);
 void iavf_disable_vlan_insertion_v2(struct iavf_adapter *adapter, u16 tpid);
 int iavf_replace_primary_mac(struct iavf_adapter *adapter,
 			     const u8 *new_mac);
+void iavf_send_vc_msg(struct iavf_adapter *adapter);
+struct iavf_vc_msg *iavf_alloc_vc_msg(enum virtchnl_ops v_opcode, u16 msglen);
+void
+iavf_queue_vc_msg(struct iavf_adapter *adapter, struct iavf_vc_msg *msg);
+void
+iavf_flush_vc_msg_queue(struct iavf_adapter *adapter,
+			bool (*op_match)(enum virtchnl_ops pending_op));
 void iavf_setup_ch_info(struct iavf_adapter *adapter, u32 flags);
+#ifdef HAVE_RHEL6_NET_DEVICE_OPS_EXT
+void iavf_set_vlan_offload_features(struct iavf_adapter *adapter,
+				    u32 prev_features,
+				    u32 features);
+#else
+void iavf_set_vlan_offload_features(struct iavf_adapter *adapter,
+				    netdev_features_t prev_features,
+				    netdev_features_t features);
+#endif /* HAVE_RHEL6_NET_DEVICE_OPS_EXT */
 #ifdef CONFIG_DEBUG_FS
 void iavf_dbg_vf_init(struct iavf_adapter *adapter);
 void iavf_dbg_vf_exit(struct iavf_adapter *adapter);

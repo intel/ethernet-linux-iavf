@@ -668,6 +668,11 @@ static int iavf_set_ringparam(struct net_device *netdev,
 	if ((ring->rx_mini_pending) || (ring->rx_jumbo_pending))
 		return -EINVAL;
 
+	if ((adapter->state == __IAVF_RESETTING) ||
+	    ((adapter->state == __IAVF_RUNNING) &&
+	     (adapter->flags & IAVF_FLAG_QUEUES_DISABLED)))
+		return -EAGAIN;
+
 	if (ring->tx_pending > IAVF_MAX_TXD ||
 	    ring->tx_pending < IAVF_MIN_TXD ||
 	    ring->rx_pending > IAVF_MAX_RXD ||
@@ -760,14 +765,23 @@ static int __iavf_get_coalesce(struct net_device *netdev,
  * iavf_get_coalesce - Get interrupt coalescing settings
  * @netdev: network interface device structure
  * @ec: ethtool coalesce structure
+ * @kec: kernel coalesce parameter
+ * @extack: kernel extack parameter
  *
  * Returns current coalescing settings. This is referred to elsewhere in the
  * driver as Interrupt Throttle Rate, as this is how the hardware describes
  * this functionality. Note that if per-queue settings have been modified this
  * only represents the settings of queue 0.
  **/
+#ifdef HAVE_ETHTOOL_COALESCE_EXTACK
+static int
+iavf_get_coalesce(struct net_device *netdev, struct ethtool_coalesce *ec,
+		  struct kernel_ethtool_coalesce __maybe_unused *kec,
+		  struct netlink_ext_ack __maybe_unused *extack)
+#else
 static int iavf_get_coalesce(struct net_device *netdev,
 			     struct ethtool_coalesce *ec)
+#endif /* HAVE_ETHTOOL_COALESCE_EXTACK */
 {
 	return __iavf_get_coalesce(netdev, ec, -1);
 }
@@ -905,11 +919,20 @@ static int __iavf_set_coalesce(struct net_device *netdev,
  * iavf_set_coalesce - Set interrupt coalescing settings
  * @netdev: network interface device structure
  * @ec: ethtool coalesce structure
+ * @kec: kernel coalesce parameter
+ * @extack: kernel extack parameter
  *
  * Change current coalescing settings for every queue.
  **/
+#ifdef HAVE_ETHTOOL_COALESCE_EXTACK
+static int
+iavf_set_coalesce(struct net_device *netdev, struct ethtool_coalesce *ec,
+		  struct kernel_ethtool_coalesce __maybe_unused *kec,
+		  struct netlink_ext_ack __maybe_unused *extack)
+#else
 static int iavf_set_coalesce(struct net_device *netdev,
 			     struct ethtool_coalesce *ec)
+#endif /* HAVE_ETHTOOL_COALESCE_EXTACK */
 {
 	return __iavf_set_coalesce(netdev, ec, -1);
 }
@@ -1116,7 +1139,7 @@ static int iavf_get_rxfh(struct net_device *netdev, u32 *indir, u8 *key)
  * @key: hash key
  * @hfunc: hash function to use
  *
- * Returns -EINVAL if the table specifies an inavlid queue id, otherwise
+ * Returns -EINVAL if the table specifies an invalid queue id, otherwise
  * returns 0 after programming the table.
  **/
 #ifdef HAVE_RXFH_HASHFUNC
@@ -1143,26 +1166,30 @@ static int iavf_set_rxfh(struct net_device *netdev, const u32 *indir,
 #endif /* __TC_MQPRIO_MODE_MAX */
 
 #ifdef HAVE_RXFH_HASHFUNC
+	/* Only support toeplitz hash function */
 	if (hfunc != ETH_RSS_HASH_NO_CHANGE && hfunc != ETH_RSS_HASH_TOP)
 		return -EOPNOTSUPP;
-
 #endif
-	if (!indir)
+
+	if (indir) {
+		/* Verify user input. */
+		for (i = 0; i < adapter->rss_lut_size; i++) {
+			if (indir[i] >= adapter->num_active_queues)
+				return -EINVAL;
+		}
+	}
+
+	if (!key && !indir)
 		return 0;
 
-	/* Verify user input. */
-	for (i = 0; i < adapter->rss_lut_size; i++) {
-		if (indir[i] >= adapter->num_active_queues)
-			return -EINVAL;
-	}
-
-	if (key) {
+	if (key)
 		memcpy(adapter->rss_key, key, adapter->rss_key_size);
-	}
 
-	/* Each 32 bits pointed by 'indir' is stored with a lut entry */
-	for (i = 0; i < adapter->rss_lut_size; i++)
-		adapter->rss_lut[i] = (u8)(indir[i]);
+	if (indir) {
+		/* Each 32 bits pointed by 'indir' is stored with a lut entry */
+		for (i = 0; i < adapter->rss_lut_size; i++)
+			adapter->rss_lut[i] = (u8)(indir[i]);
+	}
 
 	return iavf_config_rss(adapter);
 }

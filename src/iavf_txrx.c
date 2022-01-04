@@ -104,16 +104,16 @@ void iavf_free_tx_resources(struct iavf_ring *tx_ring)
  * iavf_get_tx_pending - how many tx descriptors not processed
  * @ring: the ring of descriptors
  * @in_sw: use SW variables
- *
- * Since there is no access to the ring head register
- * in XL710, we need to use our local copies
  **/
 u32 iavf_get_tx_pending(struct iavf_ring *ring, bool in_sw)
 {
 	u32 head, tail;
 
+	/* underlying hardware might not allow access and/or always return
+	 * 0 for the head/tail registers so just use the cached values
+	 */
 	head = ring->next_to_clean;
-	tail = readl(ring->tail);
+	tail = ring->next_to_use;
 
 	if (head != tail)
 		return (head < tail) ?
@@ -1260,12 +1260,12 @@ iavf_legacy_rx_csum(struct iavf_vsi *vsi, struct sk_buff *skb, union iavf_rx_des
 		    IAVF_RXD_QW1_STATUS_SHIFT;
 	decoded = decode_rx_desc_ptype(ptype);
 
-	csum_bits.ipe = rx_error & BIT(IAVF_RX_DESC_ERROR_IPE_SHIFT);
-	csum_bits.eipe = rx_error & BIT(IAVF_RX_DESC_ERROR_EIPE_SHIFT);
-	csum_bits.l4e = rx_error & BIT(IAVF_RX_DESC_ERROR_L4E_SHIFT);
-	csum_bits.pprs = rx_error & BIT(IAVF_RX_DESC_ERROR_PPRS_SHIFT);
-	csum_bits.l3l4p = rx_status & BIT(IAVF_RX_DESC_STATUS_L3L4P_SHIFT);
-	csum_bits.ipv6exadd = rx_status & BIT(IAVF_RX_DESC_STATUS_IPV6EXADD_SHIFT);
+	csum_bits.ipe = !!(rx_error & BIT(IAVF_RX_DESC_ERROR_IPE_SHIFT));
+	csum_bits.eipe = !!(rx_error & BIT(IAVF_RX_DESC_ERROR_EIPE_SHIFT));
+	csum_bits.l4e = !!(rx_error & BIT(IAVF_RX_DESC_ERROR_L4E_SHIFT));
+	csum_bits.pprs = !!(rx_error & BIT(IAVF_RX_DESC_ERROR_PPRS_SHIFT));
+	csum_bits.l3l4p = !!(rx_status & BIT(IAVF_RX_DESC_STATUS_L3L4P_SHIFT));
+	csum_bits.ipv6exadd = !!(rx_status & BIT(IAVF_RX_DESC_STATUS_IPV6EXADD_SHIFT));
 	csum_bits.nat = 0;
 	csum_bits.eudpe = 0;
 
@@ -1294,14 +1294,14 @@ iavf_flex_rx_csum(struct iavf_vsi *vsi, struct sk_buff *skb, union iavf_rx_desc 
 		IAVF_RX_FLEX_DESC_PTYPE_M;
 	decoded = decode_rx_desc_ptype(ptype);
 
-	csum_bits.ipe = rx_status0 & BIT(IAVF_RX_FLEX_DESC_STATUS0_XSUM_IPE_S);
-	csum_bits.eipe = rx_status0 & BIT(IAVF_RX_FLEX_DESC_STATUS0_XSUM_EIPE_S);
-	csum_bits.l4e = rx_status0 & BIT(IAVF_RX_FLEX_DESC_STATUS0_XSUM_L4E_S);
-	csum_bits.eudpe = rx_status0 & BIT(IAVF_RX_FLEX_DESC_STATUS0_XSUM_EUDPE_S);
+	csum_bits.ipe = !!(rx_status0 & BIT(IAVF_RX_FLEX_DESC_STATUS0_XSUM_IPE_S));
+	csum_bits.eipe = !!(rx_status0 & BIT(IAVF_RX_FLEX_DESC_STATUS0_XSUM_EIPE_S));
+	csum_bits.l4e = !!(rx_status0 & BIT(IAVF_RX_FLEX_DESC_STATUS0_XSUM_L4E_S));
+	csum_bits.eudpe = !!(rx_status0 & BIT(IAVF_RX_FLEX_DESC_STATUS0_XSUM_EUDPE_S));
 	csum_bits.pprs = 0;
-	csum_bits.l3l4p = rx_status0 & BIT(IAVF_RX_FLEX_DESC_STATUS0_L3L4P_S);
-	csum_bits.ipv6exadd = rx_status0 & BIT(IAVF_RX_FLEX_DESC_STATUS0_IPV6EXADD_S);
-	csum_bits.nat = rx_status1 & BIT(IAVF_RX_FLEX_DESC_STATUS1_NAT_S);
+	csum_bits.l3l4p = !!(rx_status0 & BIT(IAVF_RX_FLEX_DESC_STATUS0_L3L4P_S));
+	csum_bits.ipv6exadd = !!(rx_status0 & BIT(IAVF_RX_FLEX_DESC_STATUS0_IPV6EXADD_S));
+	csum_bits.nat = !!(rx_status1 & BIT(IAVF_RX_FLEX_DESC_STATUS1_NAT_S));
 
 	iavf_rx_csum(vsi, skb, &decoded, &csum_bits);
 }
@@ -1628,10 +1628,10 @@ static struct iavf_rx_buffer *iavf_get_rx_buffer(struct iavf_ring *rx_ring,
 {
 	struct iavf_rx_buffer *rx_buffer;
 
-	if (!size)
-		return NULL;
 	rx_buffer = &rx_ring->rx_bi[rx_ring->next_to_clean];
 	prefetchw(rx_buffer->page);
+	if (!size)
+		return rx_buffer;
 
 	/* we are reusing so sync this buffer for CPU use */
 	dma_sync_single_range_for_cpu(rx_ring->dev,
@@ -2101,8 +2101,8 @@ static int iavf_clean_rx_irq(struct iavf_ring *rx_ring, int budget)
 	struct sk_buff *skb = rx_ring->skb;
 	u16 cleaned_count = IAVF_DESC_UNUSED(rx_ring);
 	unsigned int xdp_xmit = 0;
+	struct xdp_buff xdp = {};
 	bool failure = false;
-	struct xdp_buff xdp;
 
 #ifdef HAVE_XDP_BUFF_RXQ
 	xdp.rxq = &rx_ring->xdp_rxq;

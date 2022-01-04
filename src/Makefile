@@ -10,17 +10,22 @@ ifneq ($(KERNELRELEASE),)
 ccflags-y += -I$(src)
 subdir-ccflags-y += -I$(src)
 
-obj-$(CONFIG_IAVF) += iavf.o
+obj-m += iavf.o
 
 iavf-y := iavf_main.o \
 	iavf_ethtool.o \
 	iavf_virtchnl.o \
 	iavf_adminq.o	 \
 	iavf_common.o	 \
-	iavf_txrx.o
+	iavf_txrx.o \
+	iavf_idc.o
 
 
 iavf-$(CONFIG_PTP_1588_CLOCK:m=y) += iavf_ptp.o
+
+ifeq (${NEED_AUX_BUS},2)
+obj-m += auxiliary.o
+endif
 
 iavf-y += kcompat.o
 
@@ -91,7 +96,7 @@ clean:
 
 mandocs_install: manfile
 	@echo "Copying manpages..."
-	@install -D -m 644 ${DRIVER}.${MANSECTION}.gz ${INSTALL_MOD_PATH}${MANDIR}/man${MANSECTION}/${DRIVER}.${MANSECTION}.gz
+	@install -D -m 644 ${DRIVER}.${MANSECTION}.gz ${INSTALL_MOD_PATH}/${MANDIR}/man${MANSECTION}/${DRIVER}.${MANSECTION}.gz
 
 # Install kernel module files. This target is called by the RPM specfile when
 # generating binary RPMs, and is not expected to modify files outside of the
@@ -99,6 +104,7 @@ mandocs_install: manfile
 modules_install: default
 	@echo "Installing modules..."
 	@+$(call kernelbuild,modules_install)
+	${auxiliary_post_install}
 	@echo "Creating /etc/modprobe.d/iavf.conf file ..."
 	mkdir -p "${INSTALL_MOD_PATH}/etc/modprobe.d/"
 	echo "blacklist i40evf"  >  "${INSTALL_MOD_PATH}/etc/modprobe.d/iavf.conf"
@@ -118,8 +124,8 @@ rpm: modules_install
 	$(MAKE) mandocs_install
 
 mandocs_uninstall:
-	if [ -e ${INSTALL_MOD_PATH}${MANDIR}/man${MANSECTION}/${DRIVER}.${MANSECTION}.gz ] ; then \
-		rm -f ${INSTALL_MOD_PATH}${MANDIR}/man${MANSECTION}/${DRIVER}.${MANSECTION}.gz ; \
+	if [ -e ${INSTALL_MOD_PATH}/${MANDIR}/man${MANSECTION}/${DRIVER}.${MANSECTION}.gz ] ; then \
+		rm -f ${INSTALL_MOD_PATH}/${MANDIR}/man${MANSECTION}/${DRIVER}.${MANSECTION}.gz ; \
 	fi;
 
 # Remove installed module files. This target is called by the RPM specfile when
@@ -128,6 +134,7 @@ mandocs_uninstall:
 modules_uninstall:
 	rm -f ${INSTALL_MOD_PATH}/lib/modules/${KVER}/${INSTALL_MOD_DIR}/${DRIVER}.ko;
 	rm -f /etc/modprobe.d/iavf.conf;
+	${auxiliary_post_uninstall}
 
 # After uninstalling all the files, perform necessary work to restore the
 # system back to using the default kernel modules. This includes running depmod
@@ -135,6 +142,13 @@ modules_uninstall:
 uninstall: modules_uninstall mandocs_uninstall
 	$(call cmd_depmod)
 	$(call cmd_initramfs)
+
+auxiliary_info:
+	@../scripts/check_aux_bus verbose
+
+ifeq (${NEED_AUX_BUS},1)
+all: auxiliary_info
+endif
 
 ########
 # Help #
@@ -161,6 +175,7 @@ help:
 	@echo '  modules_uninstall   - uninstall the module(s) only'
 	@echo '  mandocs_uninstall   - uninstall the manpage only'
 	@echo '  uninstall           - Uninstall the module(s) and manpage'
+	@echo '  auxiliary_info      - Print information about the auxiliary module'
 	@echo '  help                - Display this help message'
 	@echo ''
 	@echo 'Variables:'
