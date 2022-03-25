@@ -4,6 +4,7 @@
 #include "iavf_status.h"
 #include "iavf_type.h"
 #include "iavf_register.h"
+#include "siov_regs.h"
 #include "iavf_adminq.h"
 #include "iavf_prototype.h"
 
@@ -16,16 +17,16 @@
 static void iavf_adminq_init_regs(struct iavf_hw *hw)
 {
 	/* set head and tail registers in our local struct */
-	hw->aq.asq.tail = IAVF_VF_ATQT1;
-	hw->aq.asq.head = IAVF_VF_ATQH1;
-	hw->aq.asq.len  = IAVF_VF_ATQLEN1;
-	hw->aq.asq.bal  = IAVF_VF_ATQBAL1;
-	hw->aq.asq.bah  = IAVF_VF_ATQBAH1;
-	hw->aq.arq.tail = IAVF_VF_ARQT1;
-	hw->aq.arq.head = IAVF_VF_ARQH1;
-	hw->aq.arq.len  = IAVF_VF_ARQLEN1;
-	hw->aq.arq.bal  = IAVF_VF_ARQBAL1;
-	hw->aq.arq.bah  = IAVF_VF_ARQBAH1;
+	hw->aq.asq.tail = MBX_ATQT(hw);
+	hw->aq.asq.head = MBX_ATQH(hw);
+	hw->aq.asq.len  = MBX_ATQLEN(hw);
+	hw->aq.asq.bal  = MBX_ATQBAL(hw);
+	hw->aq.asq.bah  = MBX_ATQBAH(hw);
+	hw->aq.arq.tail = MBX_ARQT(hw);
+	hw->aq.arq.head = MBX_ARQH(hw);
+	hw->aq.arq.len  = MBX_ARQLEN(hw);
+	hw->aq.arq.bal  = MBX_ARQBAL(hw);
+	hw->aq.arq.bah  = MBX_ARQBAH(hw);
 }
 
 /**

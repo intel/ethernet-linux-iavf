@@ -2,6 +2,45 @@
 /* Copyright (c) 2013, Intel Corporation. */
 
 #include "iavf.h"
+#include "iavf_prototype.h"
+
+/**
+ * iavf_virtchnl_to_ptp_func - Convert VIRTCHNL function type to PTP stack
+ * @virtchnl_func: virtchnl pin function type specification
+ */
+static enum ptp_pin_function
+iavf_virtchnl_to_ptp_func(u8 virtchnl_func)
+{
+	switch (virtchnl_func) {
+	case VIRTCHNL_PHC_PIN_FUNC_NONE:
+		return PTP_PF_NONE;
+	case VIRTCHNL_PHC_PIN_FUNC_EXT_TS:
+		return PTP_PF_EXTTS;
+	case VIRTCHNL_PHC_PIN_FUNC_PER_OUT:
+		return PTP_PF_PEROUT;
+	default:
+		return PTP_PF_NONE;
+	}
+}
+
+/**
+ * iavf_ptp_func_to_virtchnl - Convert PTP pin function to virtchnl enum
+ * @ptp_func: PTP pin function enumeration type
+ */
+static enum virtchnl_phc_pin_func
+iavf_ptp_func_to_virtchnl(enum ptp_pin_function ptp_func)
+{
+	switch (ptp_func) {
+	case PTP_PF_NONE:
+		return VIRTCHNL_PHC_PIN_FUNC_NONE;
+	case PTP_PF_EXTTS:
+		return VIRTCHNL_PHC_PIN_FUNC_EXT_TS;
+	case PTP_PF_PEROUT:
+		return VIRTCHNL_PHC_PIN_FUNC_PER_OUT;
+	default:
+		return VIRTCHNL_PHC_PIN_FUNC_NONE;
+	}
+}
 
 /**
  * iavf_ptp_disable_tx_tstamp - Disable timestamping in Tx rings
@@ -648,6 +687,445 @@ long iavf_ptp_do_aux_work(struct ptp_clock_info *ptp)
 }
 
 /**
+ * iavf_ptp_rq_to_pin - Locate the pin associated with a given request
+ * @adapter: private adapter structure
+ * @rq: the PTP feature request structure
+ *
+ * Search the pin configuration array to locate which pin a given function is
+ * currently assigned to.
+ *
+ * Returns a pointer to the PTP pin description of the relevant pin, otherwise
+ * returns NULL if no pin has been assigned the requested function.
+ */
+static struct ptp_pin_desc *
+iavf_ptp_rq_to_pin(struct iavf_adapter *adapter, struct ptp_clock_request *rq)
+{
+	struct ptp_clock_info *info = &adapter->ptp.info;
+	enum ptp_pin_function func;
+	unsigned int chan;
+	int pin;
+
+	switch (rq->type) {
+	case PTP_CLK_REQ_EXTTS:
+		func = PTP_PF_EXTTS;
+		chan = rq->extts.index;
+		break;
+	case PTP_CLK_REQ_PEROUT:
+		func = PTP_PF_PEROUT;
+		chan = rq->perout.index;
+		break;
+	case PTP_CLK_REQ_PPS:
+		return NULL;
+	}
+
+	pin = ptp_find_pin(adapter->ptp.clock, func, chan);
+	if (pin < 0)
+		return NULL;
+
+	return &info->pin_config[pin];
+}
+
+/**
+ * ptp_clock_time_to_ns - Convert ptp_clock_time to u64 nanoseconds
+ * @time: the ptp_clock_time to convert
+ *
+ * Convert the struct ptp_clock_time into u64 of nanoseconds.
+ */
+static u64 ptp_clock_time_to_ns(struct ptp_clock_time *time)
+{
+	return (time->sec * NSEC_PER_SEC) + time->nsec;
+}
+
+/**
+ * iavf_ptp_fill_perout - Fill request for a periodic output signal
+ * @adapter: private adapter structure
+ * @msg: the virtchnl message to fill out
+ * @perout: the periodic output request information
+ *
+ * Take a kernel request for a periodic output signal and fill out the
+ * appropriate request to send over virtchnl. By default a request without
+ * a duty cycle specified will use a length of half the period.
+ *
+ * Returns 0 on success, or an error code on a request which is not supported
+ * by the virtchnl interface.
+ */
+static int
+iavf_ptp_fill_perout(struct iavf_adapter *adapter,
+		     struct virtchnl_phc_set_pin *msg,
+		     struct ptp_perout_request *perout)
+{
+	/* Reject unsupported flags */
+	if (perout->flags & ~(PTP_PEROUT_PHASE | PTP_PEROUT_DUTY_CYCLE))
+		return -EOPNOTSUPP;
+
+	msg->func = VIRTCHNL_PHC_PIN_FUNC_PER_OUT;
+
+#if PTP_PEROUT_PHASE
+	if (perout->flags & PTP_PEROUT_PHASE) {
+		msg->per_out.phase = ptp_clock_time_to_ns(&perout->phase);
+		msg->flags |= VIRTCHNL_PHC_PER_OUT_PHASE_START;
+	} else {
+		msg->per_out.start = ptp_clock_time_to_ns(&perout->start);
+	}
+#else
+	msg->per_out.start = ptp_clock_time_to_ns(&perout->start);
+#endif
+
+	msg->per_out.period = ptp_clock_time_to_ns(&perout->period);
+
+#if PTP_PEROUT_DUTY_CYCLE
+	if (perout->flags & PTP_PEROUT_DUTY_CYCLE)
+		msg->per_out.on = ptp_clock_time_to_ns(&perout->on);
+	else
+		/* if duty cycle is not set, always use half the period */
+		msg->per_out.on = msg->per_out.period / 2;
+#else
+	/* if duty cycle is not set, always use half the period */
+	msg->per_out.on = msg->per_out.period / 2;
+#endif
+
+	return 0;
+}
+
+/**
+ * iavf_ptp_fill_extts - Fill request for an external timestamp pin
+ * @adapter: private adapter structure
+ * @msg: the virtchnl message to fill out
+ * @extts: the PTP external timestamp request information
+ *
+ * Take a kernel request for an external timestamp event pin and fill out the
+ * appropriate request to send over virtchnl.
+ *
+ * Returns 0. Currently the virtchnl interface supports all known external
+ * timestamp requests. In the future, this function may fail with an exit code
+ * if new request types are not handled by virtchnl.
+ */
+static int
+iavf_ptp_fill_extts(struct iavf_adapter *adapter,
+		    struct virtchnl_phc_set_pin *msg,
+		    struct ptp_extts_request *extts)
+{
+	/* Make sure we reject commands with unknown flags */
+	if (extts->flags & ~(PTP_STRICT_FLAGS | PTP_ENABLE_FEATURE |
+			     PTP_RISING_EDGE | PTP_FALLING_EDGE))
+		return -EOPNOTSUPP;
+
+	msg->func = VIRTCHNL_PHC_PIN_FUNC_EXT_TS;
+
+	/* We don't check PTP_STRICT_FLAGS. This driver is always strict and
+	 * will always honor the rising/falling flags sent by the stack.
+	 */
+	if (extts->flags & PTP_ENABLE_FEATURE) {
+		if (extts->flags & PTP_FALLING_EDGE &&
+		    extts->flags & PTP_RISING_EDGE)
+			msg->ext_ts.mode = VIRTCHNL_PHC_EXT_TS_BOTH_EDGES;
+		else if (extts->flags & PTP_FALLING_EDGE)
+			msg->ext_ts.mode = VIRTCHNL_PHC_EXT_TS_FALLING_EDGE;
+		else if (extts->flags & PTP_RISING_EDGE)
+			msg->ext_ts.mode = VIRTCHNL_PHC_EXT_TS_RISING_EDGE;
+		else
+			msg->ext_ts.mode = VIRTCHNL_PHC_EXT_TS_NONE;
+	} else {
+		/* If the feature enable flag is not set, always request to
+		 * timestamp no edges.
+		 */
+		msg->ext_ts.mode = VIRTCHNL_PHC_EXT_TS_NONE;
+	}
+
+	return 0;
+}
+
+/**
+ * iavf_ptp_gpio_enable - Enable general purpose IO pin according to request
+ * @ptp: the PTP clock structure
+ * @rq: PTP pin configuration request
+ * @on: true to enable the function, false otherwise
+ *
+ * Enable a general purpose IO pin according to the provided request
+ * structure. When enabling the pin, use the provided configuration in order
+ * to fill out a virtchnl message with the appropriate information. When
+ * disabling a pin, assign it to the null VIRTCHNL_PHC_PIN_FUNC_NONE function.
+ */
+static int
+iavf_ptp_gpio_enable(struct ptp_clock_info *ptp, struct ptp_clock_request *rq,
+		     int on)
+{
+	struct iavf_adapter *adapter = clock_to_adapter(ptp);
+	struct device *dev = &adapter->pdev->dev;
+	struct virtchnl_phc_set_pin *msg;
+	struct iavf_vc_msg *vc_msg;
+	struct ptp_pin_desc *pin;
+	long ret;
+	int err;
+
+	if (rq->type != PTP_CLK_REQ_PEROUT &&
+	    rq->type != PTP_CLK_REQ_EXTTS)
+		return -EOPNOTSUPP;
+
+	if (!iavf_ptp_cap_supported(adapter, VIRTCHNL_1588_PTP_CAP_PIN_CFG))
+		return -EACCES;
+
+	if (!adapter->ptp.initialized)
+		return -ENODEV;
+
+	pin = iavf_ptp_rq_to_pin(adapter, rq);
+	if (!pin)
+		return -EINVAL;
+
+	vc_msg = iavf_alloc_vc_msg(VIRTCHNL_OP_1588_PTP_SET_PIN_CFG,
+				   sizeof(*msg));
+	if (!vc_msg)
+		return -ENOMEM;
+
+	msg = (typeof(msg))vc_msg->msg;
+	msg->pin_index = pin->index;
+	msg->func_index = pin->chan;
+
+	if (on) {
+		/* This is a request to enable a feature, so fill in the
+		 * appropriate information from the request structure based on
+		 * the request type.
+		 */
+		switch (rq->type) {
+		case PTP_CLK_REQ_PEROUT:
+			err = iavf_ptp_fill_perout(adapter, msg, &rq->perout);
+			break;
+		case PTP_CLK_REQ_EXTTS:
+			err = iavf_ptp_fill_extts(adapter, msg, &rq->extts);
+			break;
+		default:
+			/* This shouldn't be possible since we check the type above */
+			WARN_ONCE(1, "Unexpected request type %d\n", rq->type);
+			err = -EOPNOTSUPP;
+			goto err_free_vc_msg;
+		}
+		if (err)
+			goto err_free_vc_msg;
+	} else {
+		/* This is a request to disable a feature. For this, we
+		 * request the PF to assign the null function to the pin. This
+		 * is important because it also informs the PF that a given
+		 * pin is not currently in use and can safely be assigned to
+		 * a new function.
+		 */
+		msg->func = VIRTCHNL_PHC_PIN_FUNC_NONE;
+	}
+
+	adapter->ptp.set_pin_status = VIRTCHNL_STATUS_SUCCESS;
+	adapter->ptp.set_pin_ready = false;
+
+	/* iavf_queue_vc_msg takes ownership of vc_msg allocation */
+	iavf_queue_vc_msg(adapter, vc_msg);
+
+	ret = wait_event_interruptible_timeout(adapter->ptp.gpio_waitqueue,
+					       adapter->ptp.set_pin_ready,
+					       3 * HZ);
+	if (ret < 0)
+		return ret;
+	else if (!ret)
+		return -EBUSY;
+
+	if (adapter->ptp.set_pin_status) {
+		dev_warn(dev, "Pin configuration failed, error %s (%d)\n",
+			 virtchnl_stat_str(adapter->ptp.set_pin_status),
+			 adapter->ptp.set_pin_status);
+		return -EINVAL;
+	}
+
+	return 0;
+
+err_free_vc_msg:
+	kfree(vc_msg);
+	return err;
+}
+
+/**
+ * iavf_ptp_verify_gpio - Verify if a given GPIO pin can be assigned
+ * @ptp: the PTP clock structure
+ * @pin: the pin to configure
+ * @func: the function type to configure it to
+ * @chan: the index of the function to configure it to
+ *
+ * Determine whether or not a given pin can be assigned the requested
+ * function. Query the PF over virtchnl to determine whether this function is
+ * allowed. Wait for a response and inform the stack.
+ *
+ * Returns 0 if the pin is allowed to be assigned, or an error code otherwise.
+ */
+static int
+iavf_ptp_verify_gpio(struct ptp_clock_info *ptp, unsigned int pin,
+		     enum ptp_pin_function func, unsigned int chan)
+{
+	struct iavf_adapter *adapter = clock_to_adapter(ptp);
+	struct device *dev = &adapter->pdev->dev;
+	struct virtchnl_phc_set_pin *msg;
+	struct iavf_vc_msg *vc_msg;
+	long ret;
+
+	if (func != PTP_PF_NONE &&
+	    func != PTP_PF_EXTTS &&
+	    func != PTP_PF_PEROUT)
+		return -EOPNOTSUPP;
+
+	if (!iavf_ptp_cap_supported(adapter, VIRTCHNL_1588_PTP_CAP_PIN_CFG))
+		return -EACCES;
+
+	if (!adapter->ptp.initialized)
+		return -ENODEV;
+
+	vc_msg = iavf_alloc_vc_msg(VIRTCHNL_OP_1588_PTP_SET_PIN_CFG,
+				   sizeof(*msg));
+	if (!vc_msg)
+		return -ENOMEM;
+
+	msg = (typeof(msg))vc_msg->msg;
+
+	/* This is a verification request only */
+	msg->flags = VIRTCHNL_PHC_PIN_CFG_VERIFY;
+	msg->pin_index = pin;
+	msg->func = iavf_ptp_func_to_virtchnl(func);
+	msg->func_index = chan;
+
+	adapter->ptp.set_pin_status = VIRTCHNL_STATUS_SUCCESS;
+	adapter->ptp.set_pin_ready = false;
+
+	iavf_queue_vc_msg(adapter, vc_msg);
+
+	ret = wait_event_interruptible_timeout(adapter->ptp.gpio_waitqueue,
+					       adapter->ptp.set_pin_ready,
+					       3 * HZ);
+	if (ret < 0)
+		return ret;
+	else if (!ret)
+		return -EBUSY;
+
+	if (adapter->ptp.set_pin_status) {
+		dev_warn(dev, "Pin assignment is invalid, error %s (%d)\n",
+			 virtchnl_stat_str(adapter->ptp.set_pin_status),
+			 adapter->ptp.set_pin_status);
+		return -EINVAL;
+	}
+
+	return 0;
+}
+
+/**
+ * iavf_ptp_fill_pin_config - Request the pin configuration from PF
+ * @adapter: private adapter structure
+ *
+ * Request current pin configuration from the PF by issuing
+ * VIRTCHNL_OP_1588_PTP_GET_PIN_CFGS message to the PF. Wait for a response
+ * that indicates the configuration has been filled.
+ */
+static int iavf_ptp_fill_pin_config(struct iavf_adapter *adapter)
+{
+	struct device *dev = &adapter->pdev->dev;
+	struct iavf_hw *hw = &adapter->hw;
+	int err, i;
+
+	err = iavf_send_vf_ptp_pin_cfgs_msg(adapter);
+	if (err) {
+		dev_dbg(dev, "Failed to send VIRTCHNL_OP_1588_PTP_GET_PIN_CFGS command, err %d, aq_err %s\n",
+			err, iavf_aq_str(hw, hw->aq.asq_last_status));
+		return err;
+	}
+
+	/* This message is sent either in context of initialization or within
+	 * the context of receiving a new PTP configuration settings from the
+	 * PF. Thus, we send and immediately poll for a response here.
+	 */
+
+	adapter->ptp.pin_cfg_ready = false;
+
+#define IAVF_PTP_PIN_CFG_ATTEMPTS 10
+
+	for (i = 0; i < IAVF_PTP_PIN_CFG_ATTEMPTS; i++ ) {
+		/* Sleep for a few msec to give time for the PF to response */
+		usleep_range(5000, 100000);
+
+		err = iavf_get_vf_ptp_pin_cfgs(adapter);
+		if (err == -EALREADY) {
+			/* PF hasn't replied yet. Try again */
+			continue;
+		} else if (err) {
+			dev_dbg(dev, "Failed to get VIRTCHNL_OP_1588_PTP_GET_PIN_CFGS response, err %d, aq_err %s\n",
+				err, iavf_aq_str(hw, hw->aq.asq_last_status));
+			return err;
+		}
+
+		if (!adapter->ptp.pin_cfg_ready) {
+			dev_dbg(dev, "Pin configuration data not complete.\n");
+			return -EIO;
+		}
+
+		return 0;
+	}
+
+	/* PF did not send us the message in time */
+	dev_dbg(dev, "Failed to get VIRTCHNL_OP_1588_PTP_GET_PIN_CFGS after %d attempts\n",
+		IAVF_PTP_PIN_CFG_ATTEMPTS);
+	return err;
+}
+
+/**
+ * iavf_ptp_init_gpio_pins - Initialize PTP GPIO pin interface
+ * @adapter: private adapter structure
+ * @ptp_info: the PTP info structure
+ *
+ * Check if the device has support for controlling GPIO pins. If so, allocate
+ * a pin_config array and request the current configuration from the PF. If
+ * configuration is available, fill in the appropriate pointers in the info
+ * structure to enable the kernel GPIO requests.
+ */
+static void iavf_ptp_init_gpio_pins(struct iavf_adapter *adapter,
+				    struct ptp_clock_info *ptp_info)
+{
+	struct virtchnl_ptp_caps *hw_caps = &adapter->ptp.hw_caps;
+	struct device *dev = &adapter->pdev->dev;
+	struct ptp_pin_desc *pin_config;
+	int err;
+
+	/* Check if the PF has indicated support for pin configuration */
+	if (!iavf_ptp_cap_supported(adapter, VIRTCHNL_1588_PTP_CAP_PIN_CFG)) {
+		dev_dbg(dev, "Device does not have access to GPIO pin configuration\n");
+		return;
+	}
+
+	if (!hw_caps->n_pins) {
+		dev_dbg(dev, "Device does not have any GPIO pins assigned\n");
+		return;
+	}
+
+	pin_config = kcalloc(hw_caps->n_pins, sizeof(*pin_config), GFP_KERNEL);
+	if (!pin_config) {
+		dev_warn(dev, "Failed to allocate pin_config for GPIO pins\n");
+		return;
+	}
+
+	/* iavf_ptp_fill_pin_config relies on the ptp_info->pin_config array
+	 * already being assigned
+	 */
+	ptp_info->n_pins = hw_caps->n_pins;
+	ptp_info->pin_config = pin_config;
+
+	/* Fill the pin configuration by requesting from the PF */
+	err = iavf_ptp_fill_pin_config(adapter);
+	if (err) {
+		dev_warn(dev, "Failed to obtain GPIO pin configuration, err %d\n",
+			 err);
+		ptp_info->n_pins = 0;
+		ptp_info->pin_config = NULL;
+		kfree(pin_config);
+		return;
+	}
+
+	ptp_info->n_ext_ts = hw_caps->n_ext_ts;
+	ptp_info->n_per_out = hw_caps->n_per_out;
+	ptp_info->verify = iavf_ptp_verify_gpio;
+	ptp_info->enable = iavf_ptp_gpio_enable;
+}
+
+/**
  * iavf_ptp_register_clock - Register a new PTP for userspace
  * @adapter: private adapter structure
  *
@@ -686,6 +1164,9 @@ static int iavf_ptp_register_clock(struct iavf_adapter *adapter)
 #ifdef HAVE_PTP_CLOCK_DO_AUX_WORK
 	ptp_info->do_aux_work = iavf_ptp_do_aux_work;
 #endif
+
+	/* Support configuring any GPIO pins we have been given control of */
+	iavf_ptp_init_gpio_pins(adapter, ptp_info);
 
 	dev_info(&adapter->pdev->dev, "registering PTP clock %s\n", adapter->ptp.info.name);
 
@@ -823,7 +1304,9 @@ static bool iavf_ptp_op_match(enum virtchnl_ops pending_op)
 	if (pending_op == VIRTCHNL_OP_1588_PTP_GET_TIME ||
 	    pending_op == VIRTCHNL_OP_1588_PTP_SET_TIME ||
 	    pending_op == VIRTCHNL_OP_1588_PTP_ADJ_TIME ||
-	    pending_op == VIRTCHNL_OP_1588_PTP_ADJ_FREQ)
+	    pending_op == VIRTCHNL_OP_1588_PTP_ADJ_FREQ ||
+	    pending_op == VIRTCHNL_OP_1588_PTP_GET_PIN_CFGS ||
+	    pending_op == VIRTCHNL_OP_1588_PTP_SET_PIN_CFG)
 		return true;
 
 	return false;
@@ -995,9 +1478,257 @@ u64 iavf_ptp_extend_32b_timestamp(u64 cached_phc_time, u32 in_tstamp)
  * iavf_ptp_extend_32b_timestamp for a detailed explanation of the extension
  * algorithm.
  */
-u64 iavf_ptp_extend_40b_timestamp(u64 cached_phc_time, u64 in_tstamp)
+static u64 iavf_ptp_extend_40b_timestamp(u64 cached_phc_time, u64 in_tstamp)
 {
 	const u64 mask = GENMASK_ULL(31, 0);
 
 	return iavf_ptp_extend_32b_timestamp(cached_phc_time, (in_tstamp >> 8) & mask);
+}
+
+/**
+ * iavf_virtchnl_ptp_get_time - Respond to VIRTCHNL_OP_1588_PTP_GET_TIME
+ * @adapter: private adapter structure
+ * @data: the message from the PF
+ * @len: length of the message from the PF
+ *
+ * Handle the VIRTCHNL_OP_1588_PTP_GET_TIME message from the PF. This message
+ * is sent by the PF in response to the same op as a request from the VF.
+ * Extract the 64bit nanoseconds time from the message and store it in
+ * cached_phc_time. Then, notify any thread that is waiting for the update via
+ * the wait queue.
+ */
+void
+iavf_virtchnl_ptp_get_time(struct iavf_adapter *adapter, void *data, u16 len)
+{
+	struct virtchnl_phc_time *msg;
+
+	if (len == sizeof(*msg)) {
+		msg = (struct virtchnl_phc_time *)data;
+	} else {
+		dev_err_once(&adapter->pdev->dev, "Invalid VIRTCHNL_OP_1588_PTP_GET_TIME from PF. Got size %u, expected %lu\n",
+			     len, sizeof(*msg));
+		return;
+	}
+
+	adapter->ptp.cached_phc_time = msg->time;
+	adapter->ptp.cached_phc_updated = jiffies;
+	adapter->ptp.phc_time_ready = true;
+
+	wake_up(&adapter->ptp.phc_time_waitqueue);
+}
+
+/**
+ * iavf_virtchnl_ptp_tx_timestamp - Handle Tx timestamp events from the PF
+ * @adapter: private adapter structure
+ * @data: message contents from PF
+ * @len: length of the message from the PF
+ *
+ * Handle the VIRTCHNL_OP_1588_PTP_TX_TIMESTAMP op from the PF. This is sent
+ * whenever the PF has detected a transmit timestamp associated with this VF.
+ *
+ * First, check if there is a pending skb that needs a transmit timestamp. If
+ * so, extract the time value from the message and report it to the stack.
+ * Note that 40bit timestamp values must first be extended using
+ * iavf_ptp_extend_40b_timestamp().
+ */
+void iavf_virtchnl_ptp_tx_timestamp(struct iavf_adapter *adapter, void *data,
+				    u16 len)
+{
+	struct skb_shared_hwtstamps skb_tstamps = {};
+	struct device *dev = &adapter->pdev->dev;
+	struct virtchnl_phc_tx_tstamp *msg;
+	struct sk_buff *skb;
+	u64 ns;
+
+	if (len == sizeof(*msg)) {
+		msg = (struct virtchnl_phc_tx_tstamp *)data;
+	} else {
+		dev_err_once(dev, "Invalid VIRTCHNL_OP_1588_PTP_TX_TIMESTAMP from PF. Got size %u, expected %lu\n",
+			     len, sizeof(*msg));
+		return;
+	}
+
+	/* No need to process the event if timestamping isn't on */
+	if (adapter->ptp.hwtstamp_config.tx_type != HWTSTAMP_TX_ON)
+		return;
+
+	/* don't attempt to timestamp if we don't have a pending skb */
+	skb = adapter->ptp.tx_skb;
+	if (!skb)
+		return;
+
+	/* Since we only request one outstanding timestamp at once, we assume
+	 * this event must belong to the saved SKB. Clear the bit lock and the
+	 * skb now prior to notifying the stack via skb_tstamp_tx().
+	 */
+	adapter->ptp.tx_skb = NULL;
+	clear_bit_unlock(__IAVF_TX_TSTAMP_IN_PROGRESS, &adapter->crit_section);
+
+	switch (adapter->ptp.hw_caps.tx_tstamp_format) {
+	case VIRTCHNL_1588_PTP_TSTAMP_40BIT:
+		if (!(msg->tstamp & IAVF_PTP_40B_TSTAMP_VALID)) {
+			dev_warn(dev, "Got a VIRTCHNL_OP_1588_PTP_TX_TIMESTAMP message with an invalid timestamp\n");
+			goto out_free_skb;
+		}
+		ns = iavf_ptp_extend_40b_timestamp(adapter->ptp.cached_phc_time, msg->tstamp);
+		break;
+	case VIRTCHNL_1588_PTP_TSTAMP_64BIT_NS:
+		ns = msg->tstamp;
+		break;
+	default:
+		/* This shouldn't happen since we won't enable Tx timestamps
+		 * if we don't know the timestamp format.
+		 */
+		dev_dbg(dev, "Got a VIRTCHNL_OP_1588_PTP_TX_TIMESTAMP event, when timestamp format is unknown\n");
+		goto out_free_skb;
+	}
+
+	skb_tstamps.hwtstamp = ns_to_ktime(ns);
+	skb_tstamp_tx(skb, &skb_tstamps);
+
+out_free_skb:
+	dev_kfree_skb_any(skb);
+}
+
+/**
+ * iavf_virtchnl_ptp_pin_status - Handle completion status of pin config
+ * @adapter: private adapter structure
+ * @v_retval: the return value of the virtchnl message
+ *
+ * Called when the VF gets a completion for VIRTCHNL_OP_1588_PTP_SET_PIN_CFG,
+ * used to indicate whether or not the GPIO pin configuration was accepted by
+ * the PF.
+ */
+void
+iavf_virtchnl_ptp_pin_status(struct iavf_adapter *adapter,
+			     enum virtchnl_status_code v_retval)
+{
+	adapter->ptp.set_pin_status = v_retval;
+	adapter->ptp.set_pin_ready = true;
+
+	wake_up(&adapter->ptp.gpio_waitqueue);
+}
+
+/**
+ * iavf_virtchnl_ptp_get_pin_cfgs - Handle VIRTCHNL_OP_1588_PTP_GET_PIN_CFGS
+ * @adapter: private adapter structure
+ * @data: the message from the PF
+ * @len: length of the message from the PF
+ *
+ * Read the pin configuration data from the PF, and fill in the pin_config
+ * structure used by the stack to report the current GPIO pin configuration.
+ */
+void iavf_virtchnl_ptp_get_pin_cfgs(struct iavf_adapter *adapter, void *data,
+				     u16 len)
+{
+	struct ptp_pin_desc *pin_config = adapter->ptp.info.pin_config;
+	struct device *dev = &adapter->pdev->dev;
+	struct virtchnl_phc_get_pins *msg;
+	unsigned int i;
+
+	if (!pin_config) {
+		dev_warn_once(dev, "Got VIRTCHNL_OP_1588_PTP_GET_PIN_CFGS, but pin_config array not allocated\n");
+		return;
+	}
+
+	if (len >= sizeof(*msg)) {
+		msg = (struct virtchnl_phc_get_pins *)data;
+	} else {
+		dev_err_once(dev, "Invalid VIRTCHNL_OP_1588_PTP_GET_PIN_CFGS from PF. Got size of %u, expected at least %lu\n",
+			     len, sizeof(*msg));
+		return;
+	}
+
+	if (!msg->len) {
+		dev_dbg(dev, "Got VIRTCHNL_OP_1588_PTP_GET_PIN_CFGS with information on 0 pins\n");
+		return;
+	}
+
+	/* Copy the data from the PF into the pin_config array */
+	for (i = 0; i < msg->len; i++) {
+		struct virtchnl_phc_pin *pin = &msg->pins[i];
+		unsigned int idx = pin->pin_index;
+
+		if (idx >= adapter->ptp.info.n_pins) {
+			dev_warn_once(dev, "PF sent information on pin %u but we only know about %u pins\n",
+				      idx, adapter->ptp.info.n_pins);
+			continue;
+		}
+
+		if (pin->func != VIRTCHNL_PHC_PIN_FUNC_NONE &&
+		    pin->func != VIRTCHNL_PHC_PIN_FUNC_EXT_TS &&
+		    pin->func != VIRTCHNL_PHC_PIN_FUNC_PER_OUT) {
+			dev_warn_once(dev, "PF sent unknown function type %u for pin %u\n",
+				      pin->func, idx);
+			continue;
+		}
+
+		pin_config[idx].index = idx;
+		pin_config[idx].chan = pin->func_index;
+		pin_config[idx].func = iavf_virtchnl_to_ptp_func(pin->func);
+		memcpy(pin_config[idx].name, pin->name, sizeof(pin->name));
+	}
+
+	adapter->ptp.pin_cfg_ready = true;
+}
+
+/**
+ * iavf_virtchnl_ptp_ext_timestamp - Handle external timestamp event
+ * @adapter: private adapter structure
+ * @data: message contents from PF
+ * @len: length of the message from the PF
+ *
+ * Handle the VIRTCHNL_OP_1588_PTP_EXT_TIMESTAMP op from the PF. This is sent
+ * whenever the PF has captured a timestamp of a level change from one of the
+ * GPIO pins configured as an external timestamp pin.
+ *
+ * Validate that this message is for a known external timestamp function. If
+ * necessary, convert the timestamp to a full 64bit timestamp. Finally, notify
+ * the stack of the external timestamp event.
+ */
+void iavf_virtchnl_ptp_ext_timestamp(struct iavf_adapter *adapter, void *data,
+				     u16 len)
+{
+	struct device *dev = &adapter->pdev->dev;
+	struct virtchnl_phc_ext_tstamp *msg;
+	struct ptp_clock_event event = {};
+	u64 ns;
+
+	if (len == sizeof(*msg)) {
+		msg = (struct virtchnl_phc_ext_tstamp *)data;
+	} else {
+		dev_err_once(dev, "Invalid VIRTCHNL_OP_1588_PTP_EXT_TIMESTAMP from PF. Got size %u, expected %lu\n",
+			     len, sizeof(*msg));
+		return;
+	}
+
+	if (msg->func_index >= adapter->ptp.info.n_ext_ts) {
+		dev_err_once(dev, "Got a VIRTCHNL_OP_1588_PTP_EXT_TIMESTAMP message with func_index %u, larger than expected bound of %u\n",
+			     msg->func_index, adapter->ptp.info.n_ext_ts);
+		return;
+	}
+
+	switch (msg->tstamp_format) {
+	case VIRTCHNL_1588_PTP_TSTAMP_40BIT:
+		if (!(msg->tstamp & IAVF_PTP_40B_TSTAMP_VALID)) {
+			dev_warn(dev, "Got a VIRTCHNL_OP_1588_PTP_EXT_TIMESTAMP message with an invalid timestamp\n");
+			return;
+		}
+		ns = iavf_ptp_extend_40b_timestamp(adapter->ptp.cached_phc_time,
+						   msg->tstamp);
+		break;
+	case VIRTCHNL_1588_PTP_TSTAMP_64BIT_NS:
+		ns = msg->tstamp;
+		break;
+	default:
+		dev_err_once(dev, "Got a VIRTCHNL_OP_1588_PTP_EXT_TIMESTAMP message with an unknown format\n");
+		return;
+	}
+
+	event.type = PTP_CLOCK_EXTTS;
+	event.index = msg->func_index;
+	event.timestamp = ns;
+
+	/* Notify stack of the event */
+	ptp_clock_event(adapter->ptp.clock, &event);
 }

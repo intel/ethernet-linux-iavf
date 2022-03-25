@@ -83,7 +83,7 @@ sparse: clean
 
 # Run coccicheck static analyzer
 ccc: clean
-	@+$(call kernelbuild,modules,coccicheck MODE=report))
+	@+$(call kernelbuild,modules,coccicheck MODE=report)
 
 # Build manfiles
 manfile:

@@ -514,6 +514,23 @@ iavf_idc_init_qos_info(struct iidc_qos_params *qos_info)
 }
 
 /**
+ * iavf_idc_clear_rdma_info - clear RDMA info that may be updated on reset/init
+ * @rdma: Pointer to the RDMA specific information
+ *
+ * This function will be called if creating the auxiliary device for RDMA fails
+ * or when tearing down the auxiliary device for RDMA.
+ */
+static void iavf_idc_clear_rdma_info(struct iavf_rdma *rdma)
+{
+	kfree(rdma->cdev_info);
+	rdma->cdev_info = NULL;
+	rdma->aux_idx = -1;
+	rdma->recv_sync_msg_size = 0;
+	memset(rdma->recv_sync_msg, 0, IAVF_MAX_AQ_BUF_SIZE);
+	rdma->vc_op_state = IAVF_RDMA_VC_OP_NO_WORK;
+}
+
+/**
  * iavf_idc_init_aux_device - initialize Auxiliary Device
  * @adapter: driver private data structure
  */
@@ -537,7 +554,7 @@ iavf_idc_init_aux_device(struct iavf_adapter *adapter)
 				  GFP_KERNEL);
 	if (!rdma->cdev_info) {
 		err = -ENOMEM;
-		goto err_cdev_info_alloc;
+		goto err_out;
 	}
 
 	cdev_info = rdma->cdev_info;
@@ -557,15 +574,12 @@ iavf_idc_init_aux_device(struct iavf_adapter *adapter)
 
 	err = iavf_plug_aux_dev(rdma);
 	if (err)
-		goto err_plug_aux_dev;
+		goto err_out;
 
 	return 0;
 
-err_plug_aux_dev:
-	kfree(rdma->cdev_info);
-	rdma->cdev_info = NULL;
-err_cdev_info_alloc:
-	memset(rdma, 0, sizeof(*rdma));
+err_out:
+	iavf_idc_clear_rdma_info(rdma);
 
 	return err;
 }
@@ -579,16 +593,7 @@ static void iavf_idc_deinit_aux_device(struct iavf_adapter *adapter)
 	struct iavf_rdma *rdma = &adapter->rdma;
 
 	iavf_unplug_aux_dev(rdma);
-
-	/* free and reset any parameters that will be reconfigured during
-	 * re-initialization
-	 */
-	kfree(rdma->cdev_info);
-	rdma->cdev_info = NULL;
-	rdma->aux_idx = -1;
-	rdma->recv_sync_msg_size = 0;
-	memset(rdma->recv_sync_msg, 0, IAVF_MAX_AQ_BUF_SIZE);
-	rdma->vc_op_state = IAVF_RDMA_VC_OP_NO_WORK;
+	iavf_idc_clear_rdma_info(rdma);
 }
 
 /**
@@ -604,7 +609,7 @@ void iavf_idc_init_task(struct work_struct *work)
 {
 	struct iavf_rdma *rdma = container_of(work, struct iavf_rdma,
 					      init_task.work);
-	struct iavf_adapter *adapter = rdma->adapter;
+	struct iavf_adapter *adapter = rdma->back;
 	int err;
 
 	err = iavf_idc_init_aux_device(adapter);

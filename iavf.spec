@@ -1,6 +1,6 @@
 Name: iavf
 Summary: Intel(R) Ethernet Adaptive Virtual Function Driver
-Version: 4.3.19
+Version: 4.4.2
 Release: 1
 Source: %{name}-%{version}.tar.gz
 Vendor: Intel Corporation
@@ -409,7 +409,8 @@ Version: 1.0.0
 %description -n auxiliary
 The Auxiliary bus driver (auxiliary.ko), backported from upstream, for use by kernels that don't have auxiliary bus.
 
-# %if to hide this whole section, causes RPM to not build the subproject at all
+# The if is used to hide this whole section. This causes RPM to skip the build
+# of the auxiliary subproject entirely.
 %if (%need_aux == 2)
 %files -n auxiliary -f aux.list
 %doc aux.list

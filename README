@@ -1,7 +1,7 @@
 Linux* Driver for Intel(R) Ethernet Adaptive Virtual Function
 =============================================================
 
-November 3, 2021
+February 2, 2022
 
 
 Contents
@@ -25,10 +25,12 @@ The associated PF drivers for this VF driver are:
 - ice
 - i40e
 
+The MTU size set on a VF should match the MTU size set on the PF. A mismatch in
+MTU sizes may cause unexpected results.
+
 SR-IOV requires the correct platform and OS support.
 
 The guest OS loading this driver must support MSI-X interrupts.
-
 
 For questions related to hardware requirements, refer to the documentation
 supplied with your Intel adapter. All hardware requirements listed apply to use
@@ -341,9 +343,19 @@ the PF or VF. Delete the ADQ configuration before changing these settings.
 - The driver supports subnet masks for IP addresses in the PF and VF. When you
 add a subnet mask filter, the driver forwards packets to the ADQ VSI instead of
 the main VSI.
+- The VF supports a minimum rate limiting of 50Mbps, in increments of 50Mbps up
+to the maximum link speed.
+
+
+
+Creating traffic classes
+------------------------
+Run all TC commands from the ../iproute2/tc/ directory.
+If you set max_rate to less than 50Mbps, then max_rate is rounded up to 50Mbps
+and a warning is logged in dmesg.
 
 To create traffic classes (TCs) on the interface:
-NOTE: Run all TC commands from the ../iproute2/tc/ directory.
+
 1. Use the tc command to create traffic classes. You can create a maximum of
    16 TCs from the VM on Intel(R) Ethernet 800 Series devices and
    4 TCs from the VM on Intel(R) Ethernet 700 Series devices.
@@ -486,8 +498,8 @@ NOTE: After installing the driver, if your Intel Ethernet Network Connection
 is not working, verify that you have installed the correct driver.
 
 
-Linux bonding fails with VFs bound to an Intel(R) Ethernet 700 Series device
-----------------------------------------------------------------------------
+Linux bonding failures with VFs
+-------------------------------
 If you bind Virtual Functions (VFs) to an Intel(R) Ethernet 700 Series device,
 the VF targets may fail when they become the active target. If the MAC address
 of the VF is set by the PF (Physical Function) of the device, when you add a
@@ -495,6 +507,15 @@ target, or change the active-backup target, Linux bonding tries to sync the
 backup target's MAC address to the same MAC address as the active target. Linux
 bonding will fail at this point. This issue will not occur if the VF's MAC
 address is not set by the PF.
+
+When using bonding mode 5 (i.e., balance-tlb or adaptive transmit load
+balancing), if you add multiple VFs to the bond, they are assigned duplicate
+MAC address. When the VFs are joined with the bond interface, the Linux bonding
+driver sets the MAC address for the VFs to the same value. The MAC address is
+based on the first active VF added to that bond. This results in balance-tlb
+mode not functioning as expected. PF interfaces behave as expected. The
+presence of duplicate MAC addresses may cause further issues, depending on your
+switch configuration.
 
 
 Traffic Is Not Being Passed Between VM and Client
@@ -655,7 +676,7 @@ St - Fifth Floor, Boston, MA 02110-1301 USA.
 The full GNU General Public License is included in this distribution in the
 file called "COPYING".
 
-Copyright(c) 2018 - 2021 Intel Corporation.
+Copyright(c) 2018 - 2022 Intel Corporation.
 
 
 Trademarks

@@ -89,4 +89,25 @@
 #define IAVF_VFINT_DYN_CTLN1_WB_ON_ITR_SHIFT       30
 #define IAVF_VFINT_DYN_CTLN1_WB_ON_ITR_MASK        IAVF_MASK(1UL, IAVF_VFINT_DYN_CTLN1_WB_ON_ITR_SHIFT)
 
+#define INT_DYN_CTL0(hw)					\
+	((hw)->device_id == IAVF_DEV_ID_VDEV ?	 		\
+	VDEV_INT_DYN_CTL01 : IAVF_VFINT_DYN_CTL01)
+#define INT_DYN_CTL(hw, INTVF)					\
+	((hw)->device_id == IAVF_DEV_ID_VDEV ?			\
+	VDEV_INT_DYN_CTL(INTVF) : IAVF_VFINT_DYN_CTLN1(INTVF))
+#define INT_ITRN1(hw, _i, _INTVF)				\
+	((hw)->device_id == IAVF_DEV_ID_VDEV ?			\
+	((_i == IAVF_RX_ITR) ? VDEV_INT_ITR_0(_INTVF) : VDEV_INT_ITR_1(_INTVF)) : IAVF_VFINT_ITRN1(_i, _INTVF))
+#define MBX_ATQT(hw)	((hw)->device_id == IAVF_DEV_ID_VDEV ? VDEV_MBX_ATQT : IAVF_VF_ATQT1)
+#define MBX_ATQH(hw)	((hw)->device_id == IAVF_DEV_ID_VDEV ? VDEV_MBX_ATQH : IAVF_VF_ATQH1)
+#define MBX_ATQLEN(hw)	((hw)->device_id == IAVF_DEV_ID_VDEV ? VDEV_MBX_ATQLEN : IAVF_VF_ATQLEN1)
+#define MBX_ATQBAL(hw)	((hw)->device_id == IAVF_DEV_ID_VDEV ? VDEV_MBX_ATQBAL : IAVF_VF_ATQBAL1)
+#define MBX_ATQBAH(hw)	((hw)->device_id == IAVF_DEV_ID_VDEV ? VDEV_MBX_ATQBAH : IAVF_VF_ATQBAH1)
+#define MBX_ARQT(hw)	((hw)->device_id == IAVF_DEV_ID_VDEV ? VDEV_MBX_ARQT : IAVF_VF_ARQT1)
+#define MBX_ARQH(hw)	((hw)->device_id == IAVF_DEV_ID_VDEV ? VDEV_MBX_ARQH : IAVF_VF_ARQH1)
+#define MBX_ARQLEN(hw)	((hw)->device_id == IAVF_DEV_ID_VDEV ? VDEV_MBX_ARQLEN : IAVF_VF_ARQLEN1)
+#define MBX_ARQBAL(hw)	((hw)->device_id == IAVF_DEV_ID_VDEV ? VDEV_MBX_ARQBAL : IAVF_VF_ARQBAL1)
+#define MBX_ARQBAH(hw)	((hw)->device_id == IAVF_DEV_ID_VDEV ? VDEV_MBX_ARQBAH : IAVF_VF_ARQBAH1)
+#define QTX_TAIL(hw, _Q)	((hw)->device_id == IAVF_DEV_ID_VDEV ? VDEV_QTX_TAIL(_Q) : IAVF_QTX_TAIL1(_Q))
+#define QRX_TAIL(hw, _Q)	((hw)->device_id == IAVF_DEV_ID_VDEV ? VDEV_QRX_TAIL(_Q) : IAVF_QRX_TAIL1(_Q))
 #endif /* _IAVF_REGISTER_H_ */

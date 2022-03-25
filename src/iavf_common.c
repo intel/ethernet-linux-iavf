@@ -25,6 +25,7 @@ enum iavf_status iavf_set_mac_type(struct iavf_hw *hw)
 		case IAVF_DEV_ID_VF:
 		case IAVF_DEV_ID_VF_HV:
 		case IAVF_DEV_ID_ADAPTIVE_VF:
+		case IAVF_DEV_ID_VDEV:
 			hw->mac.type = IAVF_MAC_VF;
 			break;
 		default:
@@ -132,8 +133,8 @@ const char *iavf_stat_str(struct iavf_hw *hw, enum iavf_status stat_err)
 		return "IAVF_ERR_INVALID_MAC_ADDR";
 	case IAVF_ERR_DEVICE_NOT_SUPPORTED:
 		return "IAVF_ERR_DEVICE_NOT_SUPPORTED";
-	case IAVF_ERR_MASTER_REQUESTS_PENDING:
-		return "IAVF_ERR_MASTER_REQUESTS_PENDING";
+	case IAVF_ERR_PRIMARY_REQUESTS_PENDING:
+		return "IAVF_ERR_PRIMARY_REQUESTS_PENDING";
 	case IAVF_ERR_INVALID_LINK_SETTINGS:
 		return "IAVF_ERR_INVALID_LINK_SETTINGS";
 	case IAVF_ERR_AUTONEG_NOT_COMPLETE:

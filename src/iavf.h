@@ -47,9 +47,13 @@
 #include "iavf_txrx.h"
 #include "iavf_ptp.h"
 #include <linux/bitmap.h>
+#include "siov_regs.h"
 
 #define DEFAULT_DEBUG_LEVEL_SHIFT 3
 #define PFX "iavf: "
+
+int iavf_status_to_errno(enum iavf_status status);
+int virtchnl_status_to_errno(enum virtchnl_status_code v_status);
 
 /* VSI state flags shared with common code */
 enum iavf_vsi_state_t {
@@ -74,7 +78,6 @@ struct iavf_vsi {
 	u16 id;
 	DECLARE_BITMAP(state, __IAVF_VSI_STATE_SIZE__);
 	int base_vector;
-	u16 work_limit;
 	u16 qs_handle;
 };
 
@@ -104,6 +107,7 @@ struct iavf_vsi {
 #define IAVF_HKEY_ARRAY_SIZE ((IAVF_VFQF_HKEY_MAX_INDEX + 1) * 4)
 #define IAVF_HLUT_ARRAY_SIZE ((IAVF_VFQF_HLUT_MAX_INDEX + 1) * 4)
 #define IAVF_MBPS_DIVISOR	125000 /* divisor to convert to Mbps */
+#define IAVF_MBPS_QUANTA	50
 
 #define IAVF_VIRTCHNL_VF_RESOURCE_SIZE	(sizeof(struct virtchnl_vf_resource) + \
 					 (IAVF_MAX_VF_VSI *		       \
@@ -353,7 +357,7 @@ static inline void
 iavf_set_wb_on_itr(struct iavf_hw *hw, struct iavf_q_vector *qv)
 {
 	qv->ch_stats.wb_on_itr_set++;
-	wr32(hw, IAVF_VFINT_DYN_CTLN1(qv->reg_idx),
+	wr32(hw, INT_DYN_CTL(hw, qv->reg_idx),
 	     IAVF_VFINT_DYN_CTLN1_ITR_INDX_MASK |
 	     IAVF_VFINT_DYN_CTLN1_WB_ON_ITR_MASK);
 }
@@ -515,7 +519,7 @@ struct iavf_rdma {
 	u8 recv_sync_msg[IAVF_MAX_AQ_BUF_SIZE];
 	wait_queue_head_t vc_op_waitqueue;
 	enum iavf_rdma_vc_op_state vc_op_state;
-	struct iavf_adapter *adapter;
+	struct iavf_adapter *back;
 	struct delayed_work init_task;
 };
 
@@ -784,6 +788,10 @@ static inline const char *iavf_state_str(enum iavf_state_t state)
 		return "__IAVF_INIT_VERSION_CHECK";
 	case __IAVF_INIT_GET_RESOURCES:
 		return "__IAVF_INIT_GET_RESOURCES";
+	case __IAVF_INIT_EXTENDED_CAPS:
+		return "__IAVF_INIT_EXTENDED_CAPS";
+	case __IAVF_INIT_CONFIG_ADAPTER:
+		return "__IAVF_INIT_CONFIG_ADAPTER";
 	case __IAVF_INIT_SW:
 		return "__IAVF_INIT_SW";
 	case __IAVF_INIT_FAILED:
@@ -890,8 +898,7 @@ static inline void iavf_force_wb(struct iavf_vsi *vsi,
 		q_vector->state_flags &= ~IAVF_VECTOR_STATE_ONCE_IN_BP;
 
 	wr32(&vsi->back->hw,
-	     IAVF_VFINT_DYN_CTLN1(q_vector->reg_idx),
-	     val);
+	     INT_DYN_CTL(&vsi->back->hw, q_vector->reg_idx), val);
 }
 
 struct iavf_adapter *iavf_pdev_to_adapter(struct pci_dev *pdev);
@@ -925,6 +932,8 @@ int iavf_send_vf_supported_rxdids_msg(struct iavf_adapter *adapter);
 int iavf_get_vf_supported_rxdids(struct iavf_adapter *adapter);
 int iavf_send_vf_ptp_caps_msg(struct iavf_adapter *adapter);
 int iavf_get_vf_ptp_caps(struct iavf_adapter *adapter);
+int iavf_send_vf_ptp_pin_cfgs_msg(struct iavf_adapter *adapter);
+int iavf_get_vf_ptp_pin_cfgs(struct iavf_adapter *adapter);
 void iavf_set_queue_vlan_tag_loc(struct iavf_adapter *adapter);
 void iavf_irq_enable(struct iavf_adapter *adapter, bool flush);
 void iavf_configure_queues(struct iavf_adapter *adapter);
@@ -940,7 +949,7 @@ void iavf_del_vlans(struct iavf_adapter *adapter);
 void iavf_set_promiscuous(struct iavf_adapter *adapter);
 bool iavf_promiscuous_mode_changed(struct iavf_adapter *adapter);
 void iavf_request_stats(struct iavf_adapter *adapter);
-enum iavf_status iavf_request_reset(struct iavf_adapter *adapter);
+int iavf_request_reset(struct iavf_adapter *adapter);
 void iavf_get_hena(struct iavf_adapter *adapter);
 void iavf_set_hena(struct iavf_adapter *adapter);
 void iavf_set_rss_key(struct iavf_adapter *adapter);
@@ -949,7 +958,8 @@ void iavf_enable_vlan_stripping(struct iavf_adapter *adapter);
 void iavf_disable_vlan_stripping(struct iavf_adapter *adapter);
 void iavf_virtchnl_completion(struct iavf_adapter *adapter,
 			      enum virtchnl_ops v_opcode,
-			      enum iavf_status v_retval, u8 *msg, u16 msglen);
+			      enum virtchnl_status_code v_retval,
+			      u8 *msg, u16 msglen);
 int iavf_config_rss(struct iavf_adapter *adapter);
 void iavf_enable_channels(struct iavf_adapter *adapter);
 void iavf_disable_channels(struct iavf_adapter *adapter);
