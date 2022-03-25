@@ -274,7 +274,7 @@ static bool iavf_clean_tx_irq(struct iavf_vsi *vsi,
 	struct iavf_tx_buffer *tx_buf;
 	struct iavf_tx_desc *tx_desc;
 	unsigned int total_bytes = 0, total_packets = 0;
-	unsigned int budget = vsi->work_limit;
+	unsigned int budget = IAVF_DEFAULT_IRQ_WORK;
 
 	tx_buf = &tx_ring->tx_bi[i];
 	tx_desc = IAVF_TX_DESC(tx_ring, i);
@@ -429,7 +429,7 @@ static void iavf_enable_wb_on_itr(struct iavf_vsi *vsi,
 	      IAVF_VFINT_DYN_CTLN1_ITR_INDX_MASK; /* set noitr */
 
 	wr32(&vsi->back->hw,
-	     IAVF_VFINT_DYN_CTLN1(q_vector->reg_idx), val);
+	     INT_DYN_CTL(&vsi->back->hw, q_vector->reg_idx), val);
 	q_vector->arm_wb_state = true;
 }
 
@@ -2263,9 +2263,6 @@ static u32 iavf_buildreg_itr(const int type, u16 itr)
 	return val;
 }
 
-/* a small macro to shorten up some long lines */
-#define INTREG IAVF_VFINT_DYN_CTLN1
-
 /* The act of updating the ITR will cause it to immediately trigger. In order
  * to prevent this from throwing off adaptive update statistics we defer the
  * update so that it can only happen so often. So after either Tx or Rx are
@@ -2338,7 +2335,7 @@ static void iavf_update_enable_itr(struct iavf_vsi *vsi, struct iavf_q_vector *q
 	}
 do_write:
 	if (!test_bit(__IAVF_VSI_DOWN, vsi->state))
-		wr32(hw, INTREG(q_vector->reg_idx), intval);
+		wr32(hw, INT_DYN_CTL(hw, q_vector->reg_idx), intval);
 }
 
 /**

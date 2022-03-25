@@ -18,22 +18,22 @@
  *
  * Send message to PF and print status if failure.
  **/
-static enum iavf_status iavf_send_pf_msg(struct iavf_adapter *adapter,
-					 enum virtchnl_ops op, u8 *msg, u16 len)
+static int iavf_send_pf_msg(struct iavf_adapter *adapter,
+			    enum virtchnl_ops op, u8 *msg, u16 len)
 {
 	struct iavf_hw *hw = &adapter->hw;
-	enum iavf_status err;
+	enum iavf_status status;
 
 	if (adapter->flags & IAVF_FLAG_PF_COMMS_FAILED)
 		return 0; /* nothing to see here, move along */
 
-	err = iavf_aq_send_msg_to_pf(hw, op, VIRTCHNL_STATUS_SUCCESS, msg, len,
+	status = iavf_aq_send_msg_to_pf(hw, op, VIRTCHNL_STATUS_SUCCESS, msg, len,
 				     NULL);
-	if (err)
-		dev_dbg(&adapter->pdev->dev, "Unable to send opcode %d to PF, err %s, aq_err %s\n",
-			op, iavf_stat_str(hw, err),
+	if (status)
+		dev_dbg(&adapter->pdev->dev, "Unable to send opcode %d to PF, status %s, aq_err %s\n",
+			op, iavf_stat_str(hw, status),
 			iavf_aq_str(hw, hw->aq.asq_last_status));
-	return err;
+	return iavf_status_to_errno(status);
 }
 
 /**
@@ -60,6 +60,10 @@ int iavf_send_api_ver(struct iavf_adapter *adapter)
  * @hw: HW configuration structure
  * @event: event to populate on success
  * @op_to_poll: requested virtchnl op to poll for
+ *
+ * Returns 0 if a message of the correct opcode is in the queue. Returns
+ * -EALREADY if no message matching the op code is waiting. Returns an error
+ *  code for other failures.
  */
 static int
 iavf_poll_virtchnl_msg(struct iavf_hw *hw, struct iavf_arq_event_info *event,
@@ -67,22 +71,25 @@ iavf_poll_virtchnl_msg(struct iavf_hw *hw, struct iavf_arq_event_info *event,
 {
 	enum virtchnl_ops received_op;
 	enum iavf_status status;
+	u32 v_retval;
 
 	while (1) {
 		/* When the AQ is empty, iavf_clean_arq_element will return
-		 * nonzero and this loop will terminate.
+		 * IAVF_ERR_AQ_NO_WORK and this loop will terminate. Callers
+		 * which wait to wait until a new message is received should
+		 * check for -EALREADY and repeat polling attempts.
 		 */
 		status = iavf_clean_arq_element(hw, event, NULL);
 		if (status)
-			return status;
+			return iavf_status_to_errno(status);
 		received_op =
 		    (enum virtchnl_ops)le32_to_cpu(event->desc.cookie_high);
 		if (op_to_poll == received_op)
 			break;
 	}
 
-	status = (enum iavf_status)le32_to_cpu(event->desc.cookie_low);
-	return status;
+	v_retval = le32_to_cpu(event->desc.cookie_low);
+	return virtchnl_status_to_errno((enum virtchnl_status_code)v_retval);
 }
 
 /**
@@ -116,6 +123,8 @@ int iavf_verify_api_ver(struct iavf_adapter *adapter)
 		     (pf_vvi->minor > VIRTCHNL_VERSION_MINOR)))
 			err = -EIO;
 	}
+
+	adapter->current_op = VIRTCHNL_OP_UNKNOWN;
 
 	kfree(event.msg_buf);
 	return err;
@@ -227,12 +236,36 @@ int iavf_send_vf_ptp_caps_msg(struct iavf_adapter *adapter)
 			VIRTCHNL_1588_PTP_CAP_WRITE_PHC |
 			VIRTCHNL_1588_PTP_CAP_TX_TSTAMP |
 			VIRTCHNL_1588_PTP_CAP_RX_TSTAMP |
-			VIRTCHNL_1588_PTP_CAP_PHC_REGS);
+			VIRTCHNL_1588_PTP_CAP_PHC_REGS |
+			VIRTCHNL_1588_PTP_CAP_PIN_CFG);
 
 	adapter->current_op = VIRTCHNL_OP_1588_PTP_GET_CAPS;
 
 	return iavf_send_pf_msg(adapter, VIRTCHNL_OP_1588_PTP_GET_CAPS,
 				(u8 *)&hw_caps, sizeof(hw_caps));
+}
+
+/**
+ * iavf_send_vf_ptp_pin_cfgs_msg - Send request for PTP pin configuration
+ * @adapter: private adapter structure
+ *
+ * Send the VIRTCHNL_OP_1588_PTP_GET_PIN_CFGS command to the PF to request
+ * extra pin configuration information.
+ *
+ * The PF will reply with the same opcode a filled out copy of the
+ * virtchnl_phc_get_pins structure which defines the specifics of the pin
+ * configuration provided to this VF.
+ */
+int iavf_send_vf_ptp_pin_cfgs_msg(struct iavf_adapter *adapter)
+{
+	if (!PTP_ALLOWED(adapter) ||
+	    !iavf_ptp_cap_supported(adapter, VIRTCHNL_1588_PTP_CAP_PIN_CFG))
+		return -EOPNOTSUPP;
+
+	adapter->current_op = VIRTCHNL_OP_1588_PTP_GET_PIN_CFGS;
+
+	return iavf_send_pf_msg(adapter, VIRTCHNL_OP_1588_PTP_GET_PIN_CFGS,
+				NULL, 0);
 }
 
 /**
@@ -301,6 +334,8 @@ int iavf_get_vf_config(struct iavf_adapter *adapter)
 		iavf_validate_num_queues(adapter);
 	iavf_vf_parse_hw_config(hw, adapter->vf_res);
 
+	adapter->current_op = VIRTCHNL_OP_UNKNOWN;
+
 	kfree(event.msg_buf);
 	return err;
 }
@@ -322,6 +357,8 @@ int iavf_get_vf_vlan_v2_caps(struct iavf_adapter *adapter)
 	if (!err)
 		memcpy(&adapter->vlan_v2_caps, event.msg_buf,
 		       min(event.msg_len, len));
+
+	adapter->current_op = VIRTCHNL_OP_UNKNOWN;
 
 	kfree(event.msg_buf);
 	return err;
@@ -345,6 +382,8 @@ int iavf_get_vf_supported_rxdids(struct iavf_adapter *adapter)
 		memcpy(&adapter->supported_rxdids, event.msg_buf,
 		       min(event.msg_len, len));
 
+	adapter->current_op = VIRTCHNL_OP_UNKNOWN;
+
 	kfree(event.msg_buf);
 	return err;
 }
@@ -366,6 +405,35 @@ int iavf_get_vf_ptp_caps(struct iavf_adapter *adapter)
 	if (!err)
 		memcpy(&adapter->ptp.hw_caps, event.msg_buf,
 		       min(event.msg_len, len));
+
+	adapter->current_op = VIRTCHNL_OP_UNKNOWN;
+
+	kfree(event.msg_buf);
+	return err;
+}
+
+int iavf_get_vf_ptp_pin_cfgs(struct iavf_adapter *adapter)
+{
+	struct iavf_arq_event_info event;
+	int err;
+	u16 len;
+
+	/* The message from the PF can be variable sized. Use the maximum
+	 * expected size of 4Kb to allow the variable size to be received.
+	 */
+	len = IAVF_MAX_AQ_BUF_SIZE;
+	event.buf_len = len;
+	event.msg_buf = kzalloc(len, GFP_KERNEL);
+	if (!event.msg_buf)
+		return -ENOMEM;
+
+	err = iavf_poll_virtchnl_msg(&adapter->hw, &event,
+				     VIRTCHNL_OP_1588_PTP_GET_PIN_CFGS);
+	if (!err)
+		iavf_virtchnl_ptp_get_pin_cfgs(adapter, event.msg_buf,
+					       min(event.msg_len, len));
+
+	adapter->current_op = VIRTCHNL_OP_UNKNOWN;
 
 	kfree(event.msg_buf);
 	return err;
@@ -795,7 +863,8 @@ void iavf_add_vlans(struct iavf_adapter *adapter)
 		if (f->add)
 			count++;
 	}
-	if (!count) {
+	if (!count || !VLAN_FILTERING_ALLOWED(adapter)) {
+		/* prevent endless add VLAN requests */
 		adapter->aq_required &= ~IAVF_FLAG_AQ_ADD_VLAN_FILTER;
 		spin_unlock_bh(&adapter->mac_vlan_list_lock);
 		return;
@@ -838,7 +907,7 @@ void iavf_add_vlans(struct iavf_adapter *adapter)
 
 		iavf_send_pf_msg(adapter, VIRTCHNL_OP_ADD_VLAN, (u8 *)vvfl, len);
 		kfree(vvfl);
-	} else if (VLAN_V2_ALLOWED(adapter)) {
+	} else {
 		struct virtchnl_vlan_filter_list_v2 *vvfl_v2;
 
 		adapter->current_op = VIRTCHNL_OP_ADD_VLAN_V2;
@@ -917,11 +986,16 @@ void iavf_del_vlans(struct iavf_adapter *adapter)
 
 	spin_lock_bh(&adapter->mac_vlan_list_lock);
 
-	list_for_each_entry(f, &adapter->vlan_filter_list, list) {
-		if (f->remove)
+	list_for_each_entry_safe(f, ftmp, &adapter->vlan_filter_list, list) {
+		if (f->remove && !VLAN_FILTERING_ALLOWED(adapter)) {
+			list_del(&f->list);
+			kfree(f);
+		} else if (f->remove) {
 			count++;
+		}
 	}
 	if (!count) {
+		/* prevent endless del VLAN requests */
 		adapter->aq_required &= ~IAVF_FLAG_AQ_DEL_VLAN_FILTER;
 		spin_unlock_bh(&adapter->mac_vlan_list_lock);
 		return;
@@ -966,7 +1040,7 @@ void iavf_del_vlans(struct iavf_adapter *adapter)
 
 		iavf_send_pf_msg(adapter, VIRTCHNL_OP_DEL_VLAN, (u8 *)vvfl, len);
 		kfree(vvfl);
-	} else if (VLAN_V2_ALLOWED(adapter)) {
+	} else {
 		struct virtchnl_vlan_filter_list_v2 *vvfl_v2;
 
 		adapter->current_op = VIRTCHNL_OP_DEL_VLAN_V2;
@@ -1307,13 +1381,13 @@ iavf_set_vc_offload_ethertype(struct iavf_adapter *adapter,
 	/* reference the correct offload support structure */
 	switch (offload_op) {
 	case VIRTCHNL_OP_ENABLE_VLAN_STRIPPING_V2:
-		/* fall-through */
+		fallthrough;
 	case VIRTCHNL_OP_DISABLE_VLAN_STRIPPING_V2:
 		offload_support =
 			&adapter->vlan_v2_caps.offloads.stripping_support;
 		break;
 	case VIRTCHNL_OP_ENABLE_VLAN_INSERTION_V2:
-		/* fall-through */
+		fallthrough;
 	case VIRTCHNL_OP_DISABLE_VLAN_INSERTION_V2:
 		offload_support =
 			&adapter->vlan_v2_caps.offloads.insertion_support;
@@ -1960,13 +2034,14 @@ void iavf_del_cloud_filter(struct iavf_adapter *adapter)
  *
  * Request that the PF reset this VF. No response is expected.
  **/
-enum iavf_status iavf_request_reset(struct iavf_adapter *adapter)
+int iavf_request_reset(struct iavf_adapter *adapter)
 {
-	enum iavf_status status;
+	int err;
+
 	/* Don't check CURRENT_OP - this is always higher priority */
-	status = iavf_send_pf_msg(adapter, VIRTCHNL_OP_RESET_VF, NULL, 0);
+	err = iavf_send_pf_msg(adapter, VIRTCHNL_OP_RESET_VF, NULL, 0);
 	adapter->current_op = VIRTCHNL_OP_UNKNOWN;
-	return status;
+	return err;
 }
 
 /**
@@ -2198,125 +2273,22 @@ static void iavf_netdev_features_vlan_strip_set(struct net_device *netdev,
 }
 
 /**
- * iavf_virtchnl_ptp_get_time - Respond to VIRTCHNL_OP_1588_PTP_GET_TIME
- * @adapter: private adapter structure
- * @data: the message from the PF
- * @len: length of the message from the PF
- *
- * Handle the VIRTCHNL_OP_1588_PTP_GET_TIME message from the PF. This message
- * is sent by the PF in response to the same op as a request from the VF.
- * Extract the 64bit nanoseconds time from the message and store it in
- * cached_phc_time. Then, notify any thread that is waiting for the update via
- * the wait queue.
- */
-static void iavf_virtchnl_ptp_get_time(struct iavf_adapter *adapter, void *data, u16 len)
-{
-	struct virtchnl_phc_time *msg;
-
-	if (len == sizeof(*msg)) {
-		msg = (struct virtchnl_phc_time *)data;
-	} else {
-		dev_err_once(&adapter->pdev->dev, "Invalid VIRTCHNL_OP_1588_PTP_GET_TIME from PF. Got size %u, expected %lu\n",
-			     len, sizeof(*msg));
-		return;
-	}
-
-	adapter->ptp.cached_phc_time = msg->time;
-	adapter->ptp.cached_phc_updated = jiffies;
-	adapter->ptp.phc_time_ready = true;
-
-	wake_up(&adapter->ptp.phc_time_waitqueue);
-}
-
-/**
- * iavf_virtchnl_ptp_tx_timestamp - Handle Tx timestamp events from the PF
- * @adapter: private adapter structure
- * @data: message contents from PF
- * @len: length of the message from the PF
- *
- * Handle the VIRTCHNL_OP_1588_PTP_TX_TIMESTAMP op from the PF. This is sent
- * whenever the PF has detected a transmit timestamp associated with this VF.
- *
- * First, check if there is a pending skb that needs a transmit timestamp. If
- * so, extract the time value from the message and report it to the stack.
- * Note that 40bit timestamp values must first be extended using
- * iavf_ptp_extend_40b_timestamp().
- */
-static void iavf_virtchnl_ptp_tx_timestamp(struct iavf_adapter *adapter, void *data, u16 len)
-{
-	struct skb_shared_hwtstamps skb_tstamps = {};
-	struct device *dev = &adapter->pdev->dev;
-	struct virtchnl_phc_tx_tstamp *msg;
-	struct sk_buff *skb;
-	u64 ns;
-
-	if (len == sizeof(*msg)) {
-		msg = (struct virtchnl_phc_tx_tstamp *)data;
-	} else {
-		dev_err_once(dev, "Invalid VIRTCHNL_OP_1588_PTP_TX_TIMESTAMP from PF. Got size %u, expected %lu\n",
-			     len, sizeof(*msg));
-		return;
-	}
-
-	/* No need to process the event if timestamping isn't on */
-	if (adapter->ptp.hwtstamp_config.tx_type != HWTSTAMP_TX_ON)
-		return;
-
-	/* don't attempt to timestamp if we don't have a pending skb */
-	skb = adapter->ptp.tx_skb;
-	if (!skb)
-		return;
-
-	/* Since we only request one outstanding timestamp at once, we assume
-	 * this event must belong to the saved SKB. Clear the bit lock and the
-	 * skb now prior to notifying the stack via skb_tstamp_tx().
-	 */
-	adapter->ptp.tx_skb = NULL;
-	clear_bit_unlock(__IAVF_TX_TSTAMP_IN_PROGRESS, &adapter->crit_section);
-
-	switch (adapter->ptp.hw_caps.tx_tstamp_format) {
-	case VIRTCHNL_1588_PTP_TSTAMP_40BIT:
-		if (!(msg->tstamp & IAVF_PTP_40B_TSTAMP_VALID)) {
-			dev_warn(dev, "Got a VIRTCHNL_OP_1588_PTP_TX_TIMESTAMP message with an invalid timestamp\n");
-			goto out_free_skb;
-		}
-		ns = iavf_ptp_extend_40b_timestamp(adapter->ptp.cached_phc_time, msg->tstamp);
-		break;
-	case VIRTCHNL_1588_PTP_TSTAMP_64BIT_NS:
-		ns = msg->tstamp;
-		break;
-	default:
-		/* This shouldn't happen since we won't enable Tx timestamps
-		 * if we don't know the timestamp format.
-		 */
-		dev_dbg(dev, "Got a VIRTCHNL_OP_1588_PTP_TX_TIMESTAMP event, when timestamp format is unknown\n");
-		goto out_free_skb;
-	}
-
-	skb_tstamps.hwtstamp = ns_to_ktime(ns);
-	skb_tstamp_tx(skb, &skb_tstamps);
-
-out_free_skb:
-	dev_kfree_skb_any(skb);
-}
-
-/**
  * iavf_virtchnl_rdma_irq_map - Handle receive of IRQ mapping message from PF
  * @adapter: private adapter structure
- * @status: result of the received virtchnl message
+ * @v_retval: result of the received virtchnl message
  *
  * Called when the VF gets a VIRTCHNL_OP_RDMA_CONFIG_IRQ_MAP or
  * VIRTCHNL_OP_RDMA_RELEASE_IRQ_MAP message from the PF.
  */
 static void
 iavf_virtchnl_rdma_irq_map(struct iavf_adapter *adapter,
-			   enum iavf_status status)
+			   enum virtchnl_status_code v_retval)
 {
 	if (adapter->rdma.vc_op_state != IAVF_RDMA_VC_OP_PENDING)
 		dev_warn(&adapter->pdev->dev, "Unexpected vc_op_state %u\n",
 			 adapter->rdma.vc_op_state);
 
-	if (!status)
+	if (!v_retval)
 		adapter->rdma.vc_op_state = IAVF_RDMA_VC_OP_COMPLETE;
 	else
 		adapter->rdma.vc_op_state = IAVF_RDMA_VC_OP_FAILED;
@@ -2328,7 +2300,7 @@ iavf_virtchnl_rdma_irq_map(struct iavf_adapter *adapter,
  * iavf_virtchnl_completion
  * @adapter: adapter structure
  * @v_opcode: opcode sent by PF
- * @v_retval: retval sent by PF
+ * @v_retval: virtchnl status code return value sent by PF
  * @msg: message sent by PF
  * @msglen: message length
  *
@@ -2338,10 +2310,11 @@ iavf_virtchnl_rdma_irq_map(struct iavf_adapter *adapter,
  **/
 void iavf_virtchnl_completion(struct iavf_adapter *adapter,
 			      enum virtchnl_ops v_opcode,
-			      enum iavf_status v_retval,
+			      enum virtchnl_status_code v_retval,
 			      u8 *msg, u16 msglen)
 {
 	struct net_device *netdev = adapter->netdev;
+	struct device *dev = &adapter->pdev->dev;
 
 	if (v_opcode == VIRTCHNL_OP_EVENT) {
 		struct virtchnl_pf_event *vpe =
@@ -2399,12 +2372,12 @@ void iavf_virtchnl_completion(struct iavf_adapter *adapter,
 			iavf_print_link_message(adapter);
 			break;
 		case VIRTCHNL_EVENT_RESET_IMPENDING:
-			dev_info(&adapter->pdev->dev, "Reset indication received from the PF\n");
+			dev_info(dev, "Reset indication received from the PF\n");
 			adapter->flags |= IAVF_FLAG_RESET_PENDING;
 			iavf_schedule_reset(adapter);
 			break;
 		default:
-			dev_err(&adapter->pdev->dev, "Unknown event %d from PF\n",
+			dev_err(dev, "Unknown event %d from PF\n",
 				vpe->event);
 			break;
 		}
@@ -2421,8 +2394,7 @@ void iavf_virtchnl_completion(struct iavf_adapter *adapter,
 	    (v_opcode == VIRTCHNL_OP_ENABLE_CHANNELS ||
 	     v_opcode == VIRTCHNL_OP_DISABLE_CHANNELS)) {
 		adapter->flags |= IAVF_FLAG_REINIT_CHNL_NEEDED;
-		dev_info(&adapter->pdev->dev,
-			 "Scheduling reset due to %s retval %d\n",
+		dev_info(dev, "Scheduling reset due to %s retval %d\n",
 			 v_opcode == VIRTCHNL_OP_ENABLE_CHANNELS ?
 			 "VIRTCHNL_OP_ENABLE_CHANNELS" :
 			 "VIRTCHNL_OP_DISABLE_CHANNELS", v_retval);
@@ -2436,36 +2408,36 @@ void iavf_virtchnl_completion(struct iavf_adapter *adapter,
 	if (v_retval) {
 		switch (v_opcode) {
 		case VIRTCHNL_OP_ADD_VLAN:
-			dev_err(&adapter->pdev->dev, "Failed to add VLAN filter, error %s\n",
-				iavf_stat_str(&adapter->hw, v_retval));
+			dev_err(dev, "Failed to add VLAN filter, error %s\n",
+				virtchnl_stat_str(v_retval));
 			break;
 		case VIRTCHNL_OP_ADD_ETH_ADDR:
-			dev_err(&adapter->pdev->dev, "Failed to add MAC filter, error %s\n",
-				iavf_stat_str(&adapter->hw, v_retval));
+			dev_err(dev, "Failed to add MAC filter, error %s\n",
+				virtchnl_stat_str(v_retval));
 			iavf_mac_add_reject(adapter);
 			/* restore administratively set mac address */
 			ether_addr_copy(adapter->hw.mac.addr, netdev->dev_addr);
 			wake_up(&adapter->vc_waitqueue);
 			break;
 		case VIRTCHNL_OP_DEL_VLAN:
-			dev_err(&adapter->pdev->dev, "Failed to delete VLAN filter, error %s\n",
-				iavf_stat_str(&adapter->hw, v_retval));
+			dev_err(dev, "Failed to delete VLAN filter, error %s\n",
+				virtchnl_stat_str(v_retval));
 			break;
 		case VIRTCHNL_OP_DEL_ETH_ADDR:
-			dev_err(&adapter->pdev->dev, "Failed to delete MAC filter, error %s\n",
-				iavf_stat_str(&adapter->hw, v_retval));
+			dev_err(dev, "Failed to delete MAC filter, error %s\n",
+				virtchnl_stat_str(v_retval));
 			break;
 		case VIRTCHNL_OP_ENABLE_CHANNELS:
-			dev_err(&adapter->pdev->dev, "Failed to configure queue channels, error %s\n",
-				iavf_stat_str(&adapter->hw, v_retval));
+			dev_err(dev, "Failed to configure queue channels, error %s\n",
+				virtchnl_stat_str(v_retval));
 			adapter->flags &= ~IAVF_FLAG_REINIT_ITR_NEEDED;
 			adapter->ch_config.state = __IAVF_TC_INVALID;
 			netdev_reset_tc(netdev);
 			netif_tx_start_all_queues(netdev);
 			break;
 		case VIRTCHNL_OP_DISABLE_CHANNELS:
-			dev_err(&adapter->pdev->dev, "Failed to disable queue channels, error %s\n",
-				iavf_stat_str(&adapter->hw, v_retval));
+			dev_err(dev, "Failed to disable queue channels, error %s\n",
+				virtchnl_stat_str(v_retval));
 			adapter->flags &= ~IAVF_FLAG_REINIT_ITR_NEEDED;
 			adapter->ch_config.state = __IAVF_TC_RUNNING;
 			netif_tx_start_all_queues(netdev);
@@ -2479,14 +2451,12 @@ void iavf_virtchnl_completion(struct iavf_adapter *adapter,
 						 list) {
 				if (cf->state == __IAVF_CF_ADD_PENDING) {
 					cf->state = __IAVF_CF_INVALID;
-					dev_info(&adapter->pdev->dev, "Failed to add cloud filter, error %s\n",
-						 iavf_stat_str(&adapter->hw,
-							       v_retval));
+					dev_info(dev, "Failed to add cloud filter, error %s\n",
+						 virtchnl_stat_str(v_retval));
 					iavf_print_cloud_filter(adapter,
 								&cf->f);
 					if (msglen)
-						dev_err(&adapter->pdev->dev,
-							"%s\n", msg);
+						dev_err(dev, "%s\n", msg);
 					list_del(&cf->list);
 					kfree(cf);
 					adapter->num_cloud_filters--;
@@ -2503,9 +2473,8 @@ void iavf_virtchnl_completion(struct iavf_adapter *adapter,
 					    list) {
 				if (cf->state == __IAVF_CF_DEL_PENDING) {
 					cf->state = __IAVF_CF_ACTIVE;
-					dev_info(&adapter->pdev->dev, "Failed to del cloud filter, error %s\n",
-						 iavf_stat_str(&adapter->hw,
-							       v_retval));
+					dev_info(dev, "Failed to del cloud filter, error %s\n",
+						 virtchnl_stat_str(v_retval));
 					iavf_print_cloud_filter(adapter,
 								&cf->f);
 				}
@@ -2514,8 +2483,7 @@ void iavf_virtchnl_completion(struct iavf_adapter *adapter,
 			}
 			break;
 		case VIRTCHNL_OP_ENABLE_VLAN_STRIPPING:
-			dev_warn(&adapter->pdev->dev,
-				 "Changing VLAN Stripping is not allowed when Port VLAN is configured\n");
+			dev_warn(dev, "Changing VLAN Stripping is not allowed when Port VLAN is configured\n");
 			/*
 			 * Vlan stripping could not be enabled by ethtool.
 			 * Disable it in netdev->features.
@@ -2523,17 +2491,40 @@ void iavf_virtchnl_completion(struct iavf_adapter *adapter,
 			iavf_netdev_features_vlan_strip_set(netdev, false);
 			break;
 		case VIRTCHNL_OP_DISABLE_VLAN_STRIPPING:
-			dev_warn(&adapter->pdev->dev,
-				 "Changing VLAN Stripping is not allowed when Port VLAN is configured\n");
+			dev_warn(dev, "Changing VLAN Stripping is not allowed when Port VLAN is configured\n");
 			/*
 			 * Vlan stripping could not be disabled by ethtool.
 			 * Enable it in netdev->features.
 			 */
 			iavf_netdev_features_vlan_strip_set(netdev, true);
 			break;
+		case VIRTCHNL_OP_1588_PTP_GET_TIME:
+			dev_warn(dev, "Failed to get PHC clock time, error %s\n",
+				 virtchnl_stat_str(v_retval));
+			break;
+		case VIRTCHNL_OP_1588_PTP_SET_TIME:
+			dev_warn(dev, "Failed to set PHC clock time, error %s\n",
+				 virtchnl_stat_str(v_retval));
+			break;
+		case VIRTCHNL_OP_1588_PTP_ADJ_TIME:
+			dev_warn(dev, "Failed to adjust PHC clock time, error %s\n",
+				 virtchnl_stat_str(v_retval));
+			break;
+		case VIRTCHNL_OP_1588_PTP_ADJ_FREQ:
+			dev_warn(dev, "Failed to adjust PHC clock frequency, error %s\n",
+				 virtchnl_stat_str(v_retval));
+			break;
+		case VIRTCHNL_OP_1588_PTP_SET_PIN_CFG:
+			dev_warn(dev, "Failed to configure PHC GPIO pin, error %s\n",
+				 virtchnl_stat_str(v_retval));
+			break;
+		case VIRTCHNL_OP_1588_PTP_GET_PIN_CFGS:
+			dev_warn(dev, "Failed to get PHC GPIO pin config, error %s\n",
+				 virtchnl_stat_str(v_retval));
+			break;
 		default:
-			dev_err(&adapter->pdev->dev, "PF returned error %d (%s) to our request %d\n",
-				v_retval, iavf_stat_str(&adapter->hw, v_retval),
+			dev_err(dev, "PF returned error %d (%s) to our request %d\n",
+				v_retval, virtchnl_stat_str(v_retval),
 				v_opcode);
 
 			/* Assume that the ADQ configuration caused one of the
@@ -2545,8 +2536,7 @@ void iavf_virtchnl_completion(struct iavf_adapter *adapter,
 			    (v_opcode == VIRTCHNL_OP_ENABLE_QUEUES ||
 			     v_opcode == VIRTCHNL_OP_CONFIG_IRQ_MAP ||
 			     v_opcode == VIRTCHNL_OP_CONFIG_VSI_QUEUES)) {
-				dev_err(&adapter->pdev->dev,
-					"ADQ is enabled and opcode %d failed (%d)\n",
+				dev_err(dev, "ADQ is enabled and opcode %d failed (%d)\n",
 					v_opcode, v_retval);
 				adapter->ch_config.state = __IAVF_TC_INVALID;
 				adapter->num_tc = 0;
@@ -2617,10 +2607,11 @@ void iavf_virtchnl_completion(struct iavf_adapter *adapter,
 		 * wasn't successfully negotiated with the PF
 		 */
 		}
-		/* fall-through */
+		fallthrough;
 	case VIRTCHNL_OP_GET_OFFLOAD_VLAN_V2_CAPS: {
 		struct iavf_mac_filter *f;
 		bool was_mac_changed;
+		u64 aq_required = 0;
 
 		if (v_opcode == VIRTCHNL_OP_GET_OFFLOAD_VLAN_V2_CAPS)
 			memcpy(&adapter->vlan_v2_caps, msg,
@@ -2674,9 +2665,14 @@ void iavf_virtchnl_completion(struct iavf_adapter *adapter,
 		if (VLAN_FILTERING_ALLOWED(adapter)) {
 			struct iavf_vlan_filter *vlf;
 
-			list_for_each_entry(vlf, &adapter->vlan_filter_list,
-					    list)
-				vlf->add = true;
+			if (!list_empty(&adapter->vlan_filter_list)) {
+				list_for_each_entry(vlf,
+						    &adapter->vlan_filter_list,
+						    list)
+					vlf->add = true;
+
+				aq_required |= IAVF_FLAG_AQ_ADD_VLAN_FILTER;
+			}
 		}
 
 		spin_unlock_bh(&adapter->mac_vlan_list_lock);
@@ -2696,8 +2692,7 @@ void iavf_virtchnl_completion(struct iavf_adapter *adapter,
 						    list) {
 					cf->add = true;
 				}
-				adapter->aq_required |=
-						IAVF_FLAG_AQ_ADD_CLOUD_FILTER;
+				aq_required |= IAVF_FLAG_AQ_ADD_CLOUD_FILTER;
 			}
 			spin_unlock_bh(&adapter->cloud_filter_list_lock);
 		}
@@ -2706,8 +2701,8 @@ void iavf_virtchnl_completion(struct iavf_adapter *adapter,
 		ether_addr_copy(netdev->dev_addr, adapter->hw.mac.addr);
 		netif_addr_unlock_bh(netdev);
 
-		adapter->aq_required |= IAVF_FLAG_AQ_ADD_MAC_FILTER;
-		adapter->aq_required |= IAVF_FLAG_AQ_ADD_VLAN_FILTER;
+		adapter->aq_required |= IAVF_FLAG_AQ_ADD_MAC_FILTER |
+			aq_required;
 		}
 		break;
 	case VIRTCHNL_OP_GET_SUPPORTED_RXDIDS:
@@ -2726,6 +2721,15 @@ void iavf_virtchnl_completion(struct iavf_adapter *adapter,
 		break;
 	case VIRTCHNL_OP_1588_PTP_TX_TIMESTAMP:
 		iavf_virtchnl_ptp_tx_timestamp(adapter, msg, msglen);
+		break;
+	case VIRTCHNL_OP_1588_PTP_SET_PIN_CFG:
+		iavf_virtchnl_ptp_pin_status(adapter, v_retval);
+		break;
+	case VIRTCHNL_OP_1588_PTP_GET_PIN_CFGS:
+		iavf_virtchnl_ptp_get_pin_cfgs(adapter, msg, msglen);
+		break;
+	case VIRTCHNL_OP_1588_PTP_EXT_TIMESTAMP:
+		iavf_virtchnl_ptp_ext_timestamp(adapter, msg, msglen);
 		break;
 	case VIRTCHNL_OP_ENABLE_QUEUES:
 		/* enable transmits */
@@ -2766,16 +2770,14 @@ void iavf_virtchnl_completion(struct iavf_adapter *adapter,
 		if (msglen == sizeof(*vrh))
 			adapter->hena = vrh->hena;
 		else
-			dev_warn(&adapter->pdev->dev,
-				 "Invalid message %d from PF\n", v_opcode);
+			dev_warn(dev, "Invalid message %d from PF\n", v_opcode);
 		}
 		break;
 	case VIRTCHNL_OP_REQUEST_QUEUES: {
 		struct virtchnl_vf_res_request *vfres =
 			(struct virtchnl_vf_res_request *)msg;
 		if (vfres->num_queue_pairs != adapter->num_req_queues) {
-			dev_info(&adapter->pdev->dev,
-				 "Requested %d queues, PF can support %d\n",
+			dev_info(dev, "Requested %d queues, PF can support %d\n",
 				 adapter->num_req_queues,
 				 vfres->num_queue_pairs);
 			adapter->num_req_queues = 0;
@@ -2795,9 +2797,8 @@ void iavf_virtchnl_completion(struct iavf_adapter *adapter,
 			}
 		}
 		spin_unlock_bh(&adapter->cloud_filter_list_lock);
-		if (!v_retval)
-			dev_dbg(&adapter->pdev->dev,
-				"Cloud filters are added\n");
+		if (v_retval == VIRTCHNL_STATUS_SUCCESS)
+			dev_dbg(dev, "Cloud filters are added\n");
 		/* if not done, set channel specific attribute
 		 * such as "is it ADQ enabled", "queues are ADD ena",
 		 * "vectors are ADQ ena" or not
@@ -2821,9 +2822,8 @@ void iavf_virtchnl_completion(struct iavf_adapter *adapter,
 			}
 		}
 		spin_unlock_bh(&adapter->cloud_filter_list_lock);
-		if (!v_retval)
-			dev_dbg(&adapter->pdev->dev,
-				"Cloud filters are deleted\n");
+		if (v_retval == VIRTCHNL_STATUS_SUCCESS)
+			dev_dbg(dev, "Cloud filters are deleted\n");
 		/* if active ADQ filters for channels reached zero,
 		 * put the rings, vectors back in non-ADQ state
 		 */
@@ -2851,7 +2851,7 @@ void iavf_virtchnl_completion(struct iavf_adapter *adapter,
 		 * version of vc_send, so make sure we handle both cases
 		 */
 		if (adapter->rdma.vc_op_state == IAVF_RDMA_VC_OP_PENDING) {
-			if (!v_retval) {
+			if (v_retval == VIRTCHNL_STATUS_SUCCESS) {
 				memcpy(adapter->rdma.recv_sync_msg, msg,
 				       msglen);
 				adapter->rdma.recv_sync_msg_size = msglen;
@@ -2860,7 +2860,7 @@ void iavf_virtchnl_completion(struct iavf_adapter *adapter,
 			} else {
 				adapter->rdma.vc_op_state =
 					IAVF_RDMA_VC_OP_FAILED;
-				dev_err(&adapter->pdev->dev, "PF returned error %d to our request %s-%d\n",
+				dev_err(dev, "PF returned error %d to our request %s-%d\n",
 					v_retval, virtchnl_op_str(v_opcode),
 					v_opcode);
 			}
@@ -2879,7 +2879,7 @@ void iavf_virtchnl_completion(struct iavf_adapter *adapter,
 		break;
 	default:
 		if (adapter->current_op && (v_opcode != adapter->current_op))
-			dev_dbg(&adapter->pdev->dev, "Expected response %d from PF, received %d\n",
+			dev_dbg(dev, "Expected response %d from PF, received %d\n",
 				adapter->current_op, v_opcode);
 		break;
 	} /* switch v_opcode */

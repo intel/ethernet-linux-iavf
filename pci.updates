@@ -11,6 +11,7 @@
 #             the string is consumed by the tools using it.
 #
 8086  Intel Corporation
+	0dd5  Ethernet Virtual Device
 	154c  Ethernet Virtual Function 700 Series
 	1571  Ethernet Virtual Function 700 Series
 	1889  Ethernet Adaptive Virtual Function

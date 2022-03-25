@@ -22,7 +22,7 @@
  *
  * The PF is required to return a status code in v_retval for all messages
  * except RESET_VF, which does not require any response. The returned value
- * is of virtchnl_status_code type, defined in the shared type.h.
+ * is of virtchnl_status_code type, defined here.
  *
  * In general, VF driver initialization should roughly follow the order of
  * these opcodes. The VF driver must first validate the API version of the
@@ -37,7 +37,21 @@
  * value in current and future projects
  */
 
-/* Error Codes */
+/* These macros are used to generate compilation errors if a structure/union
+ * is not exactly the correct length. It gives a divide by zero error if the
+ * structure/union is not of the correct size, otherwise it creates an enum
+ * that is never used.
+ */
+#define VIRTCHNL_CHECK_STRUCT_LEN(n, X) enum virtchnl_static_assert_enum_##X \
+	{ virtchnl_static_assert_##X = (n)/((sizeof(struct X) == (n)) ? 1 : 0) }
+#define VIRTCHNL_CHECK_UNION_LEN(n, X) enum virtchnl_static_asset_enum_##X \
+	{ virtchnl_static_assert_##X = (n)/((sizeof(union X) == (n)) ? 1 : 0) }
+
+/* Error Codes
+ * Note that many older versions of various iAVF drivers convert the reported
+ * status code directly into an iavf_status enumeration. For this reason, it
+ * is important that the values of these enumerations line up.
+ */
 enum virtchnl_status_code {
 	VIRTCHNL_STATUS_SUCCESS				= 0,
 	VIRTCHNL_STATUS_ERR_PARAM			= -5,
@@ -84,6 +98,9 @@ enum virtchnl_rx_hsplit {
 	VIRTCHNL_RX_HSPLIT_SPLIT_SCTP    = 8,
 };
 
+enum virtchnl_bw_limit_type {
+	VIRTCHNL_BW_SHAPER = 0,
+};
 /* END GENERIC DEFINES */
 
 /* Opcodes for VF-PF communication. These are placed in the v_opcode field
@@ -95,6 +112,7 @@ enum virtchnl_ops {
  * VFs send requests to the PF using the other ops.
  * Use of "advanced opcode" features must be negotiated as part of capabilities
  * exchange and are not considered part of base mode feature set.
+ *
  */
 	VIRTCHNL_OP_UNKNOWN = 0,
 	VIRTCHNL_OP_VERSION = 1, /* must ALWAYS be 1 */
@@ -155,7 +173,11 @@ enum virtchnl_ops {
 	VIRTCHNL_OP_1588_PTP_ADJ_TIME = 63,
 	VIRTCHNL_OP_1588_PTP_ADJ_FREQ = 64,
 	VIRTCHNL_OP_1588_PTP_TX_TIMESTAMP = 65,
-	/* opcode 66, 67, 68, and 69 are reserved */
+	VIRTCHNL_OP_GET_QOS_CAPS = 66,
+	VIRTCHNL_OP_CONFIG_QUEUE_TC_MAP = 67,
+	VIRTCHNL_OP_1588_PTP_GET_PIN_CFGS = 68,
+	VIRTCHNL_OP_1588_PTP_SET_PIN_CFG = 69,
+	VIRTCHNL_OP_1588_PTP_EXT_TIMESTAMP = 70,
 	VIRTCHNL_OP_ENABLE_QUEUES_V2 = 107,
 	VIRTCHNL_OP_DISABLE_QUEUES_V2 = 108,
 	VIRTCHNL_OP_MAP_QUEUE_VECTOR = 111,
@@ -241,12 +263,6 @@ static inline const char *virtchnl_op_str(enum virtchnl_ops v_opcode)
 		return "VIRTCHNL_OP_DEL_FDIR_FILTER";
 	case VIRTCHNL_OP_GET_MAX_RSS_QREGION:
 		return "VIRTCHNL_OP_GET_MAX_RSS_QREGION";
-	case VIRTCHNL_OP_ENABLE_QUEUES_V2:
-		return "VIRTCHNL_OP_ENABLE_QUEUES_V2";
-	case VIRTCHNL_OP_DISABLE_QUEUES_V2:
-		return "VIRTCHNL_OP_DISABLE_QUEUES_V2";
-	case VIRTCHNL_OP_MAP_QUEUE_VECTOR:
-		return "VIRTCHNL_OP_MAP_QUEUE_VECTOR";
 	case VIRTCHNL_OP_GET_OFFLOAD_VLAN_V2_CAPS:
 		return "VIRTCHNL_OP_GET_OFFLOAD_VLAN_V2_CAPS";
 	case VIRTCHNL_OP_ADD_VLAN_V2:
@@ -277,6 +293,18 @@ static inline const char *virtchnl_op_str(enum virtchnl_ops v_opcode)
 		return "VIRTCHNL_OP_1588_PTP_ADJ_FREQ";
 	case VIRTCHNL_OP_1588_PTP_TX_TIMESTAMP:
 		return "VIRTCHNL_OP_1588_PTP_TX_TIMESTAMP";
+	case VIRTCHNL_OP_1588_PTP_GET_PIN_CFGS:
+		return "VIRTCHNL_OP_1588_PTP_GET_PIN_CFGS";
+	case VIRTCHNL_OP_1588_PTP_SET_PIN_CFG:
+		return "VIRTCHNL_OP_1588_PTP_SET_PIN_CFG";
+	case VIRTCHNL_OP_1588_PTP_EXT_TIMESTAMP:
+		return "VIRTCHNL_OP_1588_PTP_EXT_TIMESTAMP";
+	case VIRTCHNL_OP_ENABLE_QUEUES_V2:
+		return "VIRTCHNL_OP_ENABLE_QUEUES_V2";
+	case VIRTCHNL_OP_DISABLE_QUEUES_V2:
+		return "VIRTCHNL_OP_DISABLE_QUEUES_V2";
+	case VIRTCHNL_OP_MAP_QUEUE_VECTOR:
+		return "VIRTCHNL_OP_MAP_QUEUE_VECTOR";
 	case VIRTCHNL_OP_MAX:
 		return "VIRTCHNL_OP_MAX";
 	default:
@@ -284,15 +312,29 @@ static inline const char *virtchnl_op_str(enum virtchnl_ops v_opcode)
 	}
 }
 
-/* These macros are used to generate compilation errors if a structure/union
- * is not exactly the correct length. It gives a divide by zero error if the
- * structure/union is not of the correct size, otherwise it creates an enum
- * that is never used.
- */
-#define VIRTCHNL_CHECK_STRUCT_LEN(n, X) enum virtchnl_static_assert_enum_##X \
-	{ virtchnl_static_assert_##X = (n)/((sizeof(struct X) == (n)) ? 1 : 0) }
-#define VIRTCHNL_CHECK_UNION_LEN(n, X) enum virtchnl_static_asset_enum_##X \
-	{ virtchnl_static_assert_##X = (n)/((sizeof(union X) == (n)) ? 1 : 0) }
+static inline const char *virtchnl_stat_str(enum virtchnl_status_code v_status)
+{
+	switch (v_status) {
+	case VIRTCHNL_STATUS_SUCCESS:
+		return "VIRTCHNL_STATUS_SUCCESS";
+	case VIRTCHNL_STATUS_ERR_PARAM:
+		return "VIRTCHNL_STATUS_ERR_PARAM";
+	case VIRTCHNL_STATUS_ERR_NO_MEMORY:
+		return "VIRTCHNL_STATUS_ERR_NO_MEMORY";
+	case VIRTCHNL_STATUS_ERR_OPCODE_MISMATCH:
+		return "VIRTCHNL_STATUS_ERR_OPCODE_MISMATCH";
+	case VIRTCHNL_STATUS_ERR_CQP_COMPL_ERROR:
+		return "VIRTCHNL_STATUS_ERR_CQP_COMPL_ERROR";
+	case VIRTCHNL_STATUS_ERR_INVALID_VF_ID:
+		return "VIRTCHNL_STATUS_ERR_INVALID_VF_ID";
+	case VIRTCHNL_STATUS_ERR_ADMIN_QUEUE_ERROR:
+		return "VIRTCHNL_STATUS_ERR_ADMIN_QUEUE_ERROR";
+	case VIRTCHNL_STATUS_ERR_NOT_SUPPORTED:
+		return "VIRTCHNL_STATUS_ERR_NOT_SUPPORTED";
+	default:
+		return "Unknown status code (update virtchnl.h)";
+	}
+}
 
 /* Message descriptions and data structures. */
 
@@ -396,6 +438,7 @@ VIRTCHNL_CHECK_STRUCT_LEN(16, virtchnl_vsi_resource);
 #define VIRTCHNL_VF_OFFLOAD_RX_FLEX_DESC	BIT(26)
 #define VIRTCHNL_VF_OFFLOAD_ADV_RSS_PF		BIT(27)
 #define VIRTCHNL_VF_OFFLOAD_FDIR_PF		BIT(28)
+#define VIRTCHNL_VF_OFFLOAD_QOS			BIT(29)
 	/* BIT(30) is reserved */
 #define VIRTCHNL_VF_CAP_PTP			BIT(31)
 
@@ -1283,6 +1326,14 @@ struct virtchnl_filter {
 
 VIRTCHNL_CHECK_STRUCT_LEN(272, virtchnl_filter);
 
+struct virtchnl_shaper_bw {
+	/* Unit is Kbps */
+	u32 committed;
+	u32 peak;
+};
+
+VIRTCHNL_CHECK_STRUCT_LEN(8, virtchnl_shaper_bw);
+
 struct virtchnl_supported_rxdids {
 	/* see enum virtchnl_rx_desc_id_bitmasks */
 	u64 supported_rxdids;
@@ -1328,13 +1379,6 @@ struct virtchnl_pf_event {
 			u8 link_status;
 			u8 pad[3];
 		} link_event_adv;
-		struct {
-			/* link_speed provided in Mbps */
-			u32 link_speed;
-			u16 vport_id;
-			u8 link_status;
-			u8 pad;
-		} link_event_adv_vport;
 	} event_data;
 
 	s32 severity;
@@ -1462,6 +1506,7 @@ enum virtchnl_proto_hdr_type {
 	 */
 	VIRTCHNL_PROTO_HDR_IPV4_FRAG,
 	VIRTCHNL_PROTO_HDR_IPV6_EH_FRAG,
+	VIRTCHNL_PROTO_HDR_GRE,
 };
 
 /* Protocol header field within a protocol header. */
@@ -1484,6 +1529,7 @@ enum virtchnl_proto_hdr_field {
 	VIRTCHNL_PROTO_HDR_IPV4_DSCP,
 	VIRTCHNL_PROTO_HDR_IPV4_TTL,
 	VIRTCHNL_PROTO_HDR_IPV4_PROT,
+	VIRTCHNL_PROTO_HDR_IPV4_CHKSUM,
 	/* IPV6 */
 	VIRTCHNL_PROTO_HDR_IPV6_SRC =
 		PROTO_HDR_FIELD_START(VIRTCHNL_PROTO_HDR_IPV6),
@@ -1508,14 +1554,17 @@ enum virtchnl_proto_hdr_field {
 	VIRTCHNL_PROTO_HDR_TCP_SRC_PORT =
 		PROTO_HDR_FIELD_START(VIRTCHNL_PROTO_HDR_TCP),
 	VIRTCHNL_PROTO_HDR_TCP_DST_PORT,
+	VIRTCHNL_PROTO_HDR_TCP_CHKSUM,
 	/* UDP */
 	VIRTCHNL_PROTO_HDR_UDP_SRC_PORT =
 		PROTO_HDR_FIELD_START(VIRTCHNL_PROTO_HDR_UDP),
 	VIRTCHNL_PROTO_HDR_UDP_DST_PORT,
+	VIRTCHNL_PROTO_HDR_UDP_CHKSUM,
 	/* SCTP */
 	VIRTCHNL_PROTO_HDR_SCTP_SRC_PORT =
 		PROTO_HDR_FIELD_START(VIRTCHNL_PROTO_HDR_SCTP),
 	VIRTCHNL_PROTO_HDR_SCTP_DST_PORT,
+	VIRTCHNL_PROTO_HDR_SCTP_CHKSUM,
 	/* GTPU_IP */
 	VIRTCHNL_PROTO_HDR_GTPU_IP_TEID =
 		PROTO_HDR_FIELD_START(VIRTCHNL_PROTO_HDR_GTPU_IP),
@@ -1552,6 +1601,11 @@ enum virtchnl_proto_hdr_field {
 	/* IPv6 Extension Fragment */
 	VIRTCHNL_PROTO_HDR_IPV6_EH_FRAG_PKID =
 		PROTO_HDR_FIELD_START(VIRTCHNL_PROTO_HDR_IPV6_EH_FRAG),
+	/* GTPU_DWN/UP */
+	VIRTCHNL_PROTO_HDR_GTPU_DWN_QFI =
+		PROTO_HDR_FIELD_START(VIRTCHNL_PROTO_HDR_GTPU_EH_PDU_DWN),
+	VIRTCHNL_PROTO_HDR_GTPU_UP_QFI =
+		PROTO_HDR_FIELD_START(VIRTCHNL_PROTO_HDR_GTPU_EH_PDU_UP),
 };
 
 struct virtchnl_proto_hdr {
@@ -1711,18 +1765,66 @@ struct virtchnl_fdir_del {
 
 VIRTCHNL_CHECK_STRUCT_LEN(12, virtchnl_fdir_del);
 
-/* TX and RX queue types are valid in legacy as well as split queue models.
- * With Split Queue model, 2 additional types are introduced - TX_COMPLETION
- * and RX_BUFFER. In split queue model, RX corresponds to the queue where HW
- * posts completions.
+/* VIRTCHNL_OP_GET_QOS_CAPS
+ * VF sends this message to get its QoS Caps, such as
+ * TC number, Arbiter and Bandwidth.
  */
+struct virtchnl_qos_cap_elem {
+	u8 tc_num;
+	u8 tc_prio;
+#define VIRTCHNL_ABITER_STRICT      0
+#define VIRTCHNL_ABITER_ETS         2
+	u8 arbiter;
+#define VIRTCHNL_STRICT_WEIGHT      1
+	u8 weight;
+	enum virtchnl_bw_limit_type type;
+	union {
+		struct virtchnl_shaper_bw shaper;
+		u8 pad2[32];
+	};
+};
+
+VIRTCHNL_CHECK_STRUCT_LEN(40, virtchnl_qos_cap_elem);
+
+struct virtchnl_qos_cap_list {
+	u16 vsi_id;
+	u16 num_elem;
+	struct virtchnl_qos_cap_elem cap[1];
+};
+
+VIRTCHNL_CHECK_STRUCT_LEN(44, virtchnl_qos_cap_list);
+
+/* VIRTCHNL_OP_CONFIG_QUEUE_TC_MAP
+ * VF sends message virtchnl_queue_tc_mapping to set queue to tc
+ * mapping for all the Tx and Rx queues with a specified VSI, and
+ * would get response about bitmap of valid user priorities
+ * associated with queues.
+ */
+struct virtchnl_queue_tc_mapping {
+	u16 vsi_id;
+	u16 num_tc;
+	u16 num_queue_pairs;
+	u8 pad[2];
+	union {
+		struct {
+			u16 start_queue_id;
+			u16 queue_count;
+		} req;
+		struct {
+#define VIRTCHNL_USER_PRIO_TYPE_UP	0
+#define VIRTCHNL_USER_PRIO_TYPE_DSCP	1
+			u16 prio_type;
+			u16 valid_prio_bitmap;
+		} resp;
+	} tc[1];
+};
+
+VIRTCHNL_CHECK_STRUCT_LEN(12, virtchnl_queue_tc_mapping);
+
+/* queue types */
 enum virtchnl_queue_type {
 	VIRTCHNL_QUEUE_TYPE_TX			= 0,
 	VIRTCHNL_QUEUE_TYPE_RX			= 1,
-	VIRTCHNL_QUEUE_TYPE_TX_COMPLETION	= 2,
-	VIRTCHNL_QUEUE_TYPE_RX_BUFFER		= 3,
-	VIRTCHNL_QUEUE_TYPE_CONFIG_TX		= 4,
-	VIRTCHNL_QUEUE_TYPE_CONFIG_RX		= 5
 };
 
 /* structure to specify a chunk of contiguous queues */
@@ -1746,19 +1848,13 @@ VIRTCHNL_CHECK_STRUCT_LEN(12, virtchnl_queue_chunks);
 
 /* VIRTCHNL_OP_ENABLE_QUEUES_V2
  * VIRTCHNL_OP_DISABLE_QUEUES_V2
- * VIRTCHNL_OP_DEL_QUEUES
  *
- * If VIRTCHNL version was negotiated in VIRTCHNL_OP_VERSION as 2.0
- * then all of these ops are available.
+ * These opcodes can be used if VIRTCHNL_VF_LARGE_NUM_QPAIRS was negotiated in
+ * VIRTCHNL_OP_GET_VF_RESOURCES
  *
- * If VIRTCHNL_VF_LARGE_NUM_QPAIRS was negotiated in VIRTCHNL_OP_GET_VF_RESOURCES
- * then VIRTCHNL_OP_ENABLE_QUEUES_V2 and VIRTCHNL_OP_DISABLE_QUEUES_V2 are
- * available.
- *
- * PF sends these messages to enable, disable or delete queues specified in
- * chunks. PF sends virtchnl_del_ena_dis_queues struct to specify the queues
- * to be enabled/disabled/deleted. Also applicable to single queue RX or
- * TX. CP performs requested action and returns status.
+ * VF sends virtchnl_ena_dis_queues struct to specify the queues to be
+ * enabled/disabled in chunks. Also applicable to single queue RX or
+ * TX. PF performs requested action and returns status.
  */
 struct virtchnl_del_ena_dis_queues {
 	u16 vport_id;
@@ -1792,13 +1888,13 @@ VIRTCHNL_CHECK_STRUCT_LEN(16, virtchnl_queue_vector);
 
 /* VIRTCHNL_OP_MAP_QUEUE_VECTOR
  *
- * If VIRTCHNL_VF_LARGE_NUM_QPAIRS was negotiated in VIRTCHNL_OP_GET_VF_RESOURCES
- * then only VIRTCHNL_OP_MAP_QUEUE_VECTOR is available.
+ * This opcode can be used only if VIRTCHNL_VF_LARGE_NUM_QPAIRS was negotiated
+ * in VIRTCHNL_OP_GET_VF_RESOURCES
  *
- * PF sends this message to map or unmap queues to vectors and ITR index
- * registers. External data buffer contains virtchnl_queue_vector_maps structure
+ * VF sends this message to map queues to vectors and ITR index registers.
+ * External data buffer contains virtchnl_queue_vector_maps structure
  * that contains num_qv_maps of virtchnl_queue_vector structures.
- * CP maps the requested queue vector maps after validating the queue and vector
+ * PF maps the requested queue vector maps after validating the queue and vector
  * ids and returns a status code.
  */
 struct virtchnl_queue_vector_maps {
@@ -1817,6 +1913,9 @@ VIRTCHNL_CHECK_STRUCT_LEN(24, virtchnl_queue_vector_maps);
  *   VIRTCHNL_OP_1588_PTP_ADJ_TIME
  *   VIRTCHNL_OP_1588_PTP_ADJ_FREQ
  *   VIRTCHNL_OP_1588_PTP_TX_TIMESTAMP
+ *   VIRTCHNL_OP_1588_PTP_GET_PIN_CFGS
+ *   VIRTCHNL_OP_1588_PTP_SET_PIN_CFG
+ *   VIRTCHNL_OP_1588_PTP_EXT_TIMESTAMP
  *
  * Support for offloading control of the device PTP hardware clock (PHC) is enabled
  * by VIRTCHNL_VF_CAP_PTP. This capability allows a VF to request that PF
@@ -1831,11 +1930,12 @@ VIRTCHNL_CHECK_STRUCT_LEN(24, virtchnl_queue_vector_maps);
  * caps field. The PF reply will indicate what features are enabled for
  * that VF.
  */
-#define VIRTCHNL_1588_PTP_CAP_TX_TSTAMP		0X00000001
-#define VIRTCHNL_1588_PTP_CAP_RX_TSTAMP		0X00000002
-#define VIRTCHNL_1588_PTP_CAP_READ_PHC		0X00000004
-#define VIRTCHNL_1588_PTP_CAP_WRITE_PHC		0X00000008
-#define VIRTCHNL_1588_PTP_CAP_PHC_REGS		0X00000010
+#define VIRTCHNL_1588_PTP_CAP_TX_TSTAMP		BIT(0)
+#define VIRTCHNL_1588_PTP_CAP_RX_TSTAMP		BIT(1)
+#define VIRTCHNL_1588_PTP_CAP_READ_PHC		BIT(2)
+#define VIRTCHNL_1588_PTP_CAP_WRITE_PHC		BIT(3)
+#define VIRTCHNL_1588_PTP_CAP_PHC_REGS		BIT(4)
+#define VIRTCHNL_1588_PTP_CAP_PIN_CFG		BIT(5)
 
 /**
  * virtchnl_phc_regs
@@ -1922,13 +2022,12 @@ enum virtchnl_ptp_tstamp_format {
  * @tx_tstamp_idx: The Tx timestamp index to set in the transmit descriptor
  *                 when requesting a timestamp for an outgoing packet.
  *                 Reserved if VIRTCHNL_1588_PTP_CAP_TX_TSTAMP is not enabled.
- * @n_ext_ts: Reserved. May be used in a future extension to indicate the
- *            number of programmable external timestamp event functions are
- *            available to the VF.
- * @n_per_out: Reserved. May be used in a future extension to indicate number
- *             programmable output functions are available to the VF.
- * @n_pins: Reserved. May be used in a future extension to indicate the number
- *          of programmable SDPs are available to the VF.
+ * @n_ext_ts: Number of external timestamp functions available. Reserved
+ *            if VIRTCHNL_1588_PTP_CAP_PIN_CFG is not enabled.
+ * @n_per_out: Number of periodic output functions available. Reserved if
+ *             VIRTCHNL_1588_PTP_CAP_PIN_CFG is not enabled.
+ * @n_pins: Number of physical programmable pins able to be controlled.
+ *          Reserved if VIRTCHNL_1588_PTP_CAP_PIN_CFG is not enabled.
  * @tx_tstamp_format: Format of the Tx timestamps. Valid formats are defined
  *                    by the virtchnl_ptp_tstamp enumeration. Note that Rx
  *                    timestamps are tied to the descriptor format, and do not
@@ -1969,11 +2068,15 @@ enum virtchnl_ptp_tstamp_format {
  * reserved as zero. Future extensions define alternative formats for this
  * data, in which case they will be mutually exclusive with this capability.
  *
- * Note that in the future, additional capability flags may be added such as
-* to indicate support for SDP configuration, or to indicate Rx timestamp
-* format if a descriptor could support multiple formats. All fields marked as
-* reserved in this header will be set to zero, and implementations should
-* verify this.
+ * VIRTCHNL_1588_PTP_CAP_PIN_CFG indicates that the VF has the capability to
+ * control software defined pins. These pins can be assigned either as an
+ * input to timestamp external events, or as an output to cause a periodic
+ * signal output.
+ *
+ * Note that in the future, additional capability flags may be added which
+ * indicate additional extended support. All fields marked as reserved by this
+ * header will be set to zero. VF implementations should verify this to ensure
+ * that future extensions do not break compatibility.
  */
 struct virtchnl_ptp_caps {
 	struct virtchnl_phc_regs phc_regs;
@@ -2087,6 +2190,266 @@ struct virtchnl_phc_tx_tstamp {
 	u8 rsvd[8];
 };
 VIRTCHNL_CHECK_STRUCT_LEN(16, virtchnl_phc_tx_tstamp);
+
+enum virtchnl_phc_pin_func {
+	VIRTCHNL_PHC_PIN_FUNC_NONE = 0, /* Not assigned to any function */
+	VIRTCHNL_PHC_PIN_FUNC_EXT_TS = 1, /* Assigned to external timestamp */
+	VIRTCHNL_PHC_PIN_FUNC_PER_OUT = 2, /* Assigned to periodic output */
+};
+
+/* Length of the pin configuration data. All pin configurations belong within
+ * the same union and *must* have this length in bytes.
+ */
+#define VIRTCHNL_PIN_CFG_LEN 64
+
+/* virtchnl_phc_ext_ts_mode
+ *
+ * Mode of the external timestamp, indicating which edges of the input signal
+ * to timestamp.
+ */
+enum virtchnl_phc_ext_ts_mode {
+	VIRTCHNL_PHC_EXT_TS_NONE = 0,
+	VIRTCHNL_PHC_EXT_TS_RISING_EDGE = 1,
+	VIRTCHNL_PHC_EXT_TS_FALLING_EDGE = 2,
+	VIRTCHNL_PHC_EXT_TS_BOTH_EDGES = 3,
+};
+
+/**
+ * virtchnl_phc_ext_ts
+ * @mode: mode of external timestamp request
+ * @rsvd: reserved for future extension
+ *
+ * External timestamp configuration. Defines the configuration for this
+ * external timestamp function.
+ *
+ * If mode is VIRTCHNL_PHC_EXT_TS_NONE, the function is essentially disabled,
+ * timestamping nothing.
+ *
+ * If mode is VIRTCHNL_PHC_EXT_TS_RISING_EDGE, the function shall timestamp
+ * the rising edge of the input when it transitions from low to high signal.
+ *
+ * If mode is VIRTCHNL_PHC_EXT_TS_FALLING_EDGE, the function shall timestamp
+ * the falling edge of the input when it transitions from high to low signal.
+ *
+ * If mode is VIRTCHNL_PHC_EXT_TS_BOTH_EDGES, the function shall timestamp
+ * both the rising and falling edge of the signal whenever it changes.
+ *
+ * The PF shall return an error if the requested mode cannot be implemented on
+ * the function.
+ */
+struct virtchnl_phc_ext_ts {
+	u8 mode; /* see virtchnl_phc_ext_ts_mode */
+	u8 rsvd[63];
+};
+
+VIRTCHNL_CHECK_STRUCT_LEN(VIRTCHNL_PIN_CFG_LEN, virtchnl_phc_ext_ts);
+
+/* virtchnl_phc_per_out_flags
+ *
+ * Flags defining periodic output functionality.
+ */
+enum virtchnl_phc_per_out_flags {
+	VIRTCHNL_PHC_PER_OUT_PHASE_START = BIT(0),
+};
+
+/**
+ * virtchnl_phc_per_out
+ * @start: absolute start time (if VIRTCHNL_PHC_PER_OUT_PHASE_START unset)
+ * @phase: phase offset to start (if VIRTCHNL_PHC_PER_OUT_PHASE_START set)
+ * @period: time to complete a full clock cycle (low - > high -> low)
+ * @on: length of time the signal should stay high
+ * @flags: flags defining the periodic output operation.
+ * rsvd: reserved for future extension
+ *
+ * Configuration for a periodic output signal. Used to define the signal that
+ * should be generated on a given function.
+ *
+ * The period field determines the full length of the clock cycle, including
+ * both duration hold high transition and duration to hold low transition in
+ * nanoseconds.
+ *
+ * The on field determines how long the signal should remain high. For
+ * a traditional square wave clock that is on for some duration and off for
+ * the same duration, use an on length of precisely half the period. The duty
+ * cycle of the clock is period/on.
+ *
+ * If VIRTCHNL_PHC_PER_OUT_PHASE_START is unset, then the request is to start
+ * a clock an absolute time. This means that the clock should start precisely
+ * at the specified time in the start field. If the start time is in the past,
+ * then the periodic output should start at the next valid multiple of the
+ * period plus the start time:
+ *
+ *   new_start = (n * period) + start
+ *     (choose n such that new start is in the future)
+ *
+ * Note that the PF should not reject a start time in the past because it is
+ * possible that such a start time was valid when the request was made, but
+ * became invalid due to delay in programming the pin.
+ *
+ * If VIRTCHNL_PHC_PER_OUT_PHASE_START is set, then the request is to start
+ * the next multiple of the period plus the phase offset. The phase must be
+ * less than the period. In this case, the clock should start as soon possible
+ * at the next available multiple of the period. To calculate a start time
+ * when programming this mode, use:
+ *
+ *   start = (n * period) + phase
+ *     (choose n such that start is in the future)
+ *
+ * A period of zero should be treated as a request to disable the clock
+ * output.
+ */
+struct virtchnl_phc_per_out {
+	union {
+		u64 start;
+		u64 phase;
+	};
+	u64 period;
+	u64 on;
+	u32 flags;
+	u8 rsvd[36];
+};
+
+VIRTCHNL_CHECK_STRUCT_LEN(VIRTCHNL_PIN_CFG_LEN, virtchnl_phc_per_out);
+
+/* virtchnl_phc_pin_cfg_flags
+ *
+ * Definition of bits in the flags field of the virtchnl_phc_pin_cfg
+ * structure.
+ */
+enum virtchnl_phc_pin_cfg_flags {
+	/* Valid for VIRTCHNL_OP_1588_PTP_SET_PIN_CFG. If set, indicates this
+	 * is a request to verify if the function can be assigned to the
+	 * provided pin. In this case, the ext_ts and per_out fields are
+	 * ignored, and the PF response must be an error if the pin cannot be
+	 * assigned to that function index.
+	 */
+	VIRTCHNL_PHC_PIN_CFG_VERIFY = BIT(0),
+};
+
+/**
+ * virtchnl_phc_set_pin
+ * @pin_index: The pin to get or set
+ * @func: the function type the pin is assigned to
+ * @func_index: the index of the function the pin is assigned to
+ * @ext_ts: external timestamp configuration
+ * @per_out: periodic output configuration
+ * @rsvd1: Reserved for future extension
+ * @rsvd2: Reserved for future extension
+ *
+ * Sent along with the VIRTCHNL_OP_1588_PTP_SET_PIN_CFG op.
+ *
+ * The VF issues a VIRTCHNL_OP_1588_PTP_SET_PIN_CFG to assign the pin to one
+ * of the functions. It must set the pin_index field, the func field, and
+ * the func_index field. The pin_index must be less than n_pins, and the
+ * func_index must be less than the n_ext_ts or n_per_out depending on which
+ * function type is selected. If func is for an external timestamp, the
+ * ext_ts field must be filled in with the desired configuration. Similarly,
+ * if the function is for a periodic output, the per_out field must be
+ * configured.
+ *
+ * If the VIRTCHNL_PHC_PIN_CFG_VERIFY bit of the flag field is set, this is
+ * a request only to verify the configuration, not to set it. In this case,
+ * the PF should simply report an error if the requested pin cannot be
+ * assigned to the requested function. This allows VF to determine whether or
+ * not a given function can be assigned to a specific pin. Other flag bits are
+ * currently reserved and must be verified as zero on both sides. They may be
+ * extended in the future.
+ */
+struct virtchnl_phc_set_pin {
+	u32 flags; /* see virtchnl_phc_pin_cfg_flags */
+	u8 pin_index;
+	u8 func; /* see virtchnl_phc_pin_func */
+	u8 func_index;
+	u8 rsvd1;
+	union {
+		struct virtchnl_phc_ext_ts ext_ts;
+		struct virtchnl_phc_per_out per_out;
+	};
+	u8 rsvd2[8];
+};
+
+VIRTCHNL_CHECK_STRUCT_LEN(80, virtchnl_phc_set_pin);
+
+/**
+ * virtchnl_phc_pin
+ * @pin_index: The pin to get or set
+ * @func: the function type the pin is assigned to
+ * @func_index: the index of the function the pin is assigned to
+ * @rsvd: Reserved for future extension
+ * @name: human readable pin name, supplied by PF on GET_PIN_CFGS
+ *
+ * Sent by the PF as part of the VIRTCHNL_OP_1588_PTP_GET_PIN_CFGS response.
+ *
+ * The VF issues a VIRTCHNL_OP_1588_PTP_GET_PIN_CFGS request to the PF in
+ * order to obtain the current pin configuration for all of the pins that were
+ * assigned to this VF.
+ *
+ * This structure details the pin configuration state, including a pin name
+ * and which function is assigned to the pin currently.
+ */
+struct virtchnl_phc_pin {
+	u8 pin_index;
+	u8 func; /* see virtchnl_phc_pin_func */
+	u8 func_index;
+	u8 rsvd[5];
+	char name[64];
+};
+
+VIRTCHNL_CHECK_STRUCT_LEN(72, virtchnl_phc_pin);
+
+/**
+ * virtchnl_phc_pin_cfg
+ * @len: length of the variable pin config array
+ * @pins: variable length pin configuration array
+ *
+ * Variable structure sent by the PF in reply to
+ * VIRTCHNL_OP_1588_PTP_GET_PIN_CFGS. The VF does not send this structure with
+ * its request of the operation.
+ *
+ * It is possible that the PF may need to send more pin configuration data
+ * than can be sent in one virtchnl message. To handle this, the PF should
+ * issue multiple VIRTCHNL_OP_1588_PTP_GET_PIN_CFGS responses. Each response
+ * will indicate the number of pins it covers. The VF should be ready to wait
+ * for multiple responses until it has received a total length equal to the
+ * number of n_pins negotiated during extended PTP capabilities exchange.
+ */
+struct virtchnl_phc_get_pins {
+	u8 len;
+	u8 rsvd[7];
+	struct virtchnl_phc_pin pins[1];
+};
+
+VIRTCHNL_CHECK_STRUCT_LEN(80, virtchnl_phc_get_pins);
+
+/**
+ * virtchnl_phc_ext_stamp
+ * @tstamp: timestamp value
+ * @tstamp_rsvd: Reserved for future extension of the timestamp value.
+ * @tstamp_format: format of the timstamp
+ * @func_index: external timestamp function this timestamp is for
+ * @rsvd2: Reserved for future extension
+ *
+ * Sent along with the VIRTCHNL_OP_1588_PTP_EXT_TIMESTAMP from the PF when an
+ * external timestamp function is triggered.
+ *
+ * This will be sent only if one of the external timestamp functions is
+ * configured by the VF, and is only valid if VIRTCHNL_1588_PTP_CAP_PIN_CFG is
+ * negotiated with the PF.
+ *
+ * The timestamp format is defined by the tstamp_format field using the
+ * virtchnl_ptp_tstamp_format enumeration. The tstamp_rsvd field is
+ * exclusively reserved for possible future variants of the timestamp format,
+ * and its access will be controlled by the tstamp_format field.
+ */
+struct virtchnl_phc_ext_tstamp {
+	u64 tstamp;
+	u8 tstamp_rsvd[8];
+	u8 tstamp_format;
+	u8 func_index;
+	u8 rsvd2[6];
+};
+
+VIRTCHNL_CHECK_STRUCT_LEN(24, virtchnl_phc_ext_tstamp);
 
 /* Since VF messages are limited by u16 size, precalculate the maximum possible
  * values of nested elements in virtchnl structures that virtual channel can
@@ -2342,6 +2705,21 @@ virtchnl_vc_validate_vf_msg(struct virtchnl_version_info *ver, u32 v_opcode,
 	case VIRTCHNL_OP_DEL_FDIR_FILTER:
 		valid_len = sizeof(struct virtchnl_fdir_del);
 		break;
+	case VIRTCHNL_OP_GET_QOS_CAPS:
+		break;
+	case VIRTCHNL_OP_CONFIG_QUEUE_TC_MAP:
+		valid_len = sizeof(struct virtchnl_queue_tc_mapping);
+		if (msglen >= valid_len) {
+			struct virtchnl_queue_tc_mapping *q_tc =
+				(struct virtchnl_queue_tc_mapping *)msg;
+			if (q_tc->num_tc == 0) {
+				err_msg_format = true;
+				break;
+			}
+			valid_len += (q_tc->num_tc - 1) *
+					 sizeof(q_tc->tc[0]);
+		}
+		break;
 	case VIRTCHNL_OP_GET_OFFLOAD_VLAN_V2_CAPS:
 		break;
 	case VIRTCHNL_OP_ADD_VLAN_V2:
@@ -2384,6 +2762,14 @@ virtchnl_vc_validate_vf_msg(struct virtchnl_version_info *ver, u32 v_opcode,
 		break;
 	case VIRTCHNL_OP_1588_PTP_TX_TIMESTAMP:
 		valid_len = sizeof(struct virtchnl_phc_tx_tstamp);
+		break;
+	case VIRTCHNL_OP_1588_PTP_SET_PIN_CFG:
+		valid_len = sizeof(struct virtchnl_phc_set_pin);
+		break;
+	case VIRTCHNL_OP_1588_PTP_GET_PIN_CFGS:
+		break;
+	case VIRTCHNL_OP_1588_PTP_EXT_TIMESTAMP:
+		valid_len = sizeof(struct virtchnl_phc_ext_tstamp);
 		break;
 	case VIRTCHNL_OP_ENABLE_QUEUES_V2:
 	case VIRTCHNL_OP_DISABLE_QUEUES_V2:
