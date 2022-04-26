@@ -1,7 +1,7 @@
 Linux* Driver for Intel(R) Ethernet Adaptive Virtual Function
 =============================================================
 
-February 2, 2022
+March 14, 2022
 
 
 Contents
@@ -77,6 +77,10 @@ This driver is compatible with virtual functions bound to devices based on the
 following:
   * Intel(R) Ethernet Controller E810-C
   * Intel(R) Ethernet Controller E810-XXV
+  * Intel(R) Ethernet Connection E822-C
+  * Intel(R) Ethernet Connection E822-L
+  * Intel(R) Ethernet Connection E823-C
+  * Intel(R) Ethernet Connection E823-L
   * Intel(R) Ethernet Controller X710
   * Intel(R) Ethernet Controller XL710
   * Intel(R) Ethernet Network Connection X722
