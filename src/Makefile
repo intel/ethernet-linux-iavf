@@ -98,17 +98,25 @@ mandocs_install: manfile
 	@echo "Copying manpages..."
 	@install -D -m 644 ${DRIVER}.${MANSECTION}.gz ${INSTALL_MOD_PATH}/${MANDIR}/man${MANSECTION}/${DRIVER}.${MANSECTION}.gz
 
-# Install kernel module files. This target is called by the RPM specfile when
-# generating binary RPMs, and is not expected to modify files outside of the
-# build root. Thus, it must not update initramfs, or run depmod.
+# Install kernel module files. It is not expected to modify files outside of
+# the build root. Thus, it must not update initramfs, or run depmod.
 modules_install: default
 	@echo "Installing modules..."
 	@+$(call kernelbuild,modules_install)
-	${auxiliary_post_install}
+	$(MAKE) auxiliary_install
 	@echo "Creating /etc/modprobe.d/iavf.conf file ..."
 	mkdir -p "${INSTALL_MOD_PATH}/etc/modprobe.d/"
 	echo "blacklist i40evf"  >  "${INSTALL_MOD_PATH}/etc/modprobe.d/iavf.conf"
-	echo "alias i40evf iavf" >> "${INSTALL_MOD_PATH}/etc/modprobe.d/iavf.conf"
+
+# Install kernel module files without auxiliary. This target is called by the
+# RPM specfile when  generating binary RPMs, and is not expected to modify
+# files outside of the build root. Thus, it must not update initramfs, or run depmod.
+modules_install_no_aux:
+	@echo "Installing modules..."
+	@+$(call kernelbuild,modules_install)
+	@echo "Creating /etc/modprobe.d/iavf.conf file ..."
+	mkdir -p "${INSTALL_MOD_PATH}/etc/modprobe.d/"
+	echo "blacklist i40evf"  >  "${INSTALL_MOD_PATH}/etc/modprobe.d/iavf.conf"
 
 # After installing all the files, perform necessary work to ensure the system
 # will use the new modules. This includes running depmod to update module
@@ -134,7 +142,7 @@ mandocs_uninstall:
 modules_uninstall:
 	rm -f ${INSTALL_MOD_PATH}/lib/modules/${KVER}/${INSTALL_MOD_DIR}/${DRIVER}.ko;
 	rm -f /etc/modprobe.d/iavf.conf;
-	${auxiliary_post_uninstall}
+	$(MAKE) auxiliary_uninstall
 
 # After uninstalling all the files, perform necessary work to restore the
 # system back to using the default kernel modules. This includes running depmod
@@ -145,6 +153,13 @@ uninstall: modules_uninstall mandocs_uninstall
 
 auxiliary_info:
 	@../scripts/check_aux_bus verbose
+
+auxiliary_install:
+	@echo "Installing auxiliary..."
+	${auxiliary_post_install}
+
+auxiliary_uninstall:
+	${auxiliary_post_uninstall}
 
 ifeq (${NEED_AUX_BUS},1)
 all: auxiliary_info
@@ -176,6 +191,8 @@ help:
 	@echo '  mandocs_uninstall   - uninstall the manpage only'
 	@echo '  uninstall           - Uninstall the module(s) and manpage'
 	@echo '  auxiliary_info      - Print information about the auxiliary module'
+	@echo '  auxiliary_install   - Install compiled auxiliary module'
+	@echo '  auxiliary_uninstall - Uninstall auxiliary module'
 	@echo '  help                - Display this help message'
 	@echo ''
 	@echo 'Variables:'

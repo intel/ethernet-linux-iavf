@@ -636,12 +636,22 @@ static void iavf_get_drvinfo(struct net_device *netdev,
  * iavf_get_ringparam - Get ring parameters
  * @netdev: network interface device structure
  * @ring: ethtool ringparam structure
+ * @ker: unused kernel ethtool ringparam structure
+ * @extack: unused netlink extended ACK structure
  *
  * Returns current ring parameters. TX and RX rings are reported separately,
  * but the number of rings is not reported.
  **/
+#ifdef HAVE_ETHTOOL_EXTENDED_RINGPARAMS
+static void
+iavf_get_ringparam(struct net_device *netdev,
+		   struct ethtool_ringparam *ring,
+		   struct kernel_ethtool_ringparam __always_unused *ker,
+		   struct netlink_ext_ack __always_unused *extack)
+#else
 static void iavf_get_ringparam(struct net_device *netdev,
 			       struct ethtool_ringparam *ring)
+#endif /* HAVE_ETHTOOL_EXTENDED_RINGPARAMS */
 {
 	struct iavf_adapter *adapter = netdev_priv(netdev);
 
@@ -655,12 +665,22 @@ static void iavf_get_ringparam(struct net_device *netdev,
  * iavf_set_ringparam - Set ring parameters
  * @netdev: network interface device structure
  * @ring: ethtool ringparam structure
+ * @ker: unused kernel ethtool ringparam structure
+ * @extack: unused netlink extended ACK structure
  *
  * Sets ring parameters. TX and RX rings are controlled separately, but the
  * number of rings is not specified, so all rings get the same settings.
  **/
+#ifdef HAVE_ETHTOOL_EXTENDED_RINGPARAMS
+static int
+iavf_set_ringparam(struct net_device *netdev,
+		   struct ethtool_ringparam *ring,
+		   struct kernel_ethtool_ringparam __always_unused *ker,
+		   struct netlink_ext_ack __always_unused *extack)
+#else
 static int iavf_set_ringparam(struct net_device *netdev,
 			      struct ethtool_ringparam *ring)
+#endif /* HAVE_ETHTOOL_EXTENDED_RINGPARAMS */
 {
 	struct iavf_adapter *adapter = netdev_priv(netdev);
 	u32 new_rx_count, new_tx_count;

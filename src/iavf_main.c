@@ -25,9 +25,9 @@ static const char iavf_driver_string[] =
 	"Intel(R) Ethernet Adaptive Virtual Function Network Driver";
 
 #define DRV_VERSION_MAJOR (4)
-#define DRV_VERSION_MINOR (4)
-#define DRV_VERSION_BUILD (2)
-#define DRV_VERSION "4.4.2.1"
+#define DRV_VERSION_MINOR (5)
+#define DRV_VERSION_BUILD (3)
+#define DRV_VERSION "4.5.3"
 const char iavf_driver_version[] = DRV_VERSION;
 static const char iavf_copyright[] =
 	"Copyright (c) 2013, Intel Corporation.";
@@ -861,7 +861,6 @@ static void iavf_restore_filters(struct iavf_adapter *adapter)
 	if (adapter->vsi.vlgrp)
 		iavf_vlan_rx_register(adapter->netdev, adapter->vsi.vlgrp);
 
-	}
 #endif /* !HAVE_VLAN_RX_REGISTER */
 }
 
@@ -869,7 +868,7 @@ static void iavf_restore_filters(struct iavf_adapter *adapter)
  * iavf_get_num_vlans_added - get number of VLANs added
  * @adapter: board private structure
  */
-static u16 iavf_get_num_vlans_added(struct iavf_adapter *adapter)
+u16 iavf_get_num_vlans_added(struct iavf_adapter *adapter)
 {
 	return bitmap_weight(adapter->vsi.active_cvlans, VLAN_N_VID) +
 		bitmap_weight(adapter->vsi.active_svlans, VLAN_N_VID);
@@ -942,11 +941,6 @@ static int iavf_vlan_rx_add_vid(struct net_device *netdev, u16 vid)
 	if (!iavf_add_vlan(adapter, IAVF_VLAN(vid, local_vlan_proto)))
 		return -ENOMEM;
 
-	if (local_vlan_proto == ETH_P_8021Q)
-		set_bit(vid, adapter->vsi.active_cvlans);
-	else
-		set_bit(vid, adapter->vsi.active_svlans);
-
 	return 0;
 }
 #else
@@ -964,7 +958,6 @@ static void iavf_vlan_rx_add_vid(struct net_device *netdev, u16 vid)
 	}
 
 	iavf_add_vlan(adapter, IAVF_VLAN(vid, ETH_P_8021Q));
-	set_bit(vid, adapter->vsi.active_cvlans);
 }
 #endif
 
@@ -2621,7 +2614,7 @@ static void iavf_init_config_adapter(struct iavf_adapter *adapter)
 		eth_hw_addr_random(netdev);
 		ether_addr_copy(adapter->hw.mac.addr, netdev->dev_addr);
 	} else {
-		ether_addr_copy(netdev->dev_addr, adapter->hw.mac.addr);
+		eth_hw_addr_set(netdev, adapter->hw.mac.addr);
 		ether_addr_copy(netdev->perm_addr, adapter->hw.mac.addr);
 	}
 
@@ -3322,6 +3315,9 @@ static void iavf_handle_hw_reset(struct iavf_adapter *adapter)
 
 	iavf_misc_irq_enable(adapter);
 
+	bitmap_clear(adapter->vsi.active_cvlans, 0, VLAN_N_VID);
+	bitmap_clear(adapter->vsi.active_svlans, 0, VLAN_N_VID);
+
 	/* We were running when the reset started, so we need to restore some
 	 * state here.
 	 */
@@ -3805,6 +3801,7 @@ static int __iavf_setup_tc(struct net_device *netdev, void *type_data)
 			netif_tx_disable(netdev);
 			iavf_del_all_cloud_filters(adapter);
 			adapter->aq_required = IAVF_FLAG_AQ_DISABLE_CHANNELS;
+			total_qps = adapter->orig_num_active_queues;
 			goto exit;
 		} else {
 			return -EINVAL;
@@ -3893,6 +3890,11 @@ static int __iavf_setup_tc(struct net_device *netdev, void *type_data)
 		}
 	}
 exit:
+	if (iavf_is_remove_in_progress(adapter))
+		return 0;
+
+	netif_set_real_num_rx_queues(netdev, total_qps);
+	netif_set_real_num_tx_queues(netdev, total_qps);
 	return ret;
 }
 
@@ -4333,7 +4335,7 @@ static int iavf_configure_clsflower(struct iavf_adapter *adapter,
 	struct iavf_cloud_filter *filter = NULL;
 	int err = -EINVAL, count = 50;
 
-	if (tc < 0) {
+	if (tc < IAVF_START_CHNL_TC) {
 		dev_err(&adapter->pdev->dev, "Invalid traffic class\n");
 		return -EINVAL;
 	}
@@ -5154,7 +5156,11 @@ static const struct net_device_ops iavf_netdev_ops = {
 	.ndo_set_rx_mode	= iavf_set_rx_mode,
 	.ndo_validate_addr	= eth_validate_addr,
 	.ndo_set_mac_address	= iavf_set_mac,
+#ifdef HAVE_NDO_ETH_IOCTL
+	.ndo_eth_ioctl		= iavf_do_ioctl,
+#else
 	.ndo_do_ioctl		= iavf_do_ioctl,
+#endif /* HAVE_NDO_ETH_IOCTL */
 #ifdef HAVE_RHEL7_EXTENDED_MIN_MAX_MTU
 	.extended.ndo_change_mtu = iavf_change_mtu,
 #else
