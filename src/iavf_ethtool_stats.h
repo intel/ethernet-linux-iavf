@@ -367,7 +367,7 @@ static void __iavf_add_stat_strings(u8 **p, const struct iavf_stats *stats,
 }
 
 /**
- * 40e_add_stat_strings - copy stat strings into ethtool buffer
+ * iavf_add_stat_strings - copy stat strings into ethtool buffer
  * @p: ethtool supplied buffer
  * @stats: stat definitions array
  *

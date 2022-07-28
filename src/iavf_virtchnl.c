@@ -411,6 +411,7 @@ int iavf_get_vf_ptp_caps(struct iavf_adapter *adapter)
 	kfree(event.msg_buf);
 	return err;
 }
+#if IS_ENABLED(CONFIG_PTP_1588_CLOCK)
 
 int iavf_get_vf_ptp_pin_cfgs(struct iavf_adapter *adapter)
 {
@@ -438,6 +439,7 @@ int iavf_get_vf_ptp_pin_cfgs(struct iavf_adapter *adapter)
 	kfree(event.msg_buf);
 	return err;
 }
+#endif /* IS_ENABLED(CONFIG_PTP_1588_CLOCK) */
 
 /**
  * iavf_configure_queues
@@ -839,6 +841,34 @@ static void iavf_mac_add_reject(struct iavf_adapter *adapter)
 }
 
 /**
+ * iavf_vlan_add_reject
+ * @adapter: adapter structure
+ *
+ * Remove VLAN filters from list based on PF response.
+ **/
+static void iavf_vlan_add_reject(struct iavf_adapter *adapter)
+{
+	struct iavf_vlan_filter *f, *ftmp;
+
+	spin_lock_bh(&adapter->mac_vlan_list_lock);
+	list_for_each_entry_safe(f, ftmp, &adapter->vlan_filter_list, list) {
+		if (f->is_new_vlan) {
+			if (f->vlan.tpid == ETH_P_8021Q)
+				clear_bit(f->vlan.vid,
+					  adapter->vsi.active_cvlans);
+			else
+				clear_bit(f->vlan.vid,
+					  adapter->vsi.active_svlans);
+
+			list_del(&f->list);
+			kfree(f);
+		}
+	}
+	spin_unlock_bh(&adapter->mac_vlan_list_lock);
+}
+
+
+/**
  * iavf_add_vlans
  * @adapter: adapter structure
  *
@@ -896,6 +926,7 @@ void iavf_add_vlans(struct iavf_adapter *adapter)
 				vvfl->vlan_id[i] = f->vlan.vid;
 				i++;
 				f->add = false;
+				f->is_new_vlan = true;
 				if (i == count)
 					break;
 			}
@@ -908,9 +939,17 @@ void iavf_add_vlans(struct iavf_adapter *adapter)
 		iavf_send_pf_msg(adapter, VIRTCHNL_OP_ADD_VLAN, (u8 *)vvfl, len);
 		kfree(vvfl);
 	} else {
+		u16 max_vlans = adapter->vlan_v2_caps.filtering.max_filters;
+		u16 current_vlans = iavf_get_num_vlans_added(adapter);
 		struct virtchnl_vlan_filter_list_v2 *vvfl_v2;
 
 		adapter->current_op = VIRTCHNL_OP_ADD_VLAN_V2;
+
+		if ((count + current_vlans) > max_vlans &&
+		    current_vlans < max_vlans) {
+			count = max_vlans - iavf_get_num_vlans_added(adapter);
+			more = true;
+		}
 
 		len = sizeof(*vvfl_v2) + ((count - 1) *
 					  sizeof(struct virtchnl_vlan_filter));
@@ -938,6 +977,8 @@ void iavf_add_vlans(struct iavf_adapter *adapter)
 					&adapter->vlan_v2_caps.filtering.filtering_support;
 				struct virtchnl_vlan *vlan;
 
+				if (i == count)
+					break;
 				/* give priority over outer if it's enabled */
 				if (filtering_support->outer)
 					vlan = &vvfl_v2->filters[i].outer;
@@ -949,8 +990,7 @@ void iavf_add_vlans(struct iavf_adapter *adapter)
 
 				i++;
 				f->add = false;
-				if (i == count)
-					break;
+				f->is_new_vlan = true;
 			}
 		}
 
@@ -2522,6 +2562,11 @@ void iavf_virtchnl_completion(struct iavf_adapter *adapter,
 			dev_warn(dev, "Failed to get PHC GPIO pin config, error %s\n",
 				 virtchnl_stat_str(v_retval));
 			break;
+		case VIRTCHNL_OP_ADD_VLAN_V2:
+			iavf_vlan_add_reject(adapter);
+			dev_warn(dev, "Failed to add VLAN filter, error %s\n",
+				 virtchnl_stat_str(v_retval));
+			break;
 		default:
 			dev_err(dev, "PF returned error %d (%s) to our request %d\n",
 				v_retval, virtchnl_stat_str(v_retval),
@@ -2554,7 +2599,7 @@ void iavf_virtchnl_completion(struct iavf_adapter *adapter,
 			iavf_mac_add_ok(adapter);
 		if (!ether_addr_equal(netdev->dev_addr, adapter->hw.mac.addr)) {
 			netif_addr_lock_bh(netdev);
-			ether_addr_copy(netdev->dev_addr, adapter->hw.mac.addr);
+			eth_hw_addr_set(netdev, adapter->hw.mac.addr);
 			netif_addr_unlock_bh(netdev);
 		}
 		wake_up(&adapter->vc_waitqueue);
@@ -2698,7 +2743,7 @@ void iavf_virtchnl_completion(struct iavf_adapter *adapter,
 		}
 
 		netif_addr_lock_bh(netdev);
-		ether_addr_copy(netdev->dev_addr, adapter->hw.mac.addr);
+		eth_hw_addr_set(netdev, adapter->hw.mac.addr);
 		netif_addr_unlock_bh(netdev);
 
 		adapter->aq_required |= IAVF_FLAG_AQ_ADD_MAC_FILTER |
@@ -2716,6 +2761,7 @@ void iavf_virtchnl_completion(struct iavf_adapter *adapter,
 		/* process any state change needed due to new capabilities */
 		iavf_ptp_process_caps(adapter);
 		break;
+#if IS_ENABLED(CONFIG_PTP_1588_CLOCK)
 	case VIRTCHNL_OP_1588_PTP_GET_TIME:
 		iavf_virtchnl_ptp_get_time(adapter, msg, msglen);
 		break;
@@ -2731,6 +2777,7 @@ void iavf_virtchnl_completion(struct iavf_adapter *adapter,
 	case VIRTCHNL_OP_1588_PTP_EXT_TIMESTAMP:
 		iavf_virtchnl_ptp_ext_timestamp(adapter, msg, msglen);
 		break;
+#endif /* IS_ENABLED(CONFIG_PTP_1588_CLOCK) */
 	case VIRTCHNL_OP_ENABLE_QUEUES:
 		/* enable transmits */
 		if (adapter->state == __IAVF_RUNNING) {
@@ -2828,6 +2875,24 @@ void iavf_virtchnl_completion(struct iavf_adapter *adapter,
 		 * put the rings, vectors back in non-ADQ state
 		 */
 		iavf_clear_ch_info(adapter);
+		}
+		break;
+	case VIRTCHNL_OP_ADD_VLAN_V2: {
+		struct iavf_vlan_filter *f;
+
+		spin_lock_bh(&adapter->mac_vlan_list_lock);
+		list_for_each_entry(f, &adapter->vlan_filter_list, list) {
+			if (f->is_new_vlan) {
+				f->is_new_vlan = false;
+				if (f->vlan.tpid == ETH_P_8021Q)
+					set_bit(f->vlan.vid,
+						adapter->vsi.active_cvlans);
+				else
+					set_bit(f->vlan.vid,
+						adapter->vsi.active_svlans);
+			}
+		}
+		spin_unlock_bh(&adapter->mac_vlan_list_lock);
 		}
 		break;
 	case VIRTCHNL_OP_ENABLE_VLAN_STRIPPING:

@@ -1,7 +1,7 @@
 Linux* Driver for Intel(R) Ethernet Adaptive Virtual Function
 =============================================================
 
-March 14, 2022
+June 14, 2022
 
 
 Contents
@@ -81,6 +81,7 @@ following:
   * Intel(R) Ethernet Connection E822-L
   * Intel(R) Ethernet Connection E823-C
   * Intel(R) Ethernet Connection E823-L
+  * Intel(R) Ethernet Controller I710
   * Intel(R) Ethernet Controller X710
   * Intel(R) Ethernet Controller XL710
   * Intel(R) Ethernet Network Connection X722
@@ -172,10 +173,18 @@ Note: RPM functionality has only been tested in Red Hat distributions.
        or
    # dnf/yum localinstall <iavf RPM> <auxiliary RPM>
 
+NOTE: On some distributions, the auxiliary RPM may fail to install due to
+missing kernel-devel headers. To workaround this issue, specify '--excludepath'
+during installation. For example:
+
+# rpm -Uvh auxiliary-1.0.0-1.x86_64.rpm
+--excludepath=/lib/modules/3.10.0-957.el7.x86_64/source/include/linux/auxiliary_
+bus.h
+
 NOTES:
 - To compile the driver on some kernel/arch combinations, you may need to
 install a package with the development version of libelf (e.g. libelf-dev,
-libelf-devel, elfutilsl-libelf-devel).
+libelf-devel, elfutils-libelf-devel).
 - When compiling an out-of-tree driver, details will vary by distribution.
 However, you will usually need a kernel-devel RPM or some RPM that provides the
 kernel headers at a minimum. The RPM kernel-devel will usually fill in the link
@@ -334,7 +343,9 @@ specific application. This can reduce latency for the specified application,
 and allow Tx traffic to be rate limited per application.
 
 Requirements:
-- Kernel version 4.19.58 or later
+- Kernel version: Varies by feature and the underlying PF device. Refer to the
+E810 ADQ Configuration Guide for more information on required kernel versions
+for different ADQ features on Intel(R) Ethernet 800 Series devices.
 - Depending on the underlying PF device, ADQ cannot be enabled when the
 following features are enabled: Data Center Bridging (DCB), Multiple Functions
 per Port (MFP), or Sideband Filters.
@@ -350,15 +361,18 @@ the main VSI.
 - The VF supports a minimum rate limiting of 50Mbps, in increments of 50Mbps up
 to the maximum link speed.
 
+See "Creating traffic class filters" in this README for more information on
+configuring filters, including examples. See the E810 ADQ Configuration Guide
+for detailed instructions.
+
 
 
 Creating traffic classes
 ------------------------
-Run all TC commands from the ../iproute2/tc/ directory.
-If you set max_rate to less than 50Mbps, then max_rate is rounded up to 50Mbps
-and a warning is logged in dmesg.
+NOTE: These instructions are not specific to ADQ configuration. Refer to the tc
+and tc-flower man pages for more information on creating traffic classes (TCs).
 
-To create traffic classes (TCs) on the interface:
+To create traffic classes on the interface:
 
 1. Use the tc command to create traffic classes. You can create a maximum of
    16 TCs from the VM on Intel(R) Ethernet 800 Series devices and
@@ -383,7 +397,10 @@ To create traffic classes (TCs) on the interface:
       max_rate <max_rate1 ...>: Sets the maximum bandwidth rate limit for each
           TC. You can set a min and max rate together.
 
-NOTE: See the mqprio man page and the examples below for more information.
+NOTE:
+- If you set max_rate to less than 50Mbps, then max_rate is rounded up to
+50Mbps and a warning is logged in dmesg.
+- See the mqprio man page and the examples below for more information.
 
 2. Verify the bandwidth limit using network monitoring tools such as ifstat or
 sar -n DEV [interval] [number of samples]
@@ -395,11 +412,16 @@ TCs are configured using mqprio.
 
    # ethtool -K <ethX> hw-tc-offload on
 
-4. Apply TCs to ingress (Rx) flow of the interface:
+4. Add clsact qdisc to enable adding ingress/egress filters for Rx/Tx:
 
-   # tc qdisc add dev <ethX> ingress
+   # tc qdisc add dev <ethX> clsact
 
-EXAMPLES:
+5. Verify successful TC creation after qdisc is created:
+
+   # tc qdisc show dev <ethX> ingress
+
+
+TRAFFIC CLASS EXAMPLES:
 See the tc and tc-flower man pages for more information on traffic control and
 TC flower filters.
 
@@ -413,17 +435,73 @@ TC flower filters.
       queues 16@0 16@16: Assigns 16 queues to tc0 at offset 0 and 16 queues
           to tc1 at offset 16
 
-Multiple filters can be added to the device, using the same recipe (and
+
+Creating traffic class filters
+------------------------------
+NOTE: These instructions are not specific to ADQ configuration.
+
+After creating traffic classes, use the tc command to create filters for
+traffic. Refer to the tc and tc-flower man pages for more information.
+
+To view all TC filters:
+
+  # tc filter show dev <ethX> ingress
+  # tc filter show dev <ethX> egress
+
+TC FILTER EXAMPLES:
+To configure TCP TC filters, where:
+      protocol: Encapsulation protocol (valid options are IP and 802.1Q).
+      prio: Priority.
+      flower: Flow-based traffic control filter.
+      dst_ip: IP address of the device.
+      ip_proto: IP protocol to use (TCP or UDP).
+      dst_port: Destination port.
+      src_port: Source port.
+      skip_sw: Flag to add the rule only in hardware.
+      hw_tc: Route incoming traffic flow to this hardware TC. The TC count
+          starts at 0. For example, 'hw_tc 1' indicates that the filter
+          is on the second TC.
+      vlan_id: VLAN ID.
+
+- TCP: Destination IP + L4 Destination Port
+  To route incoming TCP traffic with a matching destination IP address and
+  destination port to the given TC:
+
+  # tc filter add dev <ethX> protocol ip ingress prio 1 flower dst_ip
+    <ip_address> ip_proto tcp dst_port <port_number> skip_sw hw_tc 1
+
+- TCP: Source IP + L4 Source Port
+  To route outgoing TCP traffic with a matching source IP address and
+  source port to the given TC associated with the given priority:
+
+  # tc filter add dev <ethX> protocol ip egress prio 1 flower src_ip
+    <ip_address> ip_proto tcp src_port <port_number> action skbedit priority 1
+
+
+- TCP: Destination IP + L4 Destination Port + VLAN Protocol
+  To route incoming TCP traffic with a matching destination IP address and
+  destination port to the given TC using the VLAN protocol (802.1Q):
+
+  # tc filter add dev <ethX> protocol 802.1Q ingress prio 1 flower
+    dst_ip <ip address> eth_type ipv4 ip_proto tcp dst_port <port_number>
+    vlan_id <vlan_id> skip_sw hw_tc 1
+
+
+NOTE: You can add multiple filters to the device, using the same recipe (and
 requires no additional recipe resources), either on the same interface or on
 different interfaces. Each filter uses the same fields for matching, but can
 have different match values.
   # tc filter add dev <ethX> protocol ip ingress prio 1 flower ip_proto
-    tcp dst_port $app_port skip_sw hw_tc 1
+    tcp dst_port <port_number> skip_sw hw_tc 1
+  # tc filter add dev <ethX> protocol ip egress prio 1 flower ip_proto tcp
+    src_port <port_number> action skbedit priority 1
 
 For example:
 
-  # tc filter add dev <ethX> protocol ip ingress prio 1 flower ip_proto
+  # tc filter add dev ens4f0 protocol ip ingress prio 1 flower ip_proto
      tcp dst_port 5555 skip_sw hw_tc 1
+  # tc filter add dev ens4f0 protocol ip egress prio 1 flower ip_proto
+    tcp src_port 5555 action skbedit priority 1
 
 
 RDMA in the VF

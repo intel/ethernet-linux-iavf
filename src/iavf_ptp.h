@@ -74,22 +74,6 @@ static inline int iavf_ptp_set_ts_config(struct iavf_adapter *adapter, struct if
 {
 	return -EOPNOTSUPP;
 }
-
-static void
-iavf_virtchnl_ptp_get_time(struct iavf_adapter *adapter, void *data,
-			   u16 len) {}
-static void
-iavf_virtchnl_ptp_tx_timestamp(struct iavf_adapter *adapter, void *data,
-			       u16 len) {}
-static void
-iavf_virtchnl_ptp_pin_status(struct iavf_adapter *adapter,
-			     enum virtchnl_status_code v_retval) {}
-static void
-iavf_virtchnl_ptp_get_pin_cfgs(struct iavf_adapter *adapter, void *data,
-			       u16 len) {}
-static void
-iavf_virtchnl_ptp_ext_timestamp(struct iavf_adapter *adapter, void *data,
-				u16 len) {}
 #endif
 
 #endif /* _IAVF_PTP_H_ */

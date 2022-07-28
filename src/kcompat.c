@@ -2728,10 +2728,36 @@ u64 _kc_pci_get_dsn(struct pci_dev *dev)
 }
 #endif /* 5.7.0 */
 
-/*****************************************************************************/
-#if (LINUX_VERSION_CODE < KERNEL_VERSION(5,17,0))
-void _kc_eth_hw_addr_set(struct net_device *dev, const void *addr)
+#ifdef NEED_DEVM_KASPRINTF
+char *devm_kvasprintf(struct device *dev, gfp_t gfp, const char *fmt,
+		      va_list ap)
 {
-	ether_addr_copy(dev->dev_addr, addr);
+	unsigned int len;
+	char *p;
+	va_list aq;
+
+	va_copy(aq, ap);
+	len = vsnprintf(NULL, 0, fmt, aq);
+	va_end(aq);
+
+	p = devm_kmalloc(dev, len + 1, gfp);
+	if (!p)
+		return NULL;
+
+	vsnprintf(p, len + 1, fmt, ap);
+
+	return p;
 }
-#endif /* 5.17.0 */
+
+char *devm_kasprintf(struct device *dev, gfp_t gfp, const char *fmt, ...)
+{
+	va_list ap;
+	char *p;
+
+	va_start(ap, fmt);
+	p = devm_kvasprintf(dev, gfp, fmt, ap);
+	va_end(ap);
+
+	return p;
+}
+#endif /* NEED_DEVM_KASPRINTF */
