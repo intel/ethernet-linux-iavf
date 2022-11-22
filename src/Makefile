@@ -24,7 +24,8 @@ iavf-y := iavf_main.o \
 iavf-$(CONFIG_PTP_1588_CLOCK:m=y) += iavf_ptp.o
 
 ifeq (${NEED_AUX_BUS},2)
-obj-m += auxiliary.o
+intel_auxiliary-objs := auxiliary.o
+obj-m += intel_auxiliary.o
 endif
 
 iavf-y += kcompat.o

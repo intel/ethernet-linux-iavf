@@ -25,9 +25,9 @@ static const char iavf_driver_string[] =
 	"Intel(R) Ethernet Adaptive Virtual Function Network Driver";
 
 #define DRV_VERSION_MAJOR (4)
-#define DRV_VERSION_MINOR (5)
-#define DRV_VERSION_BUILD (3)
-#define DRV_VERSION "4.5.3"
+#define DRV_VERSION_MINOR (6)
+#define DRV_VERSION_BUILD (1)
+#define DRV_VERSION "4.6.1"
 const char iavf_driver_version[] = DRV_VERSION;
 static const char iavf_copyright[] =
 	"Copyright (c) 2013, Intel Corporation.";
@@ -1080,28 +1080,25 @@ int iavf_replace_primary_mac(struct iavf_adapter *adapter,
 			     const u8 *new_mac)
 {
 	struct iavf_hw *hw = &adapter->hw;
-	struct iavf_mac_filter *f;
+	struct iavf_mac_filter *new_f;
 
 	spin_lock_bh(&adapter->mac_vlan_list_lock);
 
-	list_for_each_entry(f, &adapter->mac_filter_list, list) {
-		f->is_primary = false;
-	}
+	new_f = iavf_add_filter(adapter, new_mac);
+	if (new_f) {
+		struct iavf_mac_filter *old_f;
 
-	f = iavf_find_filter(adapter, hw->mac.addr);
-	if (f) {
-		f->remove = true;
-		adapter->aq_required |= IAVF_FLAG_AQ_DEL_MAC_FILTER;
-	}
-
-	f = iavf_add_filter(adapter, new_mac);
-
-	if (f) {
+		old_f = iavf_find_filter(adapter, hw->mac.addr);
+		if (old_f) {
+			old_f->is_primary = false;
+			old_f->remove = true;
+			adapter->aq_required |= IAVF_FLAG_AQ_DEL_MAC_FILTER;
+		}
 		/* Always send the request to add if changing primary MAC
 		 * even if filter is already present on the list
 		 */
-		f->is_primary = true;
-		f->add = true;
+		new_f->is_primary = true;
+		new_f->add = true;
 		adapter->aq_required |= IAVF_FLAG_AQ_ADD_MAC_FILTER;
 		ether_addr_copy(hw->mac.addr, new_mac);
 	}
@@ -1109,7 +1106,7 @@ int iavf_replace_primary_mac(struct iavf_adapter *adapter,
 	spin_unlock_bh(&adapter->mac_vlan_list_lock);
 
 	/* schedule the watchdog task to immediately process the request */
-	if (f) {
+	if (new_f) {
 		queue_work(iavf_wq, &adapter->watchdog_task.work);
 		return 0;
 	}
@@ -2582,6 +2579,9 @@ static void iavf_init_config_adapter(struct iavf_adapter *adapter)
 
 	if (iavf_process_config(adapter))
 		goto err;
+	if (CRC_OFFLOAD_ALLOWED(adapter))
+		netdev->hw_features |= NETIF_F_RXFCS;
+
 	adapter->current_op = VIRTCHNL_OP_UNKNOWN;
 
 	adapter->flags |= IAVF_FLAG_RX_CSUM_ENABLED;
@@ -2901,6 +2901,14 @@ static void iavf_watchdog_task(struct work_struct *work)
 	if (iavf_is_remove_in_progress(adapter))
 		return;
 
+	if (adapter->flags & IAVF_FLAG_UPDATE_NETDEV_FEATURES) {
+		if (rtnl_trylock()) {
+			netdev_update_features(adapter->netdev);
+			rtnl_unlock();
+			adapter->flags &= ~IAVF_FLAG_UPDATE_NETDEV_FEATURES;
+		}
+	}
+
 	if (test_and_set_bit(__IAVF_IN_CRITICAL_TASK, &adapter->crit_section))
 		goto restart_watchdog;
 
@@ -3152,7 +3160,6 @@ static void iavf_disable_vf(struct iavf_adapter *adapter)
 	adapter->netdev->flags &= ~IFF_UP;
 	adapter->flags &= ~IAVF_FLAG_RESET_PENDING;
 	iavf_change_state(adapter, __IAVF_DOWN);
-	clear_bit(__IAVF_IN_CRITICAL_TASK, &adapter->crit_section);
 	wake_up(&adapter->down_waitqueue);
 	dev_info(&adapter->pdev->dev, "Reset task did not complete, VF disabled\n");
 }
@@ -3352,6 +3359,7 @@ static void iavf_handle_hw_reset(struct iavf_adapter *adapter)
 	} else {
 		iavf_change_state(adapter, __IAVF_DOWN);
 		wake_up(&adapter->down_waitqueue);
+		wake_up(&adapter->reset_waitqueue);
 	}
 
 	adapter->flags &= ~IAVF_FLAG_REINIT_ITR_NEEDED;
@@ -3362,11 +3370,12 @@ static void iavf_handle_hw_reset(struct iavf_adapter *adapter)
 	return;
 reset_err:
 	if (running) {
-		iavf_change_state(adapter, __IAVF_RUNNING);
-		netdev->flags |= IFF_UP;
+		set_bit(__IAVF_VSI_DOWN, adapter->vsi.state);
+		iavf_free_traffic_irqs(adapter);
 	}
+	iavf_disable_vf(adapter);
+
 	dev_err(&adapter->pdev->dev, "failed to allocate resources during reinit\n");
-	iavf_close(netdev);
 }
 
 /**
@@ -3410,6 +3419,12 @@ static void iavf_adminq_task(struct work_struct *work)
 		while (test_and_set_bit(__IAVF_IN_CRITICAL_TASK,
 					&adapter->crit_section))
 			usleep_range(500, 1000);
+		if (iavf_is_reset_in_progress(adapter)) {
+			iavf_set_flags_reset_detected(adapter);
+			clear_bit(__IAVF_IN_CRITICAL_TASK,
+				  &adapter->crit_section);
+			goto freedom;
+		}
 		iavf_virtchnl_completion(adapter, v_op, v_ret, event.msg_buf,
 					 event.msg_len);
 		clear_bit(__IAVF_IN_CRITICAL_TASK, &adapter->crit_section);
@@ -4557,7 +4572,18 @@ static int iavf_setup_tc(struct net_device *dev, enum tc_setup_type type,
 static int iavf_open(struct net_device *netdev)
 {
 	struct iavf_adapter *adapter = netdev_priv(netdev);
-	int err;
+	int err = 0;
+
+	if (adapter->state == __IAVF_RUNNING &&
+	    !test_bit(__IAVF_VSI_DOWN, adapter->vsi.state)) {
+		dev_dbg(&adapter->pdev->dev, "VF is already open.\n");
+		return err;
+	}
+
+	if (adapter->state != __IAVF_DOWN) {
+		err = -EBUSY;
+		return err;
+	}
 
 	while (test_and_set_bit(__IAVF_IN_CRITICAL_TASK,
 				&adapter->crit_section))
@@ -4568,19 +4594,6 @@ static int iavf_open(struct net_device *netdev)
 		err = -EIO;
 		goto unlock;
 	}
-
-	if (adapter->state == __IAVF_RUNNING &&
-	    !test_bit(__IAVF_VSI_DOWN, adapter->vsi.state)) {
-		dev_dbg(&adapter->pdev->dev, "VF is already open.\n");
-		err = 0;
-		goto unlock;
-	}
-
-	if (adapter->state != __IAVF_DOWN) {
-		err = -EBUSY;
-		goto unlock;
-	}
-
 
 	/* allocate transmit descriptors */
 	err = iavf_setup_all_tx_resources(adapter);
@@ -4714,6 +4727,7 @@ static int iavf_change_mtu(struct net_device *netdev, int new_mtu)
 {
 	struct iavf_adapter *adapter = netdev_priv(netdev);
 	int max_frame = new_mtu + IAVF_PACKET_HDR_PAD;
+	int ret;
 
 	if ((new_mtu < 68) || (max_frame > IAVF_MAX_RXBUFFER))
 		return -EINVAL;
@@ -4744,7 +4758,23 @@ static int iavf_change_mtu(struct net_device *netdev, int new_mtu)
 	netdev->mtu = new_mtu;
 	iavf_schedule_reset(adapter);
 
-	return 0;
+	ret = wait_event_interruptible_timeout(adapter->reset_waitqueue,
+					       !iavf_is_reset_in_progress(adapter),
+					       msecs_to_jiffies(2500));
+
+	/* If ret < 0 then it means wait was interrupted.
+	 * If ret == 0 then it means we got a timeout while waiting
+	 * for reset to finish.
+	 * If ret > 0 it means reset has finished.
+	 */
+	if (!ret) {
+		netdev_warn(netdev, "changing MTU timeout waiting for reset");
+		ret = -EBUSY;
+	} else if (ret > 0) {
+		ret = 0;
+	}
+
+	return ret;
 }
 
 #ifdef NETIF_F_HW_VLAN_CTAG_RX
@@ -4777,6 +4807,9 @@ static int iavf_set_features(struct net_device *netdev,
 	    (features & NETIF_VLAN_OFFLOAD_FEATURES))
 		iavf_set_vlan_offload_features(adapter, netdev->features,
 					       features);
+	if (CRC_OFFLOAD_ALLOWED(adapter) &&
+	    ((netdev->features & NETIF_F_RXFCS) ^ (features & NETIF_F_RXFCS)))
+		iavf_schedule_reset(adapter);
 
 	return 0;
 }
@@ -5094,6 +5127,62 @@ iavf_fix_netdev_vlan_features(struct iavf_adapter *adapter,
 }
 
 /**
+ * iavf_fix_strip_features - fix NETDEV strip features based on functionality
+ * @adapter: board private structure
+ * @requested_features: stack requested NETDEV features
+ *
+ * Returns fixed-up features bits
+ **/
+#ifdef HAVE_RHEL6_NET_DEVICE_OPS_EXT
+static u32
+iavf_fix_strip_features(struct iavf_adapter *adapter,
+			u32 requested_features)
+#else
+static netdev_features_t
+iavf_fix_strip_features(struct iavf_adapter *adapter,
+			netdev_features_t requested_features)
+#endif
+{
+	bool crc_offload_req = CRC_OFFLOAD_ALLOWED(adapter) &&
+			       (requested_features & NETIF_F_RXFCS);
+	int num_non_zero_vlan = iavf_get_num_vlans_added(adapter);
+#ifdef NETIF_F_HW_VLAN_CTAG_RX
+	netdev_features_t vlan_strip = (NETIF_F_HW_VLAN_CTAG_RX |
+					NETIF_F_HW_VLAN_STAG_RX);
+#else
+	netdev_features_t vlan_strip = NETIF_F_HW_VLAN_RX;
+#endif
+	bool is_vlan_strip = requested_features & vlan_strip;
+	struct net_device *netdev = adapter->netdev;
+
+	if (!crc_offload_req)
+		return requested_features;
+
+	if (!num_non_zero_vlan && (netdev->features & vlan_strip) &&
+	    !(netdev->features & NETIF_F_RXFCS) && is_vlan_strip) {
+		requested_features &= ~vlan_strip;
+		netdev_info(netdev, "Disabling VLAN stripping as FCS/CRC stripping is also disabled and there is no VLAN configured\n");
+		return requested_features;
+	}
+
+	if ((netdev->features & NETIF_F_RXFCS) && is_vlan_strip) {
+		requested_features &= ~vlan_strip;
+		if (!(netdev->features & vlan_strip))
+			netdev_info(netdev, "To enable VLAN stripping, first need to enable FCS/CRC stripping");
+
+		return requested_features;
+	}
+
+	if (num_non_zero_vlan && is_vlan_strip &&
+	    !(netdev->features & NETIF_F_RXFCS)) {
+		requested_features &= ~NETIF_F_RXFCS;
+		netdev_info(netdev, "To disable CRC, first need to disable VLAN stripping");
+	}
+
+	return requested_features;
+}
+
+/**
  * iavf_fix_features - fix up the netdev feature bits
  * @netdev: our net device
  * @features: desired feature bits
@@ -5109,7 +5198,9 @@ static netdev_features_t iavf_fix_features(struct net_device *netdev,
 {
 	struct iavf_adapter *adapter = netdev_priv(netdev);
 
-	return iavf_fix_netdev_vlan_features(adapter, features);
+	features = iavf_fix_netdev_vlan_features(adapter, features);
+
+	return iavf_fix_strip_features(adapter, features);
 }
 
 #endif /* HAVE_NDO_SET_FEATURES */
@@ -5151,7 +5242,7 @@ static const struct net_device_ops iavf_netdev_ops = {
 #endif
 	.ndo_open		= iavf_open,
 	.ndo_stop		= iavf_close,
-	.ndo_start_xmit		= iavf_lan_xmit_frame,
+	.ndo_start_xmit		= iavf_xmit_frame,
 	.ndo_get_stats		= iavf_get_stats,
 	.ndo_set_rx_mode	= iavf_set_rx_mode,
 	.ndo_validate_addr	= eth_validate_addr,
@@ -5392,31 +5483,6 @@ int iavf_process_config(struct iavf_adapter *adapter)
 }
 
 /**
- * iavf_shutdown - Shutdown the device in preparation for a reboot
- * @pdev: pci device structure
- **/
-static void iavf_shutdown(struct pci_dev *pdev)
-{
-	struct iavf_adapter *adapter = iavf_pdev_to_adapter(pdev);
-	struct net_device *netdev = adapter->netdev;
-
-	netif_device_detach(netdev);
-
-	if (netif_running(netdev))
-		iavf_close(netdev);
-
-	/* Prevent the watchdog from running. */
-	iavf_change_state(adapter, __IAVF_REMOVE);
-	adapter->aq_required = 0;
-
-#ifdef CONFIG_PM
-	pci_save_state(pdev);
-
-#endif
-	pci_disable_device(pdev);
-}
-
-/**
  * iavf_probe - Device Initialization Routine
  * @pdev: PCI device information struct
  * @ent: entry in iavf_pci_tbl
@@ -5530,6 +5596,9 @@ static int iavf_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 	/* Setup the wait queue for indicating transition to down status */
 	init_waitqueue_head(&adapter->down_waitqueue);
 
+	/* Setup the wait queue for indicating transition to running state */
+	init_waitqueue_head(&adapter->reset_waitqueue);
+
 	init_waitqueue_head(&adapter->ptp.phc_time_waitqueue);
 	init_waitqueue_head(&adapter->ptp.gpio_waitqueue);
 
@@ -5556,6 +5625,75 @@ err_dma:
 
 #ifdef CONFIG_PM
 /**
+ * iavf_suspend_adapter - Suspends the adapter
+ * @adapter: iavf adapter struct
+ *
+ * Implements the suspend of iavf adapter.
+ **/
+static void iavf_suspend_adapter(struct iavf_adapter *adapter)
+{
+	struct net_device *netdev = adapter->netdev;
+
+	rtnl_lock();
+	netif_device_detach(netdev);
+
+	if (netif_running(netdev)) {
+		iavf_close(netdev);
+
+		adapter->flags |= IAVF_FLAG_SUSPEND_RUNNING;
+	}
+
+	rtnl_unlock();
+	iavf_free_misc_irq(adapter);
+	iavf_reset_interrupt_capability(adapter);
+}
+
+/**
+ * iavf_resume_adapter - Resumes the adapter
+ * @adapter: iavf adapter struct
+ *
+ * Implements the resume of iavf adapter.
+ **/
+static int iavf_resume_adapter(struct iavf_adapter *adapter)
+{
+	u32 err;
+
+	/* If we were suspended in running state it means
+	 * the adapter should be in down state so we can
+	 * open it here. If it is not in down state that means
+	 * it is being reset and we have to wait for the reset to finish.
+	 */
+	while (adapter->flags & IAVF_FLAG_SUSPEND_RUNNING &&
+	       adapter->state != __IAVF_RUNNING &&
+	       adapter->state != __IAVF_DOWN)
+		usleep_range(50, 100);
+
+	rtnl_lock();
+	err = iavf_set_interrupt_capability(adapter);
+	if (err) {
+		dev_err(&adapter->pdev->dev, "Cannot enable MSI-X interrupts.\n");
+		return err;
+	}
+
+	err = iavf_request_misc_irq(adapter);
+	if (err) {
+		dev_err(&adapter->pdev->dev, "Cannot get interrupt vector.\n");
+		return err;
+	}
+
+	if (adapter->flags & IAVF_FLAG_SUSPEND_RUNNING) {
+		err = iavf_open(adapter->netdev);
+
+		adapter->flags &= ~IAVF_FLAG_SUSPEND_RUNNING;
+	}
+
+	netif_device_attach(adapter->netdev);
+	rtnl_unlock();
+
+	return err;
+}
+
+/**
  * iavf_suspend - Power management suspend routine
  * @dev_d: device information struct
  *
@@ -5563,24 +5701,9 @@ err_dma:
  **/
 static int iavf_suspend(struct device *dev_d)
 {
-	struct net_device *netdev = dev_get_drvdata(dev_d);
-	struct iavf_adapter *adapter = netdev_priv(netdev);
+	struct net_device *netdev = (struct net_device *)dev_get_drvdata(dev_d);
 
-	netif_device_detach(netdev);
-
-	while (test_and_set_bit(__IAVF_IN_CRITICAL_TASK,
-				&adapter->crit_section))
-		usleep_range(500, 1000);
-
-	if (netif_running(netdev)) {
-		rtnl_lock();
-		iavf_down(adapter);
-		rtnl_unlock();
-	}
-	iavf_free_misc_irq(adapter);
-	iavf_reset_interrupt_capability(adapter);
-
-	clear_bit(__IAVF_IN_CRITICAL_TASK, &adapter->crit_section);
+	iavf_suspend_adapter(netdev_priv(netdev));
 
 	return 0;
 }
@@ -5594,30 +5717,10 @@ static int iavf_suspend(struct device *dev_d)
 static int iavf_resume(struct device *dev_d)
 {
 	struct pci_dev *pdev = to_pci_dev(dev_d);
-	struct iavf_adapter *adapter;
-	u32 err;
-
-	adapter = iavf_pdev_to_adapter(pdev);
 
 	pci_set_master(pdev);
 
-	rtnl_lock();
-	err = iavf_set_interrupt_capability(adapter);
-	if (err) {
-		dev_err(&pdev->dev, "Cannot enable MSI-X interrupts.\n");
-		return err;
-	}
-	err = iavf_request_misc_irq(adapter);
-	rtnl_unlock();
-	if (err) {
-		dev_err(&pdev->dev, "Cannot get interrupt vector.\n");
-		return err;
-	}
-
-	iavf_schedule_reset(adapter);
-	netif_device_attach(adapter->netdev);
-
-	return err;
+	return iavf_resume_adapter(iavf_pdev_to_adapter(pdev));
 }
 
 #ifdef USE_LEGACY_PM_SUPPORT
@@ -5630,24 +5733,9 @@ static int iavf_resume(struct device *dev_d)
  **/
 static int iavf_suspend_legacy(struct pci_dev *pdev, pm_message_t state)
 {
-	struct iavf_adapter *adapter = iavf_pdev_to_adapter(pdev);
 	int retval = 0;
 
-	netif_device_detach(netdev);
-
-	while (test_and_set_bit(__IAVF_IN_CRITICAL_TASK,
-				&adapter->crit_section))
-		usleep_range(500, 1000);
-
-	if (netif_running(netdev)) {
-		rtnl_lock();
-		iavf_down(adapter);
-		rtnl_unlock();
-	}
-	iavf_free_misc_irq(adapter);
-	iavf_reset_interrupt_capability(adapter);
-
-	clear_bit(__IAVF_IN_CRITICAL_TASK, &adapter->crit_section);
+	iavf_suspend_adapter(iavf_pdev_to_adapter(pdev));
 
 	retval = pci_save_state(pdev);
 	if (retval)
@@ -5666,7 +5754,6 @@ static int iavf_suspend_legacy(struct pci_dev *pdev, pm_message_t state)
  **/
 static int iavf_resume_legacy(struct pci_dev *pdev)
 {
-	struct iavf_adapter *adapter = iavf_pdev_to_adapter(pdev);
 	u32 err;
 
 	pci_set_power_state(pdev, PCI_D0);
@@ -5683,23 +5770,7 @@ static int iavf_resume_legacy(struct pci_dev *pdev)
 	}
 	pci_set_master(pdev);
 
-	rtnl_lock();
-	err = iavf_set_interrupt_capability(adapter);
-	if (err) {
-		dev_err(&pdev->dev, "Cannot enable MSI-X interrupts.\n");
-		return err;
-	}
-	err = iavf_request_misc_irq(adapter);
-	rtnl_unlock();
-	if (err) {
-		dev_err(&pdev->dev, "Cannot get interrupt vector.\n");
-		return err;
-	}
-
-	iavf_schedule_reset(adapter);
-	netif_device_attach(netdev);
-
-	return err;
+	return iavf_resume_adapter(iavf_pdev_to_adapter(pdev));
 }
 #endif /* USE_LEGACY_PM_SUPPORT */
 #endif /* CONFIG_PM */
@@ -5727,8 +5798,14 @@ static void iavf_remove(struct pci_dev *pdev)
 	struct iavf_mac_filter *f, *ftmp;
 	struct iavf_hw *hw = &adapter->hw;
 
+	/* Don't proceed with remove if netdev is already freed */
+	if (!netdev)
+		return;
+
 	/* Indicate we are in remove and not to run/schedule any driver tasks */
-	set_bit(__IAVF_IN_REMOVE_TASK, &adapter->crit_section);
+	if (test_and_set_bit(__IAVF_IN_REMOVE_TASK, &adapter->crit_section))
+		return;
+
 	cancel_work_sync(&adapter->adminq_task);
 	cancel_delayed_work_sync(&adapter->watchdog_task);
 
@@ -5828,9 +5905,21 @@ static void iavf_remove(struct pci_dev *pdev)
 	pci_disable_device(pdev);
 }
 
+/**
+ * iavf_shutdown - Shutdown the device in preparation for a reboot
+ * @pdev: pci device structure
+ **/
+static void iavf_shutdown(struct pci_dev *pdev)
+{
+	iavf_remove(pdev);
+
+	if (system_state == SYSTEM_POWER_OFF)
+		pci_set_power_state(pdev, PCI_D3hot);
+}
+
 #if defined(CONFIG_PM) && !defined(USE_LEGACY_PM_SUPPORT)
 static SIMPLE_DEV_PM_OPS(iavf_pm_ops, iavf_suspend, iavf_resume);
-#endif /* CONFIG_PM && !USE_LEGACY_PM_SUPPORT */
+#endif /* CONFIG_PM && !USE_LEGACY_PM_SUPPORT && !IAVF_TDD */
 
 static struct pci_driver iavf_driver = {
 	.name     = iavf_driver_name,

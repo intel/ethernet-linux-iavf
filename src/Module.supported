@@ -1,2 +1,2 @@
 iavf.ko external
-auxiliary.ko external
+intel_auxiliary.ko external
