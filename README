@@ -448,6 +448,7 @@ To view all TC filters:
   # tc filter show dev <ethX> ingress
   # tc filter show dev <ethX> egress
 
+
 TC FILTER EXAMPLES:
 To configure TCP TC filters, where:
       protocol: Encapsulation protocol (valid options are IP and 802.1Q).

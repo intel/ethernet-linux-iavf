@@ -532,6 +532,7 @@ struct iavf_adapter {
 	struct work_struct adminq_task;
 	struct delayed_work watchdog_task;
 	wait_queue_head_t down_waitqueue;
+	wait_queue_head_t reset_waitqueue;
 	wait_queue_head_t vc_waitqueue;
 	struct iavf_q_vector *q_vectors;
 	struct list_head vlan_filter_list;
@@ -569,6 +570,8 @@ struct iavf_adapter {
 #define IAVF_FLAG_REINIT_CHNL_NEEDED		BIT(21)
 #define IAVF_FLAG_RESET_DETECTED		BIT(22)
 #define IAVF_FLAG_INITIAL_MAC_SET		BIT(23)
+#define IAVF_FLAG_SUSPEND_RUNNING		BIT(24)
+#define IAVF_FLAG_UPDATE_NETDEV_FEATURES	BIT(25)
 
 
 	u32 chnl_perf_flags;
@@ -697,6 +700,8 @@ struct iavf_adapter {
 			  VIRTCHNL_VF_OFFLOAD_VLAN)
 #define VLAN_V2_ALLOWED(_a) ((_a)->vf_res->vf_cap_flags & \
 			     VIRTCHNL_VF_OFFLOAD_VLAN_V2)
+#define CRC_OFFLOAD_ALLOWED(_a) ((_a)->vf_res->vf_cap_flags & \
+				 VIRTCHNL_VF_OFFLOAD_CRC)
 #define VLAN_V2_FILTERING_ALLOWED(_a) \
 	(VLAN_V2_ALLOWED((_a)) && \
 	 ((_a)->vlan_v2_caps.filtering.filtering_support.outer || \

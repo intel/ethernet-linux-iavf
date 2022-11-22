@@ -958,7 +958,6 @@ struct _kc_ethtool_pauseparam {
 
 
 #ifdef __KLOCWORK__
- */
 #ifdef ARRAY_SIZE
 #undef ARRAY_SIZE
 #define ARRAY_SIZE(x) (sizeof(x) / sizeof((x)[0]))
@@ -6797,105 +6796,12 @@ ptp_read_system_postts(struct ptp_system_timestamp __always_unused *sts)
 #define HAVE_NDO_FDB_ADD_EXTACK
 #define HAVE_DEVLINK_INFO_GET
 #define HAVE_DEVLINK_FLASH_UPDATE
-#else /* RHEL < 8.1 */
-#ifdef HAVE_TC_SETUP_CLSFLOWER
-#include <net/pkt_cls.h>
-
-struct flow_match {
-	struct flow_dissector	*dissector;
-	void			*mask;
-	void			*key;
-};
-
-struct flow_match_basic {
-	struct flow_dissector_key_basic *key, *mask;
-};
-
-struct flow_match_control {
-	struct flow_dissector_key_control *key, *mask;
-};
-
-struct flow_match_eth_addrs {
-	struct flow_dissector_key_eth_addrs *key, *mask;
-};
-
-#ifdef HAVE_TC_FLOWER_ENC
-struct flow_match_enc_keyid {
-	struct flow_dissector_key_keyid *key, *mask;
-};
-#endif
-
-#ifndef HAVE_TC_FLOWER_VLAN_IN_TAGS
-struct flow_match_vlan {
-	struct flow_dissector_key_vlan *key, *mask;
-};
-#endif
-
-struct flow_match_ipv4_addrs {
-	struct flow_dissector_key_ipv4_addrs *key, *mask;
-};
-
-struct flow_match_ipv6_addrs {
-	struct flow_dissector_key_ipv6_addrs *key, *mask;
-};
-
-struct flow_match_ports {
-	struct flow_dissector_key_ports *key, *mask;
-};
-
-struct flow_rule {
-	struct flow_match	match;
-};
-
-void flow_rule_match_basic(const struct flow_rule *rule,
-			   struct flow_match_basic *out);
-void flow_rule_match_control(const struct flow_rule *rule,
-			     struct flow_match_control *out);
-void flow_rule_match_eth_addrs(const struct flow_rule *rule,
-			       struct flow_match_eth_addrs *out);
-#ifndef HAVE_TC_FLOWER_VLAN_IN_TAGS
-void flow_rule_match_vlan(const struct flow_rule *rule,
-			  struct flow_match_vlan *out);
-#endif
-void flow_rule_match_ipv4_addrs(const struct flow_rule *rule,
-				struct flow_match_ipv4_addrs *out);
-void flow_rule_match_ipv6_addrs(const struct flow_rule *rule,
-				struct flow_match_ipv6_addrs *out);
-void flow_rule_match_ports(const struct flow_rule *rule,
-			   struct flow_match_ports *out);
-#ifdef HAVE_TC_FLOWER_ENC
-void flow_rule_match_enc_ports(const struct flow_rule *rule,
-			       struct flow_match_ports *out);
-void flow_rule_match_enc_control(const struct flow_rule *rule,
-				 struct flow_match_control *out);
-void flow_rule_match_enc_ipv4_addrs(const struct flow_rule *rule,
-				    struct flow_match_ipv4_addrs *out);
-void flow_rule_match_enc_ipv6_addrs(const struct flow_rule *rule,
-				    struct flow_match_ipv6_addrs *out);
-void flow_rule_match_enc_keyid(const struct flow_rule *rule,
-			       struct flow_match_enc_keyid *out);
-#endif
-
-static inline struct flow_rule *
-tc_cls_flower_offload_flow_rule(struct tc_cls_flower_offload *tc_flow_cmd)
-{
-	return (struct flow_rule *)&tc_flow_cmd->dissector;
-}
-
-static inline bool flow_rule_match_key(const struct flow_rule *rule,
-				       enum flow_dissector_key_id key)
-{
-	return dissector_uses_key(rule->match.dissector, key);
-}
-#endif /* HAVE_TC_SETUP_CLSFLOWER */
-
 #endif /* RHEL < 8.1 */
 #else /* >= 5.1.0 */
 #define HAVE_NDO_FDB_ADD_EXTACK
 #define NO_XDP_QUERY_XSK_UMEM
 #define HAVE_AF_XDP_NETDEV_UMEM
 #define HAVE_TC_FLOW_RULE_INFRASTRUCTURE
-#define HAVE_TC_FLOWER_ENC_IP
 #define HAVE_DEVLINK_INFO_GET
 #define HAVE_DEVLINK_FLASH_UPDATE
 #define HAVE_DEVLINK_PORT_PARAMS
@@ -7053,9 +6959,10 @@ u64 _kc_pci_get_dsn(struct pci_dev *dev);
 /* add a check for the Oracle UEK 5.4.17 kernel which
  * backported the rename of the aer functions
  */
-#if !(SLE_VERSION_CODE > SLE_VERSION(15,2,0)) && \
+#if defined(NEED_ORCL_LIN_PCI_AER_CLEAR_NONFATAL_STATUS) || \
+!(SLE_VERSION_CODE > SLE_VERSION(15, 2, 0)) && \
     !((LINUX_VERSION_CODE == KERNEL_VERSION(5,3,18)) && \
-      (SLE_LOCALVERSION_CODE >= KERNEL_VERSION(14,0,0))) && \
+(SLE_LOCALVERSION_CODE >= KERNEL_VERSION(14, 0, 0))) && \
     !(LINUX_VERSION_CODE == KERNEL_VERSION(5,4,17)) && \
     !(RHEL_RELEASE_CODE && (RHEL_RELEASE_CODE >= RHEL_RELEASE_VERSION(8,3)))
 #define pci_aer_clear_nonfatal_status	pci_cleanup_aer_uncorrect_error_status
@@ -7146,6 +7053,13 @@ _kc_napi_busy_loop(unsigned int napi_id,
 #endif /* CONFIG_NET_RX_BUSY_POLL */
 #endif /* HAVE_NAPI_BUSY_LOOP */
 #endif /* <5.11.0 */
+
+/*****************************************************************************/
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5,12,0))
+#define HAVE_GRO_HEADER
+#endif /* >=5.12.0 */
+
+/*****************************************************************************/
 
 /*
  * Load the implementations file which actually defines kcompat backports.

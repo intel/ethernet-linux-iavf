@@ -151,6 +151,7 @@ int iavf_send_vf_config_msg(struct iavf_adapter *adapter)
 	       VIRTCHNL_VF_OFFLOAD_RSS_PCTYPE_V2 |
 	       VIRTCHNL_VF_OFFLOAD_ENCAP |
 	       VIRTCHNL_VF_OFFLOAD_VLAN_V2 |
+	       VIRTCHNL_VF_OFFLOAD_CRC |
 	       VIRTCHNL_VF_OFFLOAD_RX_FLEX_DESC |
 	       VIRTCHNL_VF_OFFLOAD_REQ_QUEUES |
 	       VIRTCHNL_VF_CAP_PTP |
@@ -489,6 +490,9 @@ void iavf_configure_queues(struct iavf_adapter *adapter)
 			      BIT_ULL(IAVF_RXQ_CTX_DBUFF_SHIFT));
 		if (RXDID_ALLOWED(adapter))
 			vqpi->rxq.rxdid = adapter->rxdid;
+		if (CRC_OFFLOAD_ALLOWED(adapter))
+			vqpi->rxq.crc_disable = !!(adapter->netdev->features &
+						   NETIF_F_RXFCS);
 		vqpi++;
 	}
 
@@ -656,10 +660,10 @@ iavf_set_mac_addr_type(struct virtchnl_ether_addr *virtchnl_ether_addr,
  **/
 void iavf_add_ether_addrs(struct iavf_adapter *adapter)
 {
+	bool is_more = false, is_primary = false;
 	struct virtchnl_ether_addr_list *veal;
 	int len, i = 0, count = 0;
 	struct iavf_mac_filter *f;
-	bool more = false;
 
 	if (adapter->current_op != VIRTCHNL_OP_UNKNOWN) {
 		/* bail because we already have a command pending */
@@ -669,11 +673,22 @@ void iavf_add_ether_addrs(struct iavf_adapter *adapter)
 	}
 
 	spin_lock_bh(&adapter->mac_vlan_list_lock);
-
 	list_for_each_entry(f, &adapter->mac_filter_list, list) {
-		if (f->add)
+		if (f->add) {
+			if (f->is_primary)
+				is_primary = true;
+
 			count++;
+		}
 	}
+
+	if (is_primary) {
+		if (count > 1)
+			is_more = true;
+
+		count = 1;
+	}
+
 	if (!count) {
 		adapter->aq_required &= ~IAVF_FLAG_AQ_ADD_MAC_FILTER;
 		spin_unlock_bh(&adapter->mac_vlan_list_lock);
@@ -690,7 +705,7 @@ void iavf_add_ether_addrs(struct iavf_adapter *adapter)
 			sizeof(struct virtchnl_ether_addr);
 		len = sizeof(struct virtchnl_ether_addr_list) +
 		      (count * sizeof(struct virtchnl_ether_addr));
-		more = true;
+		is_more = true;
 	}
 
 	veal = kzalloc(len, GFP_ATOMIC);
@@ -702,16 +717,21 @@ void iavf_add_ether_addrs(struct iavf_adapter *adapter)
 	veal->vsi_id = adapter->vsi_res->vsi_id;
 	veal->num_elements = count;
 	list_for_each_entry(f, &adapter->mac_filter_list, list) {
-		if (f->add) {
-			ether_addr_copy(veal->list[i].addr, f->macaddr);
-			iavf_set_mac_addr_type(&veal->list[i], f);
-			i++;
-			f->add = false;
-			if (i == count)
-				break;
-		}
+		if (is_primary && !(f->is_primary && f->add))
+			continue;
+		if (!f->add)
+			continue;
+		ether_addr_copy(veal->list[i].addr,
+				f->macaddr);
+		iavf_set_mac_addr_type(&veal->list[i], f);
+		f->add = false;
+		i++;
+
+		if (i == count)
+			break;
 	}
-	if (!more)
+
+	if (!is_more)
 		adapter->aq_required &= ~IAVF_FLAG_AQ_ADD_MAC_FILTER;
 
 	spin_unlock_bh(&adapter->mac_vlan_list_lock);
@@ -814,6 +834,37 @@ static void iavf_mac_add_ok(struct iavf_adapter *adapter)
 }
 
 /**
+ * iavf_netdev_mc_mac_add_reject
+ * @adapter: adapter structure
+ *
+ * Remove multicast addresses from netdev list based on PF response.
+ **/
+static void iavf_netdev_mc_mac_add_reject(struct iavf_adapter *adapter)
+{
+	struct net_device *netdev = adapter->netdev;
+	struct iavf_mac_filter *f, *ftmp, *elem;
+	struct list_head tmp_del_list;
+
+	INIT_LIST_HEAD(&tmp_del_list);
+	spin_lock_bh(&adapter->mac_vlan_list_lock);
+	list_for_each_entry(f, &adapter->mac_filter_list, list) {
+		if (f->is_new_mac && is_multicast_ether_addr(f->macaddr)) {
+			elem = kzalloc(sizeof(*elem), GFP_ATOMIC);
+			if (!elem)
+				goto out;
+			ether_addr_copy(elem->macaddr, f->macaddr);
+			list_add(&elem->list, &tmp_del_list);
+		}
+	}
+out:
+	spin_unlock_bh(&adapter->mac_vlan_list_lock);
+	list_for_each_entry_safe(f, ftmp, &tmp_del_list, list) {
+		dev_mc_del(netdev, f->macaddr);
+		kfree(f);
+	}
+}
+
+/**
  * iavf_mac_add_reject
  * @adapter: adapter structure
  *
@@ -866,7 +917,6 @@ static void iavf_vlan_add_reject(struct iavf_adapter *adapter)
 	}
 	spin_unlock_bh(&adapter->mac_vlan_list_lock);
 }
-
 
 /**
  * iavf_add_vlans
@@ -923,6 +973,8 @@ void iavf_add_vlans(struct iavf_adapter *adapter)
 		vvfl->num_elements = count;
 		list_for_each_entry(f, &adapter->vlan_filter_list, list) {
 			if (f->add) {
+				set_bit(f->vlan.vid,
+					adapter->vsi.active_cvlans);
 				vvfl->vlan_id[i] = f->vlan.vid;
 				i++;
 				f->add = false;
@@ -2454,6 +2506,7 @@ void iavf_virtchnl_completion(struct iavf_adapter *adapter,
 		case VIRTCHNL_OP_ADD_ETH_ADDR:
 			dev_err(dev, "Failed to add MAC filter, error %s\n",
 				virtchnl_stat_str(v_retval));
+			iavf_netdev_mc_mac_add_reject(adapter);
 			iavf_mac_add_reject(adapter);
 			/* restore administratively set mac address */
 			ether_addr_copy(adapter->hw.mac.addr, netdev->dev_addr);
@@ -2665,21 +2718,7 @@ void iavf_virtchnl_completion(struct iavf_adapter *adapter,
 
 		iavf_process_config(adapter);
 
-		/* Clear 'critical task' bit before acquiring rtnl_lock
-		 * as other process holding rtnl_lock could be waiting
-		 * for the same bit resulting in deadlock
-		 */
-		clear_bit(__IAVF_IN_CRITICAL_TASK, &adapter->crit_section);
-		/* VLAN capabilities can change during VFR, so make sure to
-		 * update the netdev features with the new capabilities
-		 */
-		rtnl_lock();
-		netdev_update_features(netdev);
-		rtnl_unlock();
-		/* Set 'critical task' bit again */
-		while (test_and_set_bit(__IAVF_IN_CRITICAL_TASK,
-					&adapter->crit_section))
-			usleep_range(500, 1000);
+		adapter->flags |= IAVF_FLAG_UPDATE_NETDEV_FEATURES;
 
 		/* Request VLAN offload settings */
 		if (VLAN_V2_ALLOWED(adapter))
@@ -2790,6 +2829,7 @@ void iavf_virtchnl_completion(struct iavf_adapter *adapter,
 				netif_tx_start_all_queues(netdev);
 				netif_carrier_on(netdev);
 			}
+			wake_up(&adapter->reset_waitqueue);
 		}
 		adapter->flags |= IAVF_FLAG_QUEUES_ENABLED;
 		adapter->flags &= ~IAVF_FLAG_QUEUES_DISABLED;
@@ -2884,6 +2924,8 @@ void iavf_virtchnl_completion(struct iavf_adapter *adapter,
 		list_for_each_entry(f, &adapter->vlan_filter_list, list) {
 			if (f->is_new_vlan) {
 				f->is_new_vlan = false;
+				if (!f->vlan.vid)
+					continue;
 				if (f->vlan.tpid == ETH_P_8021Q)
 					set_bit(f->vlan.vid,
 						adapter->vsi.active_cvlans);
