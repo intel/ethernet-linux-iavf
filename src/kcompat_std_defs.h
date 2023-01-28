@@ -32,6 +32,12 @@
 #endif
 
 /*****************************************************************************/
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(3,10,0))
+#else /* >= 3,10,0 */
+#define NEED_NETIF_NAPI_ADD_NO_WEIGHT
+#endif /* 3,10,0 */
+
+/*****************************************************************************/
 #if (LINUX_VERSION_CODE < KERNEL_VERSION(3,17,0))
 #define NEED_DEVM_KASPRINTF
 #else /* >= 3,17,0 */
@@ -58,10 +64,17 @@
 #endif /* 4,3,0 */
 
 /*****************************************************************************/
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(4,6,0))
+#else /* >= 4,6,0 */
+#define HAVE_DEVLINK_PORT_SPLIT
+#endif /* 4,6,0 */
+
+/*****************************************************************************/
 #if (LINUX_VERSION_CODE < KERNEL_VERSION(4,8,0))
 #else /* >= 4,8,0 */
 #define HAVE_TCF_EXTS_TO_LIST
 #define HAVE_PCI_ALLOC_IRQ
+#define HAVE_NDO_UDP_TUNNEL_CALLBACK
 #endif /* 4,8,0 */
 
 /*****************************************************************************/
@@ -122,6 +135,7 @@
 #define NEED_MACVLAN_SUPPORTS_DEST_FILTER
 #else /* >= 4,18,0 */
 #define HAVE_DEVLINK_PORT_ATTRS_SET_PORT_FLAVOUR
+#define HAVE_DEVLINK_PORT_SPLIT_EXTACK
 #endif /* 4,18,0 */
 
 /*****************************************************************************/
@@ -140,6 +154,7 @@
 #if (LINUX_VERSION_CODE < KERNEL_VERSION(4,20,0))
 #define NEED_NETDEV_TX_SENT_QUEUE
 #else /* >= 4.20.0 */
+#define HAVE_VXLAN_TYPE
 #define HAVE_LINKMODE
 #endif /* 4.20.0 */
 
@@ -148,6 +163,7 @@
 #define NEED_INDIRECT_CALL_WRAPPER_MACROS
 #else /* >= 5.0.0 */
 #define HAVE_GRETAP_TYPE
+#define HAVE_GENEVE_TYPE
 #define HAVE_INDIRECT_CALL_WRAPPER_HEADER
 #endif /* 5.0.0 */
 
@@ -210,6 +226,7 @@
 #else /* >= 5.7.0 */
 #define HAVE_DEVLINK_HEALTH_DEFAULT_AUTO_RECOVER
 #define HAVE_DEVLINK_REGION_OPS_SNAPSHOT
+#define HAVE_PTP_FIND_PIN_UNLOCKED
 #endif /* 5.7.0 */
 
 /*****************************************************************************/
@@ -258,6 +275,8 @@
 #if (LINUX_VERSION_CODE < KERNEL_VERSION(5,12,0))
 #define NEED_EXPORT_INDIRECT_CALLABLE
 #else /* >= 5.12.0 */
+#undef HAVE_NDO_UDP_TUNNEL_CALLBACK
+#define HAVE_DEVLINK_OPS_CREATE_DEL
 #endif /* 5.12.0 */
 
 /*****************************************************************************/
@@ -302,6 +321,7 @@
 #define HAVE_DEVLINK_NOTIFY_REGISTER
 #undef HAVE_DEVLINK_RELOAD_ENABLE_DISABLE
 #undef HAVE_DEVLINK_PARAMS_PUBLISH
+#define HAVE_XSK_BATCHED_RX_ALLOC
 #endif /* 5.16.0 */
 
 /*****************************************************************************/
@@ -319,6 +339,7 @@
 #undef NEED_PCI_IOV_VF_ID
 #define HAVE_GTP_SUPPORT
 #undef HAVE_XSK_TX_PEEK_RELEASE_DESC_BATCH_3_PARAMS
+#define HAVE_DEVLINK_PORT_SPLIT_PORT_STRUCT
 #endif /* 5.18.0 */
 
 /*****************************************************************************/
@@ -332,5 +353,15 @@
 #else /* >=6.0.0 */
 #define HAVE_FLOW_DISSECTOR_KEY_PPPOE
 #endif /* 6.0.0 */
+
+/*****************************************************************************/
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(6,1,0))
+#else /* >=6.1.0 */
+#define HAVE_FLOW_DISSECTOR_KEY_L2TPV3
+#undef NEED_NETIF_NAPI_ADD_NO_WEIGHT
+#define HAVE_TTY_TERMIOS_CONST_STRUCT
+#define HAVE_SET_NETDEV_DEVLINK_PORT
+#undef HAVE_NDO_GET_DEVLINK_PORT
+#endif /* 6.1.0 */
 
 #endif /* _KCOMPAT_STD_DEFS_H_ */

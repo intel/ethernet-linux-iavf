@@ -18,6 +18,7 @@ iavf-y := iavf_main.o \
 	iavf_adminq.o	 \
 	iavf_common.o	 \
 	iavf_txrx.o \
+	iavf_synce.o \
 	iavf_idc.o
 
 

@@ -25,9 +25,9 @@ static const char iavf_driver_string[] =
 	"Intel(R) Ethernet Adaptive Virtual Function Network Driver";
 
 #define DRV_VERSION_MAJOR (4)
-#define DRV_VERSION_MINOR (6)
-#define DRV_VERSION_BUILD (1)
-#define DRV_VERSION "4.6.1"
+#define DRV_VERSION_MINOR (7)
+#define DRV_VERSION_BUILD (0)
+#define DRV_VERSION "4.7.0"
 const char iavf_driver_version[] = DRV_VERSION;
 static const char iavf_copyright[] =
 	"Copyright (c) 2013, Intel Corporation.";
@@ -1334,12 +1334,12 @@ static void iavf_configure(struct iavf_adapter *adapter)
 }
 
 /**
- * iavf_up_complete - Finish the last steps of bringing up a connection
+ * iavf_enable_adapter - Finish the last steps of bringing up a connection
  * @adapter: board private structure
  *
  * Expects to be called while holding the __IAVF_IN_CRITICAL_TASK bit lock.
  **/
-static void iavf_up_complete(struct iavf_adapter *adapter)
+static void iavf_enable_adapter(struct iavf_adapter *adapter)
 {
 #ifdef CONFIG_NETDEVICES_MULTIQUEUE
 	if (adapter->num_active_queues > 1)
@@ -1352,6 +1352,17 @@ static void iavf_up_complete(struct iavf_adapter *adapter)
 	iavf_napi_enable_all(adapter);
 
 	adapter->aq_required |= IAVF_FLAG_AQ_ENABLE_QUEUES;
+}
+
+/**
+ * iavf_up_complete - placeholder function for iavf_enable_adapter
+ * @adapter: board private structure
+ *
+ * Expects to be called while holding the __IAVF_IN_CRITICAL_TASK bit lock.
+ **/
+static void iavf_up_complete(struct iavf_adapter *adapter)
+{
+	iavf_enable_adapter(adapter);
 	mod_delayed_work(iavf_wq, &adapter->watchdog_task, 0);
 }
 
@@ -1728,7 +1739,7 @@ static int iavf_alloc_q_vectors(struct iavf_adapter *adapter)
 		cpumask_copy(&q_vector->affinity_mask, cpu_possible_mask);
 #endif
 		netif_napi_add(adapter->netdev, &q_vector->napi,
-			       iavf_napi_poll, NAPI_POLL_WEIGHT);
+			       iavf_napi_poll);
 	}
 
 	return 0;
@@ -1941,7 +1952,6 @@ static void iavf_fill_rss_lut(struct iavf_adapter *adapter)
 static int iavf_init_rss(struct iavf_adapter *adapter)
 {
 	struct iavf_hw *hw = &adapter->hw;
-	int ret;
 
 	if (!RSS_PF(adapter)) {
 		/* Enable PCTYPES for RSS, TCP/UDP with IPv4/IPv6 */
@@ -1957,9 +1967,8 @@ static int iavf_init_rss(struct iavf_adapter *adapter)
 
 	iavf_fill_rss_lut(adapter);
 	netdev_rss_key_fill((void *)adapter->rss_key, adapter->rss_key_size);
-	ret = iavf_config_rss(adapter);
 
-	return ret;
+	return iavf_config_rss(adapter);
 }
 
 /**
@@ -2647,7 +2656,7 @@ static void iavf_init_config_adapter(struct iavf_adapter *adapter)
 
 	/* Setup initial PTP configuration */
 	iavf_ptp_init(adapter);
-
+	iavf_synce_init(adapter);
 	iavf_idc_init(adapter);
 
 	netif_tx_stop_all_queues(netdev);
@@ -2673,6 +2682,9 @@ static void iavf_init_config_adapter(struct iavf_adapter *adapter)
 	if (VLAN_V2_ALLOWED(adapter))
 		/* request initial VLAN offload settings */
 		iavf_set_vlan_offload_features(adapter, 0, netdev->features);
+
+	if (adapter->flags & IAVF_FLAG_RESET_FAILED_DEV_UP)
+		iavf_change_state(adapter, __IAVF_STATE_UP_AFTER_RESET);
 
 	return;
 err_mem:
@@ -2883,6 +2895,10 @@ static void iavf_set_flags_reset_detected(struct iavf_adapter *adapter)
 	adapter->flags |= IAVF_FLAG_RESET_PENDING;
 }
 
+static enum iavf_status iavf_setup_vf(struct iavf_adapter *adapter,
+				       void (*cleanup)(struct iavf_adapter *));
+static void iavf_disable_vf(struct iavf_adapter *adapter);
+
 /**
  * iavf_watchdog_task - Periodic call-back task
  * @work: pointer to work_struct
@@ -2952,6 +2968,27 @@ static void iavf_watchdog_task(struct work_struct *work)
 	case __IAVF_INIT_CONFIG_ADAPTER:
 		iavf_init_config_adapter(adapter);
 		clear_bit(__IAVF_IN_CRITICAL_TASK, &adapter->crit_section);
+		queue_delayed_work(iavf_wq, &adapter->watchdog_task,
+				   msecs_to_jiffies(1));
+		return;
+	case __IAVF_STATE_UP_AFTER_RESET:
+		/* If reset failed and driver is reconfiguring adapter after
+		 * it, then reenable the VF and attach device back.
+		 */
+		if (iavf_setup_vf(adapter, iavf_disable_vf)) {
+			clear_bit(__IAVF_IN_CRITICAL_TASK,
+				  &adapter->crit_section);
+			queue_work(iavf_wq, &adapter->watchdog_task.work);
+			return;
+		}
+		/* iavf_enable_adapter() will switch device back
+		 * to __IAVF_RUNNING
+		 */
+		iavf_enable_adapter(adapter);
+		netif_device_attach(adapter->netdev);
+		adapter->flags &= ~IAVF_FLAG_RESET_FAILED_DEV_UP;
+		clear_bit(__IAVF_IN_CRITICAL_TASK, &adapter->crit_section);
+
 		queue_delayed_work(iavf_wq, &adapter->watchdog_task,
 				   msecs_to_jiffies(1));
 		return;
@@ -3029,6 +3066,13 @@ static void iavf_watchdog_task(struct work_struct *work)
 		else
 			iavf_handle_hw_reset(adapter);
 
+		if (adapter->flags & IAVF_FLAG_RESET_FAILED_DEV_UP)
+			/* detach device, since nothing will be set up on adapter
+			 * after iavf_disable_vf call. driver does not need to detach
+			 * device, if it was not running before, since everything will
+			 * be set up with ndo_open.
+			 */
+			netif_device_detach(adapter->netdev);
 		clear_bit(__IAVF_IN_CRITICAL_TASK, &adapter->crit_section);
 		queue_delayed_work(iavf_wq, &adapter->watchdog_task,
 				   msecs_to_jiffies(2));
@@ -3064,6 +3108,8 @@ static void iavf_watchdog_task(struct work_struct *work)
 			iavf_ptp_do_aux_work(&adapter->ptp.info);
 #endif
 #endif
+		if (adapter->synce.initialized)
+			iavf_synce_dpll_update(adapter);
 		break;
 	case __IAVF_REMOVE:
 		clear_bit(__IAVF_IN_CRITICAL_TASK, &adapter->crit_section);
@@ -3157,11 +3203,58 @@ static void iavf_disable_vf(struct iavf_adapter *adapter)
 	iavf_free_queues(adapter);
 	memset(adapter->vf_res, 0, IAVF_VIRTCHNL_VF_RESOURCE_SIZE);
 	iavf_shutdown_adminq(&adapter->hw);
-	adapter->netdev->flags &= ~IFF_UP;
 	adapter->flags &= ~IAVF_FLAG_RESET_PENDING;
 	iavf_change_state(adapter, __IAVF_DOWN);
 	wake_up(&adapter->down_waitqueue);
-	dev_info(&adapter->pdev->dev, "Reset task did not complete, VF disabled\n");
+}
+
+/**
+ * iavf_setup_vf - setup VF resources
+ * @adapter: private adapter structure
+ * @cleanup: function to call, if error happened during setup
+ *
+ * Setup all VF resources required to run traffic
+ **/
+static enum iavf_status iavf_setup_vf(struct iavf_adapter *adapter,
+				      void (*cleanup)(struct iavf_adapter *))
+{
+	int err;
+
+	/* allocate transmit descriptors */
+	err = iavf_setup_all_tx_resources(adapter);
+	if (err)
+		goto err_setup_tx;
+
+	/* allocate receive descriptors */
+	err = iavf_setup_all_rx_resources(adapter);
+	if (err)
+		goto err_setup_rx;
+
+	/* clear any pending interrupts, may auto mask */
+	err = iavf_request_traffic_irqs(adapter, adapter->netdev->name);
+	if (err)
+		goto err_req_irq;
+
+	spin_lock_bh(&adapter->mac_vlan_list_lock);
+
+	iavf_add_filter(adapter, adapter->hw.mac.addr);
+
+	spin_unlock_bh(&adapter->mac_vlan_list_lock);
+
+	/* Restore VLAN and Cloud filters that were removed with IFF_DOWN */
+	iavf_restore_filters(adapter);
+
+	iavf_configure(adapter);
+
+	return 0;
+err_req_irq:
+	cleanup(adapter);
+	iavf_free_traffic_irqs(adapter);
+err_setup_rx:
+	iavf_free_all_rx_resources(adapter);
+err_setup_tx:
+	iavf_free_all_tx_resources(adapter);
+	return IAVF_ERR_CONFIG;
 }
 
 /**
@@ -3256,7 +3349,6 @@ static void iavf_handle_hw_reset(struct iavf_adapter *adapter)
 	running = (adapter->last_state == __IAVF_RUNNING);
 
 	if (running) {
-		netdev->flags &= ~IFF_UP;
 		netif_carrier_off(netdev);
 		netif_tx_stop_all_queues(netdev);
 		adapter->link_up = false;
@@ -3355,7 +3447,6 @@ static void iavf_handle_hw_reset(struct iavf_adapter *adapter)
 		 * to __IAVF_RUNNING
 		 */
 		iavf_up_complete(adapter);
-		netdev->flags |= IFF_UP;
 	} else {
 		iavf_change_state(adapter, __IAVF_DOWN);
 		wake_up(&adapter->down_waitqueue);
@@ -3372,9 +3463,10 @@ reset_err:
 	if (running) {
 		set_bit(__IAVF_VSI_DOWN, adapter->vsi.state);
 		iavf_free_traffic_irqs(adapter);
+		adapter->flags |= IAVF_FLAG_RESET_FAILED_DEV_UP;
 	}
 	iavf_disable_vf(adapter);
-
+	dev_info(&adapter->pdev->dev, "Reset task did not complete, VF disabled\n");
 	dev_err(&adapter->pdev->dev, "failed to allocate resources during reinit\n");
 }
 
@@ -3419,8 +3511,10 @@ static void iavf_adminq_task(struct work_struct *work)
 		while (test_and_set_bit(__IAVF_IN_CRITICAL_TASK,
 					&adapter->crit_section))
 			usleep_range(500, 1000);
-		if (iavf_is_reset_in_progress(adapter)) {
-			iavf_set_flags_reset_detected(adapter);
+		if (iavf_is_reset_in_progress(adapter) ||
+		    adapter->flags & IAVF_FLAG_RESET_FAILED_DEV_UP) {
+			if (iavf_is_reset_in_progress(adapter))
+				iavf_set_flags_reset_detected(adapter);
 			clear_bit(__IAVF_IN_CRITICAL_TASK,
 				  &adapter->crit_section);
 			goto freedom;
@@ -4595,31 +4689,9 @@ static int iavf_open(struct net_device *netdev)
 		goto unlock;
 	}
 
-	/* allocate transmit descriptors */
-	err = iavf_setup_all_tx_resources(adapter);
+	err = iavf_setup_vf(adapter, iavf_down);
 	if (err)
-		goto err_setup_tx;
-
-	/* allocate receive descriptors */
-	err = iavf_setup_all_rx_resources(adapter);
-	if (err)
-		goto err_setup_rx;
-
-	/* clear any pending interrupts, may auto mask */
-	err = iavf_request_traffic_irqs(adapter, netdev->name);
-	if (err)
-		goto err_req_irq;
-
-	spin_lock_bh(&adapter->mac_vlan_list_lock);
-
-	iavf_add_filter(adapter, adapter->hw.mac.addr);
-
-	spin_unlock_bh(&adapter->mac_vlan_list_lock);
-
-	/* Restore VLAN and Cloud filters that were removed with IFF_DOWN */
-	iavf_restore_filters(adapter);
-
-	iavf_configure(adapter);
+		goto unlock;
 
 	iavf_up_complete(adapter);
 
@@ -4629,13 +4701,6 @@ static int iavf_open(struct net_device *netdev)
 
 	return 0;
 
-err_req_irq:
-	iavf_down(adapter);
-	iavf_free_traffic_irqs(adapter);
-err_setup_rx:
-	iavf_free_all_rx_resources(adapter);
-err_setup_tx:
-	iavf_free_all_tx_resources(adapter);
 unlock:
 	clear_bit(__IAVF_IN_CRITICAL_TASK, &adapter->crit_section);
 
@@ -5601,7 +5666,7 @@ static int iavf_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 
 	init_waitqueue_head(&adapter->ptp.phc_time_waitqueue);
 	init_waitqueue_head(&adapter->ptp.gpio_waitqueue);
-
+	iavf_synce_probe(adapter);
 	/* Setup the wait queue for indicating virtchannel events */
 	init_waitqueue_head(&adapter->vc_waitqueue);
 	/* By default, start the value of priv flags
@@ -5829,7 +5894,7 @@ static void iavf_remove(struct pci_dev *pdev)
 	dev_info(&adapter->pdev->dev, "Removing device\n");
 
 	iavf_ptp_release(adapter);
-
+	iavf_synce_release(adapter);
 	/* Shut down all the garbage mashers on the detention level */
 	iavf_change_state(adapter, __IAVF_REMOVE);
 	adapter->aq_required = 0;
@@ -5949,8 +6014,6 @@ static struct pci_driver iavf_driver = {
  **/
 static int __init iavf_init_module(void)
 {
-	int ret;
-
 	pr_info("iavf: %s - version %s\n", iavf_driver_string,
 		iavf_driver_version);
 
@@ -5962,8 +6025,7 @@ static int __init iavf_init_module(void)
 		pr_err("%s: Failed to create workqueue\n", iavf_driver_name);
 		return -ENOMEM;
 	}
-	ret = pci_register_driver(&iavf_driver);
-	return ret;
+	return pci_register_driver(&iavf_driver);
 }
 
 module_init(iavf_init_module);
