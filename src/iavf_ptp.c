@@ -718,11 +718,26 @@ iavf_ptp_rq_to_pin(struct iavf_adapter *adapter, struct ptp_clock_request *rq)
 		return NULL;
 	}
 
+#ifdef HAVE_PTP_FIND_PIN_UNLOCKED
 	pin = ptp_find_pin(adapter->ptp.clock, func, chan);
 	if (pin < 0)
 		return NULL;
 
 	return &info->pin_config[pin];
+#else
+	/* ptp_find_pin acquires the ptp->pincfg_mux, but the mutex may
+	 * already be held, so instead just directly search the info array
+	 * ourselves.
+	 */
+	for (pin = 0; pin < info->n_pins; pin++) {
+		if (info->pin_config[pin].func == func &&
+		    info->pin_config[pin].chan == chan) {
+			return &info->pin_config[pin];
+		}
+	}
+
+	return NULL;
+#endif
 }
 
 /**
@@ -1503,7 +1518,7 @@ iavf_virtchnl_ptp_get_time(struct iavf_adapter *adapter, void *data, u16 len)
 	struct virtchnl_phc_time *msg;
 
 	if (len == sizeof(*msg)) {
-		msg = (struct virtchnl_phc_time *)data;
+		msg = data;
 	} else {
 		dev_err_once(&adapter->pdev->dev, "Invalid VIRTCHNL_OP_1588_PTP_GET_TIME from PF. Got size %u, expected %lu\n",
 			     len, sizeof(*msg));
@@ -1541,7 +1556,7 @@ void iavf_virtchnl_ptp_tx_timestamp(struct iavf_adapter *adapter, void *data,
 	u64 ns;
 
 	if (len == sizeof(*msg)) {
-		msg = (struct virtchnl_phc_tx_tstamp *)data;
+		msg = data;
 	} else {
 		dev_err_once(dev, "Invalid VIRTCHNL_OP_1588_PTP_TX_TIMESTAMP from PF. Got size %u, expected %lu\n",
 			     len, sizeof(*msg));
@@ -1632,7 +1647,7 @@ void iavf_virtchnl_ptp_get_pin_cfgs(struct iavf_adapter *adapter, void *data,
 	}
 
 	if (len >= sizeof(*msg)) {
-		msg = (struct virtchnl_phc_get_pins *)data;
+		msg = data;
 	} else {
 		dev_err_once(dev, "Invalid VIRTCHNL_OP_1588_PTP_GET_PIN_CFGS from PF. Got size of %u, expected at least %lu\n",
 			     len, sizeof(*msg));
@@ -1695,7 +1710,7 @@ void iavf_virtchnl_ptp_ext_timestamp(struct iavf_adapter *adapter, void *data,
 	u64 ns;
 
 	if (len == sizeof(*msg)) {
-		msg = (struct virtchnl_phc_ext_tstamp *)data;
+		msg = data;
 	} else {
 		dev_err_once(dev, "Invalid VIRTCHNL_OP_1588_PTP_EXT_TIMESTAMP from PF. Got size %u, expected %lu\n",
 			     len, sizeof(*msg));

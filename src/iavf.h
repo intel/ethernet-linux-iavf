@@ -46,6 +46,7 @@
 #include "virtchnl.h"
 #include "iavf_txrx.h"
 #include "iavf_ptp.h"
+#include "iavf_synce.h"
 #include <linux/bitmap.h>
 #include "siov_regs.h"
 
@@ -446,6 +447,7 @@ enum iavf_state_t {
 	__IAVF_INIT_FAILED,		/* init failed, restarting procedure */
 	__IAVF_RESETTING,		/* in reset */
 	__IAVF_COMM_FAILED,		/* communication with PF failed */
+	__IAVF_STATE_UP_AFTER_RESET,	/* adapter failed reset, while running, up it again */
 	/* Below here, watchdog is running */
 	__IAVF_DOWN,			/* ready, can be opened */
 	__IAVF_DOWN_PENDING,		/* descending, waiting for watchdog */
@@ -572,6 +574,7 @@ struct iavf_adapter {
 #define IAVF_FLAG_INITIAL_MAC_SET		BIT(23)
 #define IAVF_FLAG_SUSPEND_RUNNING		BIT(24)
 #define IAVF_FLAG_UPDATE_NETDEV_FEATURES	BIT(25)
+#define IAVF_FLAG_RESET_FAILED_DEV_UP		BIT(26)
 
 
 	u32 chnl_perf_flags;
@@ -728,6 +731,7 @@ struct iavf_adapter {
 	struct virtchnl_vlan_caps vlan_v2_caps;
 	struct virtchnl_supported_rxdids supported_rxdids;
 	struct iavf_ptp ptp;
+	struct iavf_synce synce;
 	u16 msg_enable;
 	struct iavf_eth_stats current_stats;
 	struct iavf_vsi vsi;
@@ -817,6 +821,8 @@ static inline const char *iavf_state_str(enum iavf_state_t state)
 		return "__IAVF_TESTING";
 	case __IAVF_RUNNING:
 		return "__IAVF_RUNNING";
+	case __IAVF_STATE_UP_AFTER_RESET:
+		return "__IAVF_STATE_UP_AFTER_RESET";
 	default:
 		return "__IAVF_UNKNOWN_STATE";
 	}
@@ -942,6 +948,10 @@ int iavf_get_vf_supported_rxdids(struct iavf_adapter *adapter);
 int iavf_send_vf_ptp_caps_msg(struct iavf_adapter *adapter);
 int iavf_get_vf_ptp_caps(struct iavf_adapter *adapter);
 int iavf_send_vf_ptp_pin_cfgs_msg(struct iavf_adapter *adapter);
+int iavf_send_vf_synce_cgu_info_msg(struct iavf_adapter *adapter);
+int iavf_send_vf_synce_cgu_abilities_msg(struct iavf_adapter *adapter);
+int iavf_send_vf_synce_hw_info_msg(struct iavf_adapter *adapter);
+int iavf_get_synce_hw_info(struct iavf_adapter *adapter);
 #if IS_ENABLED(CONFIG_PTP_1588_CLOCK)
 int iavf_get_vf_ptp_pin_cfgs(struct iavf_adapter *adapter);
 #endif /* IS_ENABLED(CONFIG_PTP_1588_CLOCK) */

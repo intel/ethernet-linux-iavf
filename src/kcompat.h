@@ -6716,7 +6716,6 @@ static inline void __kc_metadata_dst_free(void *md_dst)
 #else /* >= 4.20.0 */
 #define HAVE_DEVLINK_ESWITCH_OPS_EXTACK
 #define HAVE_AF_XDP_ZC_SUPPORT
-#define HAVE_VXLAN_TYPE
 #define HAVE_ETF_SUPPORT /* Earliest TxTime First */
 #endif /* 4.20.0 */
 
@@ -6785,7 +6784,6 @@ ptp_read_system_postts(struct ptp_system_timestamp __always_unused *sts)
 #define HAVE_PTP_CLOCK_INFO_GETTIMEX64
 #define HAVE_NDO_BRIDGE_SETLINK_EXTACK
 #define HAVE_DMA_ALLOC_COHERENT_ZEROES_MEM
-#define HAVE_GENEVE_TYPE
 #define HAVE_TC_INDIR_BLOCK
 #endif /* 5.0.0 */
 
@@ -6804,7 +6802,6 @@ ptp_read_system_postts(struct ptp_system_timestamp __always_unused *sts)
 #define HAVE_TC_FLOW_RULE_INFRASTRUCTURE
 #define HAVE_DEVLINK_INFO_GET
 #define HAVE_DEVLINK_FLASH_UPDATE
-#define HAVE_DEVLINK_PORT_PARAMS
 #endif /* 5.1.0 */
 
 /*****************************************************************************/

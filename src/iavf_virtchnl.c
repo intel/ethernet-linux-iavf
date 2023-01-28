@@ -5,10 +5,6 @@
 #include "iavf_prototype.h"
 #include "iavf_idc.h"
 
-/* busy wait delay in msec */
-#define IAVF_BUSY_WAIT_DELAY 10
-#define IAVF_BUSY_WAIT_COUNT 50
-
 /**
  * iavf_send_pf_msg
  * @adapter: adapter structure
@@ -239,6 +235,7 @@ int iavf_send_vf_ptp_caps_msg(struct iavf_adapter *adapter)
 			VIRTCHNL_1588_PTP_CAP_RX_TSTAMP |
 			VIRTCHNL_1588_PTP_CAP_PHC_REGS |
 			VIRTCHNL_1588_PTP_CAP_PIN_CFG);
+	hw_caps.caps |=	VIRTCHNL_1588_PTP_CAP_SYNCE;
 
 	adapter->current_op = VIRTCHNL_OP_1588_PTP_GET_CAPS;
 
@@ -269,6 +266,62 @@ int iavf_send_vf_ptp_pin_cfgs_msg(struct iavf_adapter *adapter)
 				NULL, 0);
 }
 
+/**
+ * iavf_send_vf_synce_hw_info_msg - Send request for HW Info
+ * @adapter: private adapter structure
+ *
+ * Send the VIRTCHNL_OP_SYNCE_GET_HW_INFO command to the PF to request
+ * extra pin configuration information.
+ *
+ * The PF will reply with the same opcode a filled out copy of the
+ * virtchnl_synce_get_hw_info structure which defines the specifics of
+ * hw info provided to this VF.
+ */
+int iavf_send_vf_synce_hw_info_msg(struct iavf_adapter *adapter)
+{
+	adapter->current_op = VIRTCHNL_OP_SYNCE_GET_HW_INFO;
+
+	return iavf_send_pf_msg(adapter, VIRTCHNL_OP_SYNCE_GET_HW_INFO,
+				NULL, 0);
+}
+
+/**
+ * iavf_send_vf_synce_cgu_info_msg - Send request for cgu Info
+ * @adapter: private adapter structure
+ *
+ * Send the VIRTCHNL_OP_SYNCE_GET_CGU_INFO command to the PF to request
+ * cgu information.
+ *
+ * The PF will reply with the same opcode a filled out copy of the
+ * virtchnl_synce_get_cgu_info structure which defines the specifics of
+ * hw info provided to this VF.
+ */
+int iavf_send_vf_synce_cgu_info_msg(struct iavf_adapter *adapter)
+{
+	adapter->current_op = VIRTCHNL_OP_SYNCE_GET_CGU_INFO;
+
+	return iavf_send_pf_msg(adapter, VIRTCHNL_OP_SYNCE_GET_CGU_INFO,
+				NULL, 0);
+}
+
+/**
+ * iavf_send_vf_synce_cgu_abilities_msg - Send request for cgu capabilities
+ * @adapter: private adapter structure
+ *
+ * Send the VIRTCHNL_OP_SYNCE_GET_CGU_ABILITIES command to the PF to request
+ * cgu capabilities.
+ *
+ * The PF will reply with the same opcode a filled out copy of the
+ * virtchnl_synce_get_cgu_abilities structure which defines the specifics of
+ * hw info provided to this VF.
+ */
+int iavf_send_vf_synce_cgu_abilities_msg(struct iavf_adapter *adapter)
+{
+	adapter->current_op = VIRTCHNL_OP_SYNCE_GET_CGU_ABILITIES;
+
+	return iavf_send_pf_msg(adapter, VIRTCHNL_OP_SYNCE_GET_CGU_ABILITIES,
+				NULL, 0);
+}
 /**
  * iavf_validate_num_queues
  * @adapter: adapter structure
@@ -441,6 +494,39 @@ int iavf_get_vf_ptp_pin_cfgs(struct iavf_adapter *adapter)
 	return err;
 }
 #endif /* IS_ENABLED(CONFIG_PTP_1588_CLOCK) */
+
+/**
+ * iavf_get_synce_hw_info
+ * @adapter: adapter structure
+ *
+ * Get SyncE HW info from PF
+ **/
+int iavf_get_synce_hw_info(struct iavf_adapter *adapter)
+{
+	struct iavf_arq_event_info event;
+	int err;
+	u16 len;
+
+	/* The message from the PF can be variable sized. Use the maximum
+	 * expected size of 4Kb to allow the variable size to be received.
+	 */
+	len = IAVF_MAX_AQ_BUF_SIZE;
+	event.buf_len = len;
+	event.msg_buf = kzalloc(len, GFP_KERNEL);
+	if (!event.msg_buf)
+		return -ENOMEM;
+
+	err = iavf_poll_virtchnl_msg(&adapter->hw, &event,
+				     VIRTCHNL_OP_SYNCE_GET_HW_INFO);
+	if (!err)
+		iavf_virtchnl_synce_get_hw_info(adapter, event.msg_buf,
+						min(event.msg_len, len));
+
+	adapter->current_op = VIRTCHNL_OP_UNKNOWN;
+
+	kfree(event.msg_buf);
+	return err;
+}
 
 /**
  * iavf_configure_queues
@@ -827,8 +913,13 @@ static void iavf_mac_add_ok(struct iavf_adapter *adapter)
 	spin_lock_bh(&adapter->mac_vlan_list_lock);
 	list_for_each_entry_safe(f, ftmp, &adapter->mac_filter_list, list) {
 		f->is_new_mac = false;
-		if (!f->add && !f->add_handled)
+		if (!f->add && !f->add_handled) {
 			f->add_handled = true;
+			if (f->is_primary)
+				netdev_info(adapter->netdev,
+					    "Setting MAC Address to %pM",
+					    adapter->hw.mac.addr);
+		}
 	}
 	spin_unlock_bh(&adapter->mac_vlan_list_lock);
 }
@@ -2615,6 +2706,38 @@ void iavf_virtchnl_completion(struct iavf_adapter *adapter,
 			dev_warn(dev, "Failed to get PHC GPIO pin config, error %s\n",
 				 virtchnl_stat_str(v_retval));
 			break;
+		case VIRTCHNL_OP_SYNCE_GET_HW_INFO:
+			dev_warn(dev, "Failed to get HW_INFO, error %s\n",
+				 virtchnl_stat_str(v_retval));
+			break;
+		case VIRTCHNL_OP_SYNCE_GET_PHY_REC_CLK_OUT:
+			dev_warn(dev, "Failed to get PHY REC CLK OUT config, error %s\n",
+				 virtchnl_stat_str(v_retval));
+			break;
+		case VIRTCHNL_OP_SYNCE_GET_CGU_DPLL_STATUS:
+			dev_warn(dev, "Failed to get CGU_DPLL_STATUS, error %s\n",
+				 virtchnl_stat_str(v_retval));
+			break;
+		case VIRTCHNL_OP_SYNCE_GET_CGU_REF_PRIO:
+			dev_warn(dev, "Failed to get CGU_REF_PRIO, error %s\n",
+				 virtchnl_stat_str(v_retval));
+			break;
+		case VIRTCHNL_OP_SYNCE_GET_CGU_INFO:
+			dev_warn(dev, "Failed to get CGU_INFO, error %s\n",
+				 virtchnl_stat_str(v_retval));
+			break;
+		case VIRTCHNL_OP_SYNCE_GET_CGU_ABILITIES:
+			dev_warn(dev, "Failed to get CGU_ABILITIES, error %s\n",
+				 virtchnl_stat_str(v_retval));
+			break;
+		case VIRTCHNL_OP_SYNCE_GET_INPUT_PIN_CFG:
+			dev_warn(dev, "Failed to get INPUT_PIN_CFG, error %s\n",
+				 virtchnl_stat_str(v_retval));
+			break;
+		case VIRTCHNL_OP_SYNCE_GET_OUTPUT_PIN_CFG:
+			dev_warn(dev, "Failed to get OUTPUT_PIN_CFG, error %s\n",
+				 virtchnl_stat_str(v_retval));
+			break;
 		case VIRTCHNL_OP_ADD_VLAN_V2:
 			iavf_vlan_add_reject(adapter);
 			dev_warn(dev, "Failed to add VLAN filter, error %s\n",
@@ -2817,6 +2940,27 @@ void iavf_virtchnl_completion(struct iavf_adapter *adapter,
 		iavf_virtchnl_ptp_ext_timestamp(adapter, msg, msglen);
 		break;
 #endif /* IS_ENABLED(CONFIG_PTP_1588_CLOCK) */
+	case VIRTCHNL_OP_SYNCE_GET_PHY_REC_CLK_OUT:
+		iavf_virtchnl_synce_get_phy_rec_clk_out(adapter, msg, msglen);
+		break;
+	case VIRTCHNL_OP_SYNCE_GET_CGU_DPLL_STATUS:
+		iavf_virtchnl_synce_get_cgu_dpll_status(adapter, msg, msglen);
+		break;
+	case VIRTCHNL_OP_SYNCE_GET_CGU_REF_PRIO:
+		iavf_virtchnl_synce_get_cgu_ref_prio(adapter, msg, msglen);
+		break;
+	case VIRTCHNL_OP_SYNCE_GET_CGU_INFO:
+		iavf_virtchnl_synce_get_cgu_info(adapter, msg, msglen);
+		break;
+	case VIRTCHNL_OP_SYNCE_GET_CGU_ABILITIES:
+		iavf_virtchnl_synce_get_cgu_abilities(adapter, msg, msglen);
+		break;
+	case VIRTCHNL_OP_SYNCE_GET_INPUT_PIN_CFG:
+		iavf_virtchnl_synce_get_input_pin_cfg(adapter, msg, msglen);
+		break;
+	case VIRTCHNL_OP_SYNCE_GET_OUTPUT_PIN_CFG:
+		iavf_virtchnl_synce_get_output_pin_cfg(adapter, msg, msglen);
+		break;
 	case VIRTCHNL_OP_ENABLE_QUEUES:
 		/* enable transmits */
 		if (adapter->state == __IAVF_RUNNING) {
