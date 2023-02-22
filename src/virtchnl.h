@@ -1,5 +1,5 @@
-/* SPDX-License-Identifier: GPL-2.0 */
-/* Copyright (c) 2013, Intel Corporation. */
+/* SPDX-License-Identifier: GPL-2.0-only */
+/* Copyright (C) 2013-2023 Intel Corporation */
 
 #ifndef _VIRTCHNL_H_
 #define _VIRTCHNL_H_
@@ -198,6 +198,8 @@ enum virtchnl_ops {
 	VIRTCHNL_OP_SYNCE_SET_CGU_DPLL_CONFIG = 126,
 	VIRTCHNL_OP_SYNCE_GET_CGU_INFO = 127,
 	VIRTCHNL_OP_SYNCE_GET_HW_INFO = 128,
+	VIRTCHNL_OP_GNSS_READ_I2C = 129,
+	VIRTCHNL_OP_GNSS_WRITE_I2C = 130,
 	VIRTCHNL_OP_MAX,
 };
 
@@ -342,6 +344,10 @@ static inline const char *virtchnl_op_str(enum virtchnl_ops v_opcode)
 		return "VIRTCHNL_OP_SYNCE_GET_CGU_INFO";
 	case VIRTCHNL_OP_SYNCE_GET_HW_INFO:
 		return "VIRTCHNL_OP_SYNCE_GET_HW_INFO";
+	case VIRTCHNL_OP_GNSS_READ_I2C:
+		return "VIRTCHNL_OP_GNSS_READ_I2C";
+	case VIRTCHNL_OP_GNSS_WRITE_I2C:
+		return "VIRTCHNL_OP_GNSS_WRITE_I2C";
 	case VIRTCHNL_OP_ENABLE_QUEUES_V2:
 		return "VIRTCHNL_OP_ENABLE_QUEUES_V2";
 	case VIRTCHNL_OP_DISABLE_QUEUES_V2:
@@ -2149,6 +2155,8 @@ VIRTCHNL_CHECK_STRUCT_LEN(12, virtchnl_quanta_cfg);
  *   VIRTCHNL_OP_SYNCE_SET_CGU_DPLL_CONFIG
  *   VIRTCHNL_OP_SYNCE_GET_CGU_INFO
  *   VIRTCHNL_OP_SYNCE_GET_HW_INFO
+ *   VIRTCHNL_OP_GNSS_READ_I2C
+ *   VIRTCHNL_OP_GNSS_WRITE_I2C
  *
  * Support for offloading control of the device PTP hardware clock (PHC) is enabled
  * by VIRTCHNL_VF_CAP_PTP. This capability allows a VF to request that PF
@@ -2170,6 +2178,7 @@ VIRTCHNL_CHECK_STRUCT_LEN(12, virtchnl_quanta_cfg);
 #define VIRTCHNL_1588_PTP_CAP_PHC_REGS		BIT(4)
 #define VIRTCHNL_1588_PTP_CAP_PIN_CFG		BIT(5)
 #define VIRTCHNL_1588_PTP_CAP_SYNCE		BIT(6)
+#define VIRTCHNL_1588_PTP_CAP_GNSS		BIT(7)
 
 /**
  * struct virtchnl_phc_regs
@@ -2311,6 +2320,10 @@ enum virtchnl_ptp_tstamp_format {
  * capabilities. The first command the VF should issue is the
  * VIRTCHNL_OP_SYNCE_GET_HW_INFO. It returns to VF all required HW details
  * needed for further processing.
+ *
+ * VIRTCHNL_1588_PTP_CAP_GNSS indicates that the VF has access to GNSS related
+ * capabilities, i.e. Access onboard GNSS Module (if present) through I2C GNSS
+ * console for GNSS Configuration, Status, and NMEA Messages.
  *
  * Note that in the future, additional capability flags may be added which
  * indicate additional extended support. All fields marked as reserved by this
@@ -3180,6 +3193,98 @@ struct virtchnl_synce_get_hw_info {
 
 VIRTCHNL_CHECK_STRUCT_LEN(72, virtchnl_synce_get_hw_info);
 
+/**
+ * virtchnl_link_topo_params
+ * @lport_num: link port number
+ * @lport_num_valid: link port number validity
+ * @node_type_ctx: node type & context
+ * @index: node index
+ *
+ * Structure used as part of virtchnl_link_topo_addr with gnss I2C read or write
+ * request. VF sets this structure field for GNSS I2C console Node, PF passes it
+ * on to AdminQ.
+ */
+struct virtchnl_link_topo_params {
+	u8 lport_num;
+	u8 lport_num_valid;
+	u8 node_type_ctx;
+#define VIRTCHNL_LINK_TOPO_NODE_TYPE_GPS	11
+#define VIRTCHNL_LINK_TOPO_NODE_CTX_S		4
+#define VIRTCHNL_LINK_TOPO_NODE_CTX_M		\
+				(0xF << VIRTCHNL_LINK_TOPO_NODE_CTX_S)
+#define VIRTCHNL_LINK_TOPO_NODE_CTX_GLOBAL	0
+#define VIRTCHNL_LINK_TOPO_NODE_CTX_BOARD	1
+#define VIRTCHNL_LINK_TOPO_NODE_CTX_PORT	2
+#define VIRTCHNL_LINK_TOPO_NODE_CTX_NODE	3
+#define VIRTCHNL_LINK_TOPO_NODE_CTX_PROVIDED	4
+#define VIRTCHNL_LINK_TOPO_NODE_CTX_OVERRIDE	5
+	u8 index;
+};
+
+VIRTCHNL_CHECK_STRUCT_LEN(4, virtchnl_link_topo_params);
+
+/**
+ * virtchnl_link_topo_addr
+ * @topo_params: link topo parameters
+ * @handle: link topo handle (board type, mezzaine / lom Type)
+ *
+ * Structure used as part of virtchnl_gnss_i2c read or write request. VF sets
+ * this structure field for GNSS I2C console Node, PF passes it on to AdminQ.
+ */
+struct virtchnl_link_topo_addr {
+	struct virtchnl_link_topo_params topo_params;
+	u16  handle;
+};
+
+VIRTCHNL_CHECK_STRUCT_LEN(6, virtchnl_link_topo_addr);
+
+/**
+ * virtchnl_gnss_i2c
+ * @topo_addr: link topo address
+ * @i2c_addr: gnss console I2C Address
+ * @i2c_params: gnss console I2C Parameters
+ * @i2c_bus_addr: gnss console I2C Bus Address
+ * @i2c_data: Data to be written to gnss module
+ *
+ * Structure sent with VIRTCHNL_OP_GNSS_READ_I2C for GNSS Console I2C Read,
+ * or VIRTCHNL_OP_GNSS_WRITE_I2C for GNSS Console I2C Write. The request is
+ * acceptable only when VF negotiated VIRTCHNL_1588_PTP_CAP_GNSS capability
+ * with PF.
+ */
+struct virtchnl_gnss_i2c {
+	struct virtchnl_link_topo_addr topo_addr;
+	u16 i2c_addr;
+	u8 i2c_params;
+#define VIRTCHNL_I2C_DATA_SIZE_S	0
+#define VIRTCHNL_I2C_DATA_SIZE_M	(0xF << VIRTCHNL_I2C_DATA_SIZE_S)
+#define VIRTCHNL_I2C_ADDR_TYPE_M	BIT(4)
+#define VIRTCHNL_I2C_ADDR_TYPE_7BIT	0
+#define VIRTCHNL_I2C_ADDR_TYPE_10BIT	VIRTCHNL_I2C_ADDR_TYPE_M
+#define VIRTCHNL_I2C_DATA_OFFSET_S	5
+#define VIRTCHNL_I2C_DATA_OFFSET_M	(0x3 << VIRTCHNL_I2C_DATA_OFFSET_S)
+#define VIRTCHNL_I2C_USE_REPEATED_START	BIT(7)
+	u8 rsvd;
+	u16 i2c_bus_addr;
+#define VIRTCHNL_I2C_ADDR_7BIT_MASK	0x7F
+#define VIRTCHNL_I2C_ADDR_10BIT_MASK	0x3FF
+	u8 i2c_data[4]; /* Used only by write command, reserved in read. */
+};
+
+VIRTCHNL_CHECK_STRUCT_LEN(16, virtchnl_gnss_i2c);
+
+/**
+ * virtchnl_gnss_read_i2c_resp
+ * @i2c_data: Data returned from gnss console I2C read
+ *
+ * Structure returned by PF in response to VIRTCHNL_OP_GNSS_READ_I2C for
+ * GNSS Console I2C Read.
+ */
+struct virtchnl_gnss_read_i2c_resp {
+	u8 i2c_data[16];
+};
+
+VIRTCHNL_CHECK_STRUCT_LEN(16, virtchnl_gnss_read_i2c_resp);
+
 /* Since VF messages are limited by u16 size, precalculate the maximum possible
  * values of nested elements in virtchnl structures that virtual channel can
  * possibly handle in a single message.
@@ -3566,6 +3671,12 @@ virtchnl_vc_validate_vf_msg(struct virtchnl_version_info *ver, u32 v_opcode,
 	case VIRTCHNL_OP_SYNCE_GET_CGU_INFO:
 		break;
 	case VIRTCHNL_OP_SYNCE_GET_HW_INFO:
+		break;
+	case VIRTCHNL_OP_GNSS_READ_I2C:
+		valid_len = sizeof(struct virtchnl_gnss_i2c);
+		break;
+	case VIRTCHNL_OP_GNSS_WRITE_I2C:
+		valid_len = sizeof(struct virtchnl_gnss_i2c);
 		break;
 	case VIRTCHNL_OP_ENABLE_QUEUES_V2:
 	case VIRTCHNL_OP_DISABLE_QUEUES_V2:

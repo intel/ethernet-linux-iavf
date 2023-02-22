@@ -1,5 +1,5 @@
-/* SPDX-License-Identifier: GPL-2.0 */
-/* Copyright (c) 2013, Intel Corporation. */
+/* SPDX-License-Identifier: GPL-2.0-only */
+/* Copyright (C) 2013-2023 Intel Corporation */
 
 #ifndef _IIDC_H_
 #define _IIDC_H_
@@ -32,12 +32,12 @@ enum iidc_event_type {
 	IIDC_EVENT_AFTER_MTU_CHANGE,
 	IIDC_EVENT_BEFORE_TC_CHANGE,
 	IIDC_EVENT_AFTER_TC_CHANGE,
-	IIDC_EVENT_WARN_RESET,
 	IIDC_EVENT_VF_RESET,
 	IIDC_EVENT_LINK_CHNG,
 	IIDC_EVENT_CRIT_ERR,
 	IIDC_EVENT_FAILOVER_START,
 	IIDC_EVENT_FAILOVER_FINISH,
+	IIDC_EVENT_WARN_RESET,
 	IIDC_EVENT_NBITS		/* must be last */
 };
 
