@@ -65,7 +65,8 @@ which the AVF is associated. The following are base mode features:
 - Receive Side Scaling (RSS) with 64 entry indirection table and key,
   configured through the PF
 - 1 unicast MAC address reserved per VF
-- 16 MAC address filters for each VF
+- 8 MAC address filters for each VF on an Intel(R) Ethernet 800 Series devices
+- 16 MAC address filters for each VF on an Intel(R) Ethernet 700 Series device
 - Stateless offloads - non-tunneled checksums
 - AVF device ID
 - HW mailbox is used for VF to PF communications (including on Windows)

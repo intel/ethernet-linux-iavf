@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0
-/* Copyright (c) 2013, Intel Corporation. */
+/* SPDX-License-Identifier: GPL-2.0-only */
+/* Copyright (C) 2013-2023 Intel Corporation */
 
 #include "iavf.h"
 #include "iavf_helper.h"
@@ -25,12 +25,12 @@ static const char iavf_driver_string[] =
 	"Intel(R) Ethernet Adaptive Virtual Function Network Driver";
 
 #define DRV_VERSION_MAJOR (4)
-#define DRV_VERSION_MINOR (7)
-#define DRV_VERSION_BUILD (0)
-#define DRV_VERSION "4.7.0"
+#define DRV_VERSION_MINOR (8)
+#define DRV_VERSION_BUILD (2)
+#define DRV_VERSION "4.8.2"
 const char iavf_driver_version[] = DRV_VERSION;
 static const char iavf_copyright[] =
-	"Copyright (c) 2013, Intel Corporation.";
+	"Copyright (C) 2013-2023 Intel Corporation";
 
 /* iavf_pci_tbl - PCI Device ID Table
  *
@@ -500,7 +500,6 @@ iavf_request_traffic_irqs(struct iavf_adapter *adapter, char *basename)
 	unsigned int vector, q_vectors;
 	unsigned int rx_int_idx = 0, tx_int_idx = 0;
 	int irq_num, err;
-	int cpu;
 
 	iavf_irq_disable(adapter);
 	/* Decrement for Other and TCP Timer vectors */
@@ -541,14 +540,6 @@ iavf_request_traffic_irqs(struct iavf_adapter *adapter, char *basename)
 						   iavf_irq_affinity_release;
 		irq_set_affinity_notifier(irq_num, &q_vector->affinity_notify);
 #endif
-#ifdef HAVE_IRQ_AFFINITY_HINT
-		/* Spread the IRQ affinity hints across online CPUs. Note that
-		 * get_cpu_mask returns a mask with a permanent lifetime so
-		 * it's safe to use as a hint for irq_set_affinity_hint.
-		 */
-		cpu = cpumask_local_spread(q_vector->v_idx, -1);
-		irq_set_affinity_hint(irq_num, get_cpu_mask(cpu));
-#endif /* HAVE_IRQ_AFFINITY_HINT */
 	}
 
 	return 0;
@@ -559,9 +550,6 @@ free_queue_irqs:
 		irq_num = adapter->msix_entries[vector + NONQ_VECS].vector;
 #ifdef HAVE_IRQ_AFFINITY_NOTIFY
 		irq_set_affinity_notifier(irq_num, NULL);
-#endif
-#ifdef HAVE_IRQ_AFFINITY_HINT
-		irq_set_affinity_hint(irq_num, NULL);
 #endif
 		free_irq(irq_num, &adapter->q_vectors[vector]);
 	}
@@ -615,9 +603,6 @@ static void iavf_free_traffic_irqs(struct iavf_adapter *adapter)
 		irq_num = adapter->msix_entries[vector + NONQ_VECS].vector;
 #ifdef HAVE_IRQ_AFFINITY_NOTIFY
 		irq_set_affinity_notifier(irq_num, NULL);
-#endif
-#ifdef HAVE_IRQ_AFFINITY_HINT
-		irq_set_affinity_hint(irq_num, NULL);
 #endif
 		free_irq(irq_num, &adapter->q_vectors[vector]);
 	}
@@ -1052,11 +1037,7 @@ iavf_mac_filter *iavf_add_filter(struct iavf_adapter *adapter,
 		f->add = true;
 		f->add_handled = false;
 		f->is_new_mac = true;
-		if (ether_addr_equal(macaddr, adapter->hw.mac.addr))
-			f->is_primary = true;
-		else
-			f->is_primary = false;
-
+		f->is_primary = ether_addr_equal(macaddr, adapter->hw.mac.addr);
 		adapter->aq_required |= IAVF_FLAG_AQ_ADD_MAC_FILTER;
 	} else {
 		f->remove = false;
@@ -2312,7 +2293,7 @@ static void iavf_init_get_resources(struct iavf_adapter *adapter)
 	ret = iavf_get_vf_config(adapter);
 	if (ret == -EALREADY) {
 		ret = iavf_send_vf_config_msg(adapter);
-		goto err_alloc;
+		goto err;
 	} else if (ret == -EINVAL) {
 		/* We only get -EINVAL if the device is in a very bad
 		 * state or if we've been disabled for previous bad
@@ -4825,7 +4806,7 @@ static int iavf_change_mtu(struct net_device *netdev, int new_mtu)
 
 	ret = wait_event_interruptible_timeout(adapter->reset_waitqueue,
 					       !iavf_is_reset_in_progress(adapter),
-					       msecs_to_jiffies(2500));
+					       msecs_to_jiffies(5000));
 
 	/* If ret < 0 then it means wait was interrupted.
 	 * If ret == 0 then it means we got a timeout while waiting

@@ -1,5 +1,5 @@
-/* SPDX-License-Identifier: GPL-2.0 */
-/* Copyright (c) 2013, Intel Corporation. */
+/* SPDX-License-Identifier: GPL-2.0-only */
+/* Copyright (C) 2013-2023 Intel Corporation */
 
 /* SPDX-License-Identifier: GPL-2.0-only*/
 
@@ -63,8 +63,10 @@ struct iavf_synce {
 	bool initialized;
 	u8 C827_idx;
 	u8 log_pending;
-#define IAVF_PERIODIC_LOG_INTERVAL_IN_SEC	5
+#define IAVF_PERIODIC_LOG_INTERVAL_IN_MSEC	500
 	unsigned long scheduled_jiffies;
+	enum iavf_cgu_state synce_dpll_state;
+	enum iavf_cgu_state ptp_dpll_state;
 };
 
 void iavf_synce_probe(struct iavf_adapter *adapter);

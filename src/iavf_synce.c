@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0
-/* Copyright (c) 2013, Intel Corporation. */
+/* SPDX-License-Identifier: GPL-2.0-only */
+/* Copyright (C) 2013-2023 Intel Corporation */
 
 // SPDX-License-Identifier: GPL-2.0-only
 #include "iavf.h"
@@ -146,25 +146,28 @@ static int iavf_synce_start_cgu_dpll_status_log(struct iavf_adapter *adapter,
 }
 
 /**
- * parse_dpll_state - parse the dpll_state bit fields
+ * iavf_parse_dpll_state - parse the dpll_state bit fields
  * @dpll_state: pll state from pf response
+ * @last_dpll_state: last known state of DPLL
  *
  * parse the dpll_state bit fields to defined cgu_dpll_state enum
  */
-static enum iavf_cgu_state parse_dpll_state(u16 dpll_state)
+static
+enum iavf_cgu_state iavf_parse_dpll_state(u16 dpll_state,
+					  enum iavf_cgu_state last_dpll_state)
 {
-	if (dpll_state & VIRTCHNL_GET_CGU_DPLL_STATUS_STATE_LOCK)
-		return IAVF_CGU_STATE_LOCKED;
-	if (dpll_state & VIRTCHNL_GET_CGU_DPLL_STATUS_STATE_HO)
-		return IAVF_CGU_STATE_HOLDOVER;
-	if (dpll_state & VIRTCHNL_GET_CGU_DPLL_STATUS_STATE_HO_READY)
-		return IAVF_CGU_STATE_LOCKED_HO_ACQ;
-	if (dpll_state & VIRTCHNL_GET_CGU_DPLL_STATUS_STATE_FLHIT)
-		return IAVF_CGU_STATE_FREERUN;
-	if (dpll_state & VIRTCHNL_GET_CGU_DPLL_STATUS_STATE_PSLHIT)
-		return IAVF_CGU_STATE_INVALID;
+	if (dpll_state & VIRTCHNL_GET_CGU_DPLL_STATUS_STATE_LOCK) {
+		if (dpll_state & VIRTCHNL_GET_CGU_DPLL_STATUS_STATE_HO_READY)
+			return IAVF_CGU_STATE_LOCKED_HO_ACQ;
+		else
+			return IAVF_CGU_STATE_LOCKED;
+	}
 
-	return IAVF_CGU_STATE_UNKNOWN;
+	if (last_dpll_state == IAVF_CGU_STATE_LOCKED_HO_ACQ ||
+	    last_dpll_state == IAVF_CGU_STATE_HOLDOVER)
+		return IAVF_CGU_STATE_HOLDOVER;
+
+	return IAVF_CGU_STATE_FREERUN;
 }
 
 /**
@@ -270,8 +273,6 @@ void iavf_virtchnl_synce_get_phy_rec_clk_out(struct iavf_adapter *adapter,
 void iavf_virtchnl_synce_get_cgu_dpll_status(struct iavf_adapter *adapter,
 					     void *data, u16 len)
 {
-	static enum iavf_cgu_state last_dpll0_state = IAVF_CGU_STATE_MAX;
-	static enum iavf_cgu_state last_dpll1_state = IAVF_CGU_STATE_MAX;
 	struct virtchnl_synce_get_cgu_dpll_status *msg;
 	struct iavf_synce *synce = &adapter->synce;
 	struct device *dev = &adapter->pdev->dev;
@@ -290,15 +291,20 @@ void iavf_virtchnl_synce_get_cgu_dpll_status(struct iavf_adapter *adapter,
 	memcpy(&synce->cached_cgu_dpll_status, msg, len);
 	synce->cgu_dpll_status_ready = true;
 
+	dev_dbg(dev, "%s: dpll_num: %u ref_state: %u dpll_state: %u phase_offset: %lld eec_mode: %u\n",
+		__func__, msg->dpll_num, msg->ref_state, msg->dpll_state,
+		msg->phase_offset, msg->eec_mode);
+
 	/* print out the dpll status log if it is the pending one
 	 * and the state has been changed
 	 */
 	if (synce->log_pending == msg->dpll_num) {
-		dpll_state = parse_dpll_state(msg->dpll_state);
 		switch (msg->dpll_num) {
 		case IAVF_CGU_DPLL_SYNCE:
-			if (dpll_state != last_dpll0_state) {
-				last_dpll0_state = dpll_state;
+			dpll_state = iavf_parse_dpll_state(msg->dpll_state,
+							   synce->synce_dpll_state);
+			if (dpll_state != synce->synce_dpll_state) {
+				synce->synce_dpll_state = dpll_state;
 				ref_pin = parse_dpll_ref_pin(msg->dpll_state);
 				iavf_dpll_pin_idx_to_name(adapter, ref_pin,
 							  pin_name);
@@ -312,8 +318,10 @@ void iavf_virtchnl_synce_get_cgu_dpll_status(struct iavf_adapter *adapter,
 			synce->log_pending = (u8)IAVF_CGU_DPLL_PTP;
 			break;
 		case IAVF_CGU_DPLL_PTP:
-			if (dpll_state != last_dpll1_state) {
-				last_dpll1_state = dpll_state;
+			dpll_state = iavf_parse_dpll_state(msg->dpll_state,
+							   synce->ptp_dpll_state);
+			if (dpll_state != synce->ptp_dpll_state) {
+				synce->ptp_dpll_state = dpll_state;
 				ref_pin = parse_dpll_ref_pin(msg->dpll_state);
 				iavf_dpll_pin_idx_to_name(adapter, ref_pin,
 							  pin_name);
@@ -1721,47 +1729,30 @@ static ssize_t dpll_state_show(struct device *dev,
 	struct iavf_dpll_attribute *dpll_attr;
 	enum iavf_cgu_state dpll_state;
 	struct iavf_adapter *adapter;
-	u8 ref_state, eec_mode;
-	s64 phase_offset;
+	struct iavf_synce *synce;
 	ssize_t cnt;
-	int status;
 
 	adapter = iavf_kdev_to_iavf(dev);
 	if (WARN_ON(!adapter))
 		return -EINVAL;
 
+	synce = &adapter->synce;
 	dpll_attr = container_of(attr, struct iavf_dpll_attribute, attr);
 
 	switch (dpll_attr->dpll_num) {
 	case IAVF_CGU_DPLL_SYNCE:
 		/* get virtchnl_synce_get_cgu_dpll_status from pf */
-		status = iavf_synce_aq_get_cgu_dpll_status(adapter,
-							   IAVF_CGU_DPLL_SYNCE,
-							   &ref_state,
-							   (u16 *)&dpll_state,
-							   &phase_offset,
-							   &eec_mode);
-		if (status)
-			return -EIO;
+		dpll_state = synce->synce_dpll_state;
 		break;
 	case IAVF_CGU_DPLL_PTP:
 		/* get virtchnl_synce_get_cgu_dpll_status from pf */
-		status = iavf_synce_aq_get_cgu_dpll_status(adapter,
-							   IAVF_CGU_DPLL_PTP,
-							   &ref_state,
-							   (u16 *)&dpll_state,
-							   &phase_offset,
-							   &eec_mode);
-		if (status)
-			return -EIO;
+		dpll_state = synce->ptp_dpll_state;
 		break;
 	default:
 		return -EINVAL;
 	}
 
-	dpll_state = parse_dpll_state((u16)dpll_state);
 	cnt = snprintf(buf, PAGE_SIZE, "%d\n", dpll_state);
-
 	return cnt;
 }
 
@@ -1781,6 +1772,7 @@ static ssize_t dpll_ref_pin_show(struct device *dev,
 	struct iavf_dpll_attribute *dpll_attr;
 	enum iavf_cgu_state dpll_state;
 	struct iavf_adapter *adapter;
+	struct iavf_synce *synce;
 	u8 ref_state, eec_mode;
 	s64 phase_offset;
 	ssize_t cnt;
@@ -1791,6 +1783,7 @@ static ssize_t dpll_ref_pin_show(struct device *dev,
 	if (WARN_ON(!adapter))
 		return -EINVAL;
 
+	synce = &adapter->synce;
 	dpll_attr = container_of(attr, struct iavf_dpll_attribute, attr);
 
 	switch (dpll_attr->dpll_num) {
@@ -1805,6 +1798,8 @@ static ssize_t dpll_ref_pin_show(struct device *dev,
 							   &eec_mode);
 		if (status)
 			return -EIO;
+		dpll_state = iavf_parse_dpll_state((u16)dpll_state,
+						   synce->synce_dpll_state);
 		break;
 	case IAVF_CGU_DPLL_PTP:
 		/* get virtchnl_synce_get_cgu_dpll_status from pf */
@@ -1816,13 +1811,14 @@ static ssize_t dpll_ref_pin_show(struct device *dev,
 							   &eec_mode);
 		if (status)
 			return -EIO;
+		dpll_state = iavf_parse_dpll_state((u16)dpll_state,
+						   synce->ptp_dpll_state);
 		break;
 	default:
 		return -EINVAL;
 	}
 
-	dpll_state = parse_dpll_state((u16)dpll_state);
-	pin = parse_dpll_ref_pin(dpll_state);
+	pin = parse_dpll_ref_pin(synce->cached_cgu_dpll_status.dpll_state);
 	switch (dpll_state) {
 	case IAVF_CGU_STATE_LOCKED:
 	case IAVF_CGU_STATE_LOCKED_HO_ACQ:
@@ -1857,7 +1853,7 @@ static ssize_t dpll_1_offset_show(struct device *dev,
 	if (WARN_ON(!adapter))
 		return -EINVAL;
 	/* send virtchnl_synce_get_cgu_dpll_status for dpll phase offset */
-	status = iavf_synce_aq_get_cgu_dpll_status(adapter, IAVF_CGU_DPLL_SYNCE,
+	status = iavf_synce_aq_get_cgu_dpll_status(adapter, IAVF_CGU_DPLL_PTP,
 						   &ref_state,
 						   (u16 *)&dpll_state,
 						   &dpll_phase_offset,
@@ -2175,9 +2171,9 @@ void iavf_synce_init(struct iavf_adapter *adapter)
 	synce->state = adapter->state;
 	iavf_synce_sysfs_init(synce);
 	synce->log_pending = (u8)IAVF_CGU_DPLL_SYNCE;
-
-	synce->scheduled_jiffies = jiffies +
-				   10 * IAVF_PERIODIC_LOG_INTERVAL_IN_SEC * HZ;
+	synce->synce_dpll_state = IAVF_CGU_STATE_FREERUN;
+	synce->ptp_dpll_state = IAVF_CGU_STATE_FREERUN;
+	synce->scheduled_jiffies = jiffies + 20 * HZ;
 	synce->initialized = true;
 }
 
@@ -2217,7 +2213,7 @@ static bool iavf_synce_op_match(enum virtchnl_ops pending_op)
 void iavf_synce_release(struct iavf_adapter *adapter)
 {
 	if (adapter->synce.initialized == false) {
-		dev_err(&adapter->pdev->dev,
+		dev_dbg(&adapter->pdev->dev,
 			"SyncE functionality was not initialized!\n");
 		return;
 	}
@@ -2247,7 +2243,7 @@ void iavf_synce_dpll_update(struct iavf_adapter *adapter)
 		iavf_synce_start_cgu_dpll_status_log(adapter,
 						     IAVF_CGU_DPLL_SYNCE);
 		synce->log_pending = (u8)IAVF_CGU_DPLL_SYNCE;
-		synce->scheduled_jiffies += HZ *
-					    IAVF_PERIODIC_LOG_INTERVAL_IN_SEC;
+		synce->scheduled_jiffies +=
+			msecs_to_jiffies(IAVF_PERIODIC_LOG_INTERVAL_IN_MSEC);
 	}
 }
