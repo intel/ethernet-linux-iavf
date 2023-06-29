@@ -143,18 +143,26 @@
 /* SLES 15-SP1 base */
 #if (SLE_KERNEL_CODE < SLE_KERNEL_VERSION(4,12,14,195))
 #else /* >= 4.12.14-195 */
+#define HAVE_DEVLINK_PARAMS
 #undef NEED_NETDEV_TX_SENT_QUEUE
 #endif /* 4.12.14-195 */
 
 /*****************************************************************************/
 #if (SLE_KERNEL_CODE < SLE_KERNEL_VERSION(5,3,8,2))
 #else /* >= 5.3.8-2 */
+#undef HAVE_GNSS_MODULE
 #undef NEED_BUS_FIND_DEVICE_CONST_DATA
 #undef NEED_FLOW_INDR_BLOCK_CB_REGISTER
 #undef NEED_SKB_FRAG_OFF
 #undef NEED_SKB_FRAG_OFF_ADD
 #define HAVE_FLOW_INDR_BLOCK_LOCK
+#define HAVE_DEVLINK_PARAMS_PUBLISH
 #endif /* 5.3.8-2 */
+
+#if (SLE_KERNEL_CODE < SLE_KERNEL_VERSION(5,3,16,2))
+#else /* >= 5.3.16-2 */
+#define HAVE_DEVLINK_HEALTH_OPS_EXTACK
+#endif /* 5.3.16-2 */
 
 #if (SLE_KERNEL_CODE < SLE_KERNEL_VERSION(5,3,18,24))
 #else /* >= 5.3.18-24 */
@@ -164,6 +172,9 @@
 #if (SLE_KERNEL_CODE < SLE_KERNEL_VERSION(5,3,18,26))
 #else /* >= 5.3.18-26 */
 #undef NEED_CPU_LATENCY_QOS_RENAME
+#define HAVE_DEVLINK_REGION_OPS_SNAPSHOT_OPS
+#define HAVE_DEVLINK_FLASH_UPDATE_PARAMS
+#define HAVE_DEVLINK_RELOAD_ENABLE_DISABLE
 #endif
 
 /*****************************************************************************/
@@ -171,6 +182,7 @@
 #else /* >= 5.3.18-34 */
 #undef NEED_DEVLINK_REGION_CREATE_OPS
 #undef NEED_DEVLINK_PORT_ATTRS_SET_STRUCT
+#define HAVE_DEVLINK_HEALTH_DEFAULT_AUTO_RECOVER
 #endif /* 5.3.18-34 */
 
 /*****************************************************************************/
@@ -198,8 +210,17 @@
 #endif /* 5.3.18-41 */
 
 /*****************************************************************************/
+#if (SLE_KERNEL_CODE < SLE_KERNEL_VERSION(5,3,18,59))
+#else /* >= 5.3.18-59 */
+#undef NEED_ETH_HW_ADDR_SET
+#endif /* 5.3.18-59 */
+
+/*****************************************************************************/
 #if (SLE_KERNEL_CODE < SLE_KERNEL_VERSION(5, 14, 17, 1))
 #else /* >= 5.14.17-150400.1 */
+	#undef HAVE_DEVLINK_PARAMS_PUBLISH
+	#undef HAVE_DEVLINK_REGISTER_SETS_DEV
+	#define HAVE_DEVLINK_SET_FEATURES
 	#undef NEED_ETHTOOL_SPRINTF
 #endif /* 5.14.17-150400.1 */
 
@@ -207,6 +228,7 @@
 #if (SLE_KERNEL_CODE < SLE_KERNEL_VERSION(5,14,21,9))
 #else /* >= 5.14.21-150400.9 */
 #undef NEED_DEVLINK_ALLOC_SETS_DEV
+#undef HAVE_DEVLINK_RELOAD_ENABLE_DISABLE
 #define HAVE_ETHTOOL_COALESCE_EXTACK
 #define HAVE_DEVLINK_OPS_CREATE_DEL
 #define HAVE_DEVLINK_SET_STATE_3_PARAM

@@ -1378,7 +1378,6 @@ flow_rule_match_enc_keyid(const struct flow_rule *rule,
  *
  * Define NEED_NETIF_NAPI_ADD_NO_WEIGHT on kernels 3.10+ to use old
  * implementation. Undef for 6.1+ where new function was introduced.
- * RedHat 9.2 required using no weight parameter option.
  */
 #ifdef NEED_NETIF_NAPI_ADD_NO_WEIGHT
 static inline void

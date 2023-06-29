@@ -36,6 +36,4 @@
 #include "kcompat_oracle_defs.h"
 #endif
 
-#include "kcompat_generated_defs.h"
-
 #endif /* _KCOMPAT_DEFS_H_ */
