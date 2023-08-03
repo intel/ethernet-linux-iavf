@@ -1017,6 +1017,8 @@ static void iavf_get_channels(struct net_device *netdev,
 
 	/* Report maximum channels */
 	ch->max_combined = adapter->vsi_res->num_queue_pairs;
+	if (iavf_is_adq_enabled(adapter))
+		ch->max_combined = adapter->num_max_queue_pairs;
 
 	ch->max_other = NONQ_VECS;
 	ch->other_count = NONQ_VECS;

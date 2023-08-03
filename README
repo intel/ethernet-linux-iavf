@@ -1,7 +1,7 @@
 Linux* Driver for Intel(R) Ethernet Adaptive Virtual Function
 =============================================================
 
-June 14, 2022
+June 9, 2023
 
 
 Contents
@@ -760,7 +760,7 @@ St - Fifth Floor, Boston, MA 02110-1301 USA.
 The full GNU General Public License is included in this distribution in the
 file called "COPYING".
 
-Copyright(c) 2018 - 2022 Intel Corporation.
+Copyright(c) 2018 - 2023 Intel Corporation.
 
 
 Trademarks

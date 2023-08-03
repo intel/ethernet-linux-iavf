@@ -1,7 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 /* Copyright (C) 2013-2023 Intel Corporation */
 
-// SPDX-License-Identifier: GPL-2.0-only
 #include "iavf.h"
 #include "iavf_prototype.h"
 #include "iavf_synce.h"
@@ -441,8 +440,8 @@ void iavf_virtchnl_synce_get_cgu_abilities(struct iavf_adapter *adapter,
 
 	memcpy(&synce->cached_cgu_abilities, msg, len);
 	dev_dbg(dev,
-		 "%s: num_inputs: %u num_outputs: %u\n",
-		 __func__, msg->num_inputs, msg->num_outputs);
+		"%s: num_inputs: %u num_outputs: %u\n",
+		__func__, msg->num_inputs, msg->num_outputs);
 	synce->cgu_abilities_ready = true;
 	wake_up(&synce->cgu_abilities_waitqueue);
 }
@@ -510,8 +509,8 @@ void iavf_virtchnl_synce_get_output_pin_cfg(struct iavf_adapter *adapter,
 
 	memcpy(&synce->cached_output_pin_cfg, msg, len);
 	dev_dbg(dev, "%s: output_idx: %u flags: %u src_sel: %u freq: %u src_freq: %u\n",
-		 __func__, msg->output_idx, msg->flags, msg->src_sel, msg->freq,
-		 msg->src_freq);
+		__func__, msg->output_idx, msg->flags, msg->src_sel, msg->freq,
+		msg->src_freq);
 
 	synce->output_pin_cfg_ready = true;
 	wake_up(&synce->output_pin_cfg_waitqueue);

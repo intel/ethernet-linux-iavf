@@ -1207,7 +1207,7 @@ iavf_rx_csum(struct iavf_vsi *vsi, struct sk_buff *skb,
 	case IAVF_RX_PTYPE_INNER_PROT_UDP:
 	case IAVF_RX_PTYPE_INNER_PROT_SCTP:
 		skb->ip_summed = CHECKSUM_UNNECESSARY;
-		/* fall through */
+		fallthrough;
 	default:
 		break;
 	}
@@ -3107,7 +3107,7 @@ static int iavf_tx_enable_csum(struct sk_buff *skb, u32 *tx_flags,
 		offset |= (sizeof(struct sctphdr) >> 2) <<
 			  IAVF_TX_DESC_LENGTH_L4_FC_LEN_SHIFT;
 #ifdef IAVF_ADD_PROBES
-			tx_ring->vsi->back->tx_sctp_cso++;
+		tx_ring->vsi->back->tx_sctp_cso++;
 #endif
 #endif /* HAVE_SCTP */
 		break;
@@ -3117,7 +3117,7 @@ static int iavf_tx_enable_csum(struct sk_buff *skb, u32 *tx_flags,
 		offset |= (sizeof(struct udphdr) >> 2) <<
 			  IAVF_TX_DESC_LENGTH_L4_FC_LEN_SHIFT;
 #ifdef IAVF_ADD_PROBES
-			tx_ring->vsi->back->tx_udp_cso++;
+		tx_ring->vsi->back->tx_udp_cso++;
 #endif
 		break;
 	default:
@@ -3513,12 +3513,13 @@ static netdev_tx_t iavf_xmit_frame_ring(struct sk_buff *skb,
 	u64 cd_type_cmd_tso_mss = IAVF_TX_DESC_DTYPE_CONTEXT;
 	u32 cd_tunneling = 0, cd_l2tag2 = 0;
 	struct iavf_tx_buffer *first;
-	int tso, tstamp, count;
 	u32 td_offset = 0;
 	u32 tx_flags = 0;
 	__be16 protocol;
 	u32 td_cmd = 0;
 	u8 hdr_len = 0;
+	int tso, count;
+	int tstamp;
 
 	/* prefetch the data, we'll need it later */
 	prefetch(skb->data);
@@ -3595,7 +3596,7 @@ static netdev_tx_t iavf_xmit_frame_ring(struct sk_buff *skb,
 
 	if (iavf_tx_map(tx_ring, skb, first, tx_flags, hdr_len,
 			td_cmd, td_offset))
-		goto cleanup_tx_tstamp;
+		goto cleanup_ret;
 
 #ifndef HAVE_TRANS_START_IN_QUEUE
 	tx_ring->netdev->trans_start = jiffies;
@@ -3606,7 +3607,7 @@ out_drop:
 	iavf_trace(xmit_frame_ring_drop, first->skb, tx_ring);
 	dev_kfree_skb_any(first->skb);
 	first->skb = NULL;
-cleanup_tx_tstamp:
+cleanup_ret:
 	if (unlikely(tx_flags & IAVF_TX_FLAGS_TSTAMP)) {
 		struct iavf_adapter *adapter = netdev_priv(tx_ring->netdev);
 
