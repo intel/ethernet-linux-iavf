@@ -1,8 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 /* Copyright (C) 2013-2023 Intel Corporation */
 
-/* SPDX-License-Identifier: GPL-2.0-only*/
-
 #ifndef _IAVF_SYNCE_H_
 #define _IAVF_SYNCE_H_
 

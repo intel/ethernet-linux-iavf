@@ -6,6 +6,7 @@
 
 #include "iavf_status.h"
 #include "iavf_osdep.h"
+#include "siov_regs.h"
 #include "iavf_register.h"
 #include "iavf_adminq.h"
 #include "iavf_devids.h"

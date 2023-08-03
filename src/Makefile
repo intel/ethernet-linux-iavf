@@ -12,14 +12,10 @@ subdir-ccflags-y += -I$(src)
 
 obj-m += iavf.o
 
-iavf-y := iavf_main.o \
-	iavf_ethtool.o \
-	iavf_virtchnl.o \
-	iavf_adminq.o	 \
-	iavf_common.o	 \
-	iavf_txrx.o \
+iavf-y := iavf_main.o iavf_ethtool.o iavf_virtchnl.o iavf_adminq.o \
+	iavf_common.o iavf_txrx.o iavf_idc.o \
 	iavf_synce.o \
-	iavf_idc.o
+	iavf_gnss.o \
 
 
 iavf-$(CONFIG_PTP_1588_CLOCK:m=y) += iavf_ptp.o

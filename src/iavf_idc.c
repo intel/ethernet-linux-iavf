@@ -1,9 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 /* Copyright (C) 2013-2023 Intel Corporation */
 
-// SPDX-License-Identifier: GPL-2.0-only
-/* Copyright (C) 2021 Intel Corporation */
-
 #include <linux/idr.h>
 #include "iavf.h"
 #include "iavf_idc.h"

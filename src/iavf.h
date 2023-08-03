@@ -47,8 +47,8 @@
 #include "iavf_txrx.h"
 #include "iavf_ptp.h"
 #include "iavf_synce.h"
+#include "iavf_gnss.h"
 #include <linux/bitmap.h>
-#include "siov_regs.h"
 
 #define DEFAULT_DEBUG_LEVEL_SHIFT 3
 #define PFX "iavf: "
@@ -70,9 +70,6 @@ struct iavf_vsi {
 #ifdef HAVE_VLAN_RX_REGISTER
 	struct vlan_group *vlgrp;
 #endif
-	unsigned long active_cvlans[BITS_TO_LONGS(VLAN_N_VID)];
-	unsigned long active_svlans[BITS_TO_LONGS(VLAN_N_VID)];
-
 	/* dummy pointer - VF plans to add this functionality in the future */
 	struct iavf_ring **xdp_rings;
 	u16 seid;
@@ -101,7 +98,8 @@ struct iavf_vsi {
 #define IAVF_TX_DESC(R, i) (&(((struct iavf_tx_desc *)((R)->desc))[i]))
 #define IAVF_TX_CTXTDESC(R, i) \
 	(&(((struct iavf_tx_context_desc *)((R)->desc))[i]))
-#define IAVF_MAX_REQ_QUEUES 16
+
+#define IAVF_MAX_REQ_QUEUES 256
 
 #define IAVF_START_CHNL_TC	1
 
@@ -207,7 +205,7 @@ struct iavf_q_vector {
 	struct napi_struct napi;
 	struct iavf_ring_container rx;
 	struct iavf_ring_container tx;
-	u32 ring_mask;
+	DECLARE_BITMAP(ring_mask, IAVF_MAX_REQ_QUEUES);
 	u8 itr_countdown;	/* when 0 should adjust adaptive ITR */
 	u8 num_ringpairs;	/* total number of ring pairs in vector */
 	u16 v_idx;		/* index in the vsi->q_vector array. */
@@ -402,15 +400,20 @@ struct iavf_vlan {
 	u16 tpid;
 };
 
+enum iavf_vlan_state_t {
+	IAVF_VLAN_INVALID,
+	IAVF_VLAN_ADD,		/* filter needs to be added */
+	IAVF_VLAN_IS_NEW,	/* filter is new, wait for PF answer */
+	IAVF_VLAN_ACTIVE,	/* filter is accepted by PF */
+	IAVF_VLAN_DISABLE,	/* filter needs to be deleted by PF, then marked INACTIVE */
+	IAVF_VLAN_INACTIVE,	/* filter is inactive, we are in IFF_DOWN */
+	IAVF_VLAN_REMOVE,	/* filter needs to be removed from list */
+};
+
 struct iavf_vlan_filter {
 	struct list_head list;
 	struct iavf_vlan vlan;
-	struct {
-		u8 is_new_vlan:1;	/* filter is new, wait for PF answer */
-		u8 remove:1;		/* filter needs to be removed */
-		u8 add:1;		/* filter needs to be added */
-		u8 padding:5;
-	};
+	enum iavf_vlan_state_t state;
 };
 
 /* State of traffic class creation */
@@ -538,6 +541,7 @@ struct iavf_adapter {
 	wait_queue_head_t vc_waitqueue;
 	struct iavf_q_vector *q_vectors;
 	struct list_head vlan_filter_list;
+	int num_vlan_filters;
 	struct list_head mac_filter_list;
 	/* Lock to protect accesses to MAC and VLAN lists */
 	spinlock_t mac_vlan_list_lock;
@@ -620,6 +624,7 @@ struct iavf_adapter {
 #define IAVF_FLAG_AQ_GET_SUPPORTED_RXDIDS		BIT(35)
 #define IAVF_FLAG_AQ_GET_PTP_CAPS			BIT(36)
 #define IAVF_FLAG_AQ_MSG_QUEUE_PENDING			BIT(37)
+#define IAVF_FLAG_AQ_GET_MAX_RSS_QREGION		BIT(38)
 
 	/* AQ messages that must be sent after IAVF_FLAG_AQ_GET_CONFIG, in
 	 * order to negotiated extended capabilities.
@@ -643,14 +648,16 @@ struct iavf_adapter {
 #define IAVF_EXTENDED_CAP_RECV_RXDID			BIT(3)
 #define IAVF_EXTENDED_CAP_SEND_PTP			BIT(4)
 #define IAVF_EXTENDED_CAP_RECV_PTP			BIT(5)
+#define IAVF_EXTENDED_CAP_SEND_RSS_QREGION		BIT(6)
+#define IAVF_EXTENDED_CAP_RECV_RSS_QREGION		BIT(7)
 
 #define IAVF_EXTENDED_CAPS				\
 	(IAVF_EXTENDED_CAP_SEND_VLAN_V2 |		\
 	 IAVF_EXTENDED_CAP_RECV_VLAN_V2	|		\
 	 IAVF_EXTENDED_CAP_SEND_RXDID |			\
 	 IAVF_EXTENDED_CAP_RECV_RXDID |			\
-	 IAVF_EXTENDED_CAP_SEND_PTP |			\
-	 IAVF_EXTENDED_CAP_RECV_PTP)
+	 IAVF_EXTENDED_CAP_SEND_RSS_QREGION |		\
+	 IAVF_EXTENDED_CAP_RECV_RSS_QREGION)
 
 	/* Lock to prevent possible clobbering of
 	 * current_netdev_promisc_flags
@@ -699,6 +706,8 @@ struct iavf_adapter {
 #define RSS_REG(_a) (!((_a)->vf_res->vf_cap_flags & \
 		       (VIRTCHNL_VF_OFFLOAD_RSS_AQ | \
 			VIRTCHNL_VF_OFFLOAD_RSS_PF)))
+#define LARGE_NUM_QPAIRS_SUPPORT(_a) \
+	((_a)->vf_res->vf_cap_flags & VIRTCHNL_VF_LARGE_NUM_QPAIRS)
 #define VLAN_ALLOWED(_a) ((_a)->vf_res->vf_cap_flags & \
 			  VIRTCHNL_VF_OFFLOAD_VLAN)
 #define VLAN_V2_ALLOWED(_a) ((_a)->vf_res->vf_cap_flags & \
@@ -730,8 +739,10 @@ struct iavf_adapter {
 		       ((_a)->pf_version.minor == 1))
 	struct virtchnl_vlan_caps vlan_v2_caps;
 	struct virtchnl_supported_rxdids supported_rxdids;
+	struct virtchnl_max_rss_qregion max_rss_qregion;
 	struct iavf_ptp ptp;
 	struct iavf_synce synce;
+	struct iavf_gnss gnss;
 	u16 msg_enable;
 	struct iavf_eth_stats current_stats;
 	struct iavf_vsi vsi;
@@ -758,6 +769,9 @@ struct iavf_adapter {
 	 */
 	int orig_num_active_queues;
 
+	/* maximum number of queue pairs allocated during VF creation */
+	int num_max_queue_pairs;
+
 #ifdef IAVF_ADD_PROBES
 	u64 tcp_segs;
 	u64 udp_segs;
@@ -782,6 +796,9 @@ struct iavf_adapter {
 	u64 rx_ip4_cso_err;
 #endif
 	struct iavf_rdma rdma;
+
+#define IAVF_STATS_UPDATE_TIMEOUT_NSEC 2000000000
+	s64 last_stats_update;
 };
 
 /* Ethtool Private Flags */
@@ -930,7 +947,7 @@ void iavf_set_ethtool_ops(struct net_device *netdev);
 void iavf_update_stats(struct iavf_adapter *adapter);
 void iavf_reset_interrupt_capability(struct iavf_adapter *adapter);
 int iavf_init_interrupt_scheme(struct iavf_adapter *adapter);
-void iavf_irq_enable_queues(struct iavf_adapter *adapter, u32 mask);
+void iavf_irq_enable_queues(struct iavf_adapter *adapter);
 void iavf_free_all_tx_resources(struct iavf_adapter *adapter);
 void iavf_free_all_rx_resources(struct iavf_adapter *adapter);
 
@@ -948,6 +965,9 @@ int iavf_get_vf_supported_rxdids(struct iavf_adapter *adapter);
 int iavf_send_vf_ptp_caps_msg(struct iavf_adapter *adapter);
 int iavf_get_vf_ptp_caps(struct iavf_adapter *adapter);
 int iavf_send_vf_ptp_pin_cfgs_msg(struct iavf_adapter *adapter);
+#if IS_ENABLED(CONFIG_PTP_1588_CLOCK)
+int iavf_get_vf_ptp_pin_cfgs(struct iavf_adapter *adapter);
+#endif /* IS_ENABLED(CONFIG_PTP_1588_CLOCK) */
 int iavf_send_vf_synce_cgu_info_msg(struct iavf_adapter *adapter);
 int iavf_send_vf_synce_cgu_abilities_msg(struct iavf_adapter *adapter);
 int iavf_send_vf_synce_hw_info_msg(struct iavf_adapter *adapter);
@@ -955,6 +975,8 @@ int iavf_get_synce_hw_info(struct iavf_adapter *adapter);
 #if IS_ENABLED(CONFIG_PTP_1588_CLOCK)
 int iavf_get_vf_ptp_pin_cfgs(struct iavf_adapter *adapter);
 #endif /* IS_ENABLED(CONFIG_PTP_1588_CLOCK) */
+int iavf_send_max_rss_qregion(struct iavf_adapter *adapter);
+int iavf_get_max_rss_qregion(struct iavf_adapter *adapter);
 void iavf_set_queue_vlan_tag_loc(struct iavf_adapter *adapter);
 u16 iavf_get_num_vlans_added(struct iavf_adapter *adapter);
 void iavf_irq_enable(struct iavf_adapter *adapter, bool flush);
