@@ -2665,21 +2665,7 @@ void iavf_virtchnl_completion(struct iavf_adapter *adapter,
 
 		iavf_process_config(adapter);
 
-		/* Clear 'critical task' bit before acquiring rtnl_lock
-		 * as other process holding rtnl_lock could be waiting
-		 * for the same bit resulting in deadlock
-		 */
-		clear_bit(__IAVF_IN_CRITICAL_TASK, &adapter->crit_section);
-		/* VLAN capabilities can change during VFR, so make sure to
-		 * update the netdev features with the new capabilities
-		 */
-		rtnl_lock();
-		netdev_update_features(netdev);
-		rtnl_unlock();
-		/* Set 'critical task' bit again */
-		while (test_and_set_bit(__IAVF_IN_CRITICAL_TASK,
-					&adapter->crit_section))
-			usleep_range(500, 1000);
+		adapter->flags |= IAVF_FLAG_UPDATE_NETDEV_FEATURES;
 
 		/* Request VLAN offload settings */
 		if (VLAN_V2_ALLOWED(adapter))
@@ -2790,6 +2776,7 @@ void iavf_virtchnl_completion(struct iavf_adapter *adapter,
 				netif_tx_start_all_queues(netdev);
 				netif_carrier_on(netdev);
 			}
+			wake_up(&adapter->reset_waitqueue);
 		}
 		adapter->flags |= IAVF_FLAG_QUEUES_ENABLED;
 		adapter->flags &= ~IAVF_FLAG_QUEUES_DISABLED;
