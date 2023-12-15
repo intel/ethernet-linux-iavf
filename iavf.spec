@@ -1,6 +1,6 @@
 Name: iavf
 Summary: Intel(R) Ethernet Adaptive Virtual Function Driver
-Version: 4.9.1
+Version: 4.9.5
 Release: 1
 Source: %{name}-%{version}.tar.gz
 Vendor: Intel Corporation
@@ -74,6 +74,10 @@ make -C %{_builddir}/%{name}-%{version}/src INSTALL_MOD_PATH=%{buildroot} auxili
 find lib -path "*extern-symvers/intel_auxiliary.symvers" -printf "/%p\n" \
 	>%{_builddir}/%{name}-%{version}/aux.list
 find * -name "auxiliary_bus.h" -printf "/%p\n" \
+	>>%{_builddir}/%{name}-%{version}/aux.list
+find * -name "auxiliary_compat.h" -printf "/%p\n" \
+	>>%{_builddir}/%{name}-%{version}/aux.list
+find * -name "kcompat_generated_defs.h" -printf "/%p\n" \
 	>>%{_builddir}/%{name}-%{version}/aux.list
 find lib -name "intel_auxiliary.ko" -printf "/%p\n" \
 	>>%{_builddir}/%{name}-%{version}/aux.list
@@ -461,7 +465,7 @@ fi
 %if (%need_aux_rpm == 2)
 %package -n intel_auxiliary
 Summary: Auxiliary bus driver (backport)
-Version: 1.0.1
+Version: 1.0.2
 
 %description -n intel_auxiliary
 The Auxiliary bus driver (intel_auxiliary.ko), backported from upstream, for use by kernels that don't have auxiliary bus.

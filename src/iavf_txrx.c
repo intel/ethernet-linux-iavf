@@ -3570,6 +3570,9 @@ static netdev_tx_t iavf_xmit_frame_ring(struct sk_buff *skb,
 		tx_flags |= IAVF_TX_FLAGS_IPV4;
 	else if (protocol == htons(ETH_P_IPV6))
 		tx_flags |= IAVF_TX_FLAGS_IPV6;
+	else if (protocol == htons(ETH_P_LLDP))
+		cd_type_cmd_tso_mss |= IAVF_TX_CTX_DESC_SWTCH_UPLINK <<
+			IAVF_TXD_CTX_QW1_CMD_SHIFT;
 
 	tso = iavf_tso(first, &hdr_len, &cd_type_cmd_tso_mss);
 
