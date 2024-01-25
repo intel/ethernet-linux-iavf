@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
-/* Copyright (C) 2013-2023 Intel Corporation */
+/* Copyright (C) 2013-2024 Intel Corporation */
 
 #include "iavf.h"
 #include "iavf_prototype.h"
@@ -17,12 +17,6 @@ enum iavf_cgu_dpll  {
 	IAVF_CGU_DPLL_SYNCE,
 	IAVF_CGU_DPLL_PTP,
 	IAVF_CGU_DPLL_MAX
-};
-
-#define IAVF_MAX_CGU_STATE_NAME_LEN 14
-struct iavf_cgu_state_desc {
-	char name[IAVF_MAX_CGU_STATE_NAME_LEN];
-	enum iavf_cgu_state state;
 };
 
 #define IAVF_MAX_CGU_PIN_NAME_LEN 16
@@ -275,8 +269,6 @@ void iavf_virtchnl_synce_get_cgu_dpll_status(struct iavf_adapter *adapter,
 	struct virtchnl_synce_get_cgu_dpll_status *msg;
 	struct iavf_synce *synce = &adapter->synce;
 	struct device *dev = &adapter->pdev->dev;
-	char pin_name[IAVF_MAX_PIN_NAME_LEN];
-	enum iavf_cgu_state dpll_state;
 	u16 ref_pin;
 
 	if (len == sizeof(*msg)) {
@@ -298,6 +290,9 @@ void iavf_virtchnl_synce_get_cgu_dpll_status(struct iavf_adapter *adapter,
 	 * and the state has been changed
 	 */
 	if (synce->log_pending == msg->dpll_num) {
+		char pin_name[IAVF_MAX_PIN_NAME_LEN];
+		enum iavf_cgu_state dpll_state;
+
 		switch (msg->dpll_num) {
 		case IAVF_CGU_DPLL_SYNCE:
 			dpll_state = iavf_parse_dpll_state(msg->dpll_state,
@@ -1553,7 +1548,6 @@ static int iavf_synce_load_input_pin_cfg(struct iavf_synce *synce, char *buf,
 	int count = offset;
 	s32 phase_delay;
 	u32 freq;
-	int ret;
 
 	count += scnprintf(buf + count, PAGE_SIZE, "%s\n", "in");
 	count += scnprintf(buf + count, PAGE_SIZE,
@@ -1562,8 +1556,9 @@ static int iavf_synce_load_input_pin_cfg(struct iavf_synce *synce, char *buf,
 			   "esync", "DPLL0 prio", "DPLL1 prio");
 
 	for (pin = 0; pin < pin_num; ++pin) {
-		memset(&in_cfg, 0, sizeof(in_cfg));
+		int ret;
 
+		memset(&in_cfg, 0, sizeof(in_cfg));
 		ret = iavf_synce_aq_get_input_pin_cfg(synce->adapter, &in_cfg,
 						      pin);
 		if (ret) {

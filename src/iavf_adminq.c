@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
-/* Copyright (C) 2013-2023 Intel Corporation */
+/* Copyright (C) 2013-2024 Intel Corporation */
 
 #include "iavf_status.h"
 #include "iavf_type.h"

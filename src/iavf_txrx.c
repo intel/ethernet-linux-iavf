@@ -1,14 +1,11 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
-/* Copyright (C) 2013-2023 Intel Corporation */
+/* Copyright (C) 2013-2024 Intel Corporation */
 
 #include <linux/prefetch.h>
 
 #include "iavf.h"
 #include "iavf_trace.h"
 #include "iavf_prototype.h"
-#ifdef HAVE_XDP_DO_FLUSH
-#include <linux/filter.h>
-#endif
 
 static inline __le64 build_ctob(u32 td_cmd, u32 td_offset, unsigned int size,
 				u32 td_tag)
@@ -57,7 +54,7 @@ static void iavf_unmap_and_free_tx_resource(struct iavf_ring *ring,
  * iavf_clean_tx_ring - Free any empty Tx buffers
  * @tx_ring: ring to be cleaned
  **/
-void iavf_clean_tx_ring(struct iavf_ring *tx_ring)
+static void iavf_clean_tx_ring(struct iavf_ring *tx_ring)
 {
 	unsigned long bi_size;
 	u16 i;
@@ -113,7 +110,7 @@ void iavf_free_tx_resources(struct iavf_ring *tx_ring)
  * Since there is no access to the ring head register
  * in XL710, we need to use our local copies
  **/
-u32 iavf_get_tx_pending(struct iavf_ring *ring, bool in_sw)
+static u32 iavf_get_tx_pending(struct iavf_ring *ring, bool in_sw)
 {
 	u32 head, tail;
 
@@ -388,9 +385,6 @@ static bool iavf_clean_tx_irq(struct iavf_vsi *vsi,
 		    (IAVF_DESC_UNUSED(tx_ring) != tx_ring->count))
 			tx_ring->arm_wb = true;
 	}
-
-	if (ring_is_xdp(tx_ring))
-		return !!budget;
 
 	/* notify netdev of completed buffers */
 	netdev_tx_completed_queue(txring_txq(tx_ring),
@@ -757,7 +751,7 @@ err:
  * iavf_clean_rx_ring - Free Rx buffers
  * @rx_ring: ring to be cleaned
  **/
-void iavf_clean_rx_ring(struct iavf_ring *rx_ring)
+static void iavf_clean_rx_ring(struct iavf_ring *rx_ring)
 {
 	unsigned long bi_size;
 	u16 i;
@@ -819,7 +813,6 @@ void iavf_clean_rx_ring(struct iavf_ring *rx_ring)
 void iavf_free_rx_resources(struct iavf_ring *rx_ring)
 {
 	iavf_clean_rx_ring(rx_ring);
-	rx_ring->xdp_prog = NULL;
 	kfree(rx_ring->rx_bi);
 	rx_ring->rx_bi = NULL;
 
@@ -1461,21 +1454,6 @@ iavf_process_skb_fields(struct iavf_ring *rx_ring, union iavf_rx_desc *rx_desc,
 static bool iavf_cleanup_headers(struct iavf_ring *rx_ring, struct sk_buff *skb,
 				 union iavf_rx_desc *rx_desc)
 {
-	/* XDP packets use error pointer so abort at this point */
-	if (IS_ERR(skb))
-		return true;
-
-	/* ERR_MASK will only have valid bits if EOP set, and
-	 * what we are doing here is actually checking
-	 * IAVF_RX_DESC_ERROR_RXE_SHIFT, since it is the zeroth bit in
-	 * the error field
-	 */
-	if (unlikely(iavf_test_staterr(rx_desc,
-				       BIT(IAVF_RXD_QW1_ERROR_SHIFT)))) {
-		dev_kfree_skb_any(skb);
-		return true;
-	}
-
 	/* if eth_skb_pad returns an error the skb was freed */
 	if (eth_skb_pad(skb))
 		return true;
@@ -1660,7 +1638,7 @@ static struct iavf_rx_buffer *iavf_get_rx_buffer(struct iavf_ring *rx_ring,
  * iavf_construct_skb - Allocate skb and populate it
  * @rx_ring: rx descriptor ring to transact packets on
  * @rx_buffer: rx buffer to pull data from
- * @xdp: xdp_buff pointing to the data
+ * @size: size of buffer to add to skb
  *
  * This function allocates an skb.  It then populates it with the page
  * data from the current receive descriptor, taking care to set up the
@@ -1668,15 +1646,14 @@ static struct iavf_rx_buffer *iavf_get_rx_buffer(struct iavf_ring *rx_ring,
  */
 static struct sk_buff *iavf_construct_skb(struct iavf_ring *rx_ring,
 					  struct iavf_rx_buffer *rx_buffer,
-					  struct xdp_buff *xdp)
+					  unsigned int size)
 {
-	unsigned int size = (u8 *)xdp->data_end - (u8 *)xdp->data;
+	void *va;
 
 #if (PAGE_SIZE < 8192)
 	unsigned int truesize = iavf_rx_pg_size(rx_ring) / 2;
 #else
-	unsigned int truesize = SKB_DATA_ALIGN(sizeof(struct skb_shared_info)) +
-				SKB_DATA_ALIGN(IAVF_SKB_PAD + size);
+	unsigned int truesize = SKB_DATA_ALIGN(size);
 #endif
 	unsigned int headlen;
 	struct sk_buff *skb;
@@ -1684,10 +1661,8 @@ static struct sk_buff *iavf_construct_skb(struct iavf_ring *rx_ring,
 	if (!rx_buffer)
 		return NULL;
 	/* prefetch first cache line of first page */
-	prefetch(xdp->data);
-#if L1_CACHE_BYTES < 128
-	prefetch((void *)((u8 *)xdp->data + L1_CACHE_BYTES));
-#endif
+	va = page_address(rx_buffer->page) + rx_buffer->page_offset;
+	net_prefetch(va);
 
 	/* allocate a skb to store the frags */
 	skb = __napi_alloc_skb(&rx_ring->q_vector->napi,
@@ -1699,12 +1674,10 @@ static struct sk_buff *iavf_construct_skb(struct iavf_ring *rx_ring,
 	/* Determine available headroom for copy */
 	headlen = size;
 	if (headlen > IAVF_RX_HDR_SIZE)
-		headlen = eth_get_headlen(skb->dev, xdp->data,
-					  IAVF_RX_HDR_SIZE);
+		headlen = eth_get_headlen(skb->dev, va, IAVF_RX_HDR_SIZE);
 
 	/* align pull length to size of long to optimize memcpy performance */
-	memcpy(__skb_put(skb, headlen), xdp->data,
-	       ALIGN(headlen, sizeof(long)));
+	memcpy(__skb_put(skb, headlen), va, ALIGN(headlen, sizeof(long)));
 
 	/* update all of the pointers */
 	size -= headlen;
@@ -1732,41 +1705,39 @@ static struct sk_buff *iavf_construct_skb(struct iavf_ring *rx_ring,
  * iavf_build_skb - Build skb around an existing buffer
  * @rx_ring: rx descriptor ring to transact packets on
  * @rx_buffer: rx buffer to pull data from
- * @xdp: xdp_buff pointing to the data
+ * @size: size of buffer to add to skb
  *
  * This function builds an skb around an existing Rx buffer, taking care
  * to set up the skb correctly and avoid any memcpy overhead.
  */
 static struct sk_buff *iavf_build_skb(struct iavf_ring *rx_ring,
 				      struct iavf_rx_buffer *rx_buffer,
-				      struct xdp_buff *xdp)
+				      unsigned int size)
 {
-	unsigned int size = (u8 *)xdp->data_end - (u8 *)xdp->data;
+	void *va;
 
 #if (PAGE_SIZE < 8192)
 	unsigned int truesize = iavf_rx_pg_size(rx_ring) / 2;
 #else
 	unsigned int truesize = SKB_DATA_ALIGN(sizeof(struct skb_shared_info)) +
-				SKB_DATA_ALIGN(xdp->data_end -
-					       xdp->data_hard_start);
+				SKB_DATA_ALIGN(IAVF_SKB_PAD + size);
 #endif
 	struct sk_buff *skb;
 
-	if (!rx_buffer)
+	if (!rx_buffer || !size)
 		return NULL;
 
 	/* prefetch first cache line of first page */
-	prefetch(xdp->data);
-#if L1_CACHE_BYTES < 128
-	prefetch(xdp->data + L1_CACHE_BYTES);
-#endif
+	va = page_address(rx_buffer->page) + rx_buffer->page_offset;
+	net_prefetch(va);
+
 	/* build an skb around the page buffer */
-	skb = build_skb(xdp->data_hard_start, truesize);
+	skb = napi_build_skb(va - IAVF_SKB_PAD, truesize);
 	if (unlikely(!skb))
 		return NULL;
 
 	/* update pointers within the skb to store the data */
-	skb_reserve(skb, xdp->data - xdp->data_hard_start);
+	skb_reserve(skb, IAVF_SKB_PAD);
 	__skb_put(skb, size);
 
 	/* buffer is used by skb, update page_offset */
@@ -1842,57 +1813,6 @@ static bool iavf_is_non_eop(struct iavf_ring *rx_ring,
 	rx_ring->rx_stats.non_eop_descs++;
 
 	return true;
-}
-
-#define IAVF_XDP_PASS          0
-#define IAVF_XDP_CONSUMED      BIT(0)
-#define IAVF_XDP_TX            BIT(1)
-#define IAVF_XDP_REDIR         BIT(2)
-
-/**
- * iavf_run_xdp - run an XDP program
- * @rx_ring: Rx ring being processed
- * @xdp: XDP buffer containing the frame
- **/
-static struct sk_buff *iavf_run_xdp(struct iavf_ring *rx_ring,
-				    struct xdp_buff *xdp)
-{
-	int result = IAVF_XDP_PASS;
-	return (struct sk_buff *)ERR_PTR(-result);
-}
-
-/**
- * iavf_rx_buffer_flip - adjusted rx_buffer to point to an unused region
- * @rx_ring: Rx ring
- * @rx_buffer: Rx buffer to adjust
- * @size: Size of adjustment
- **/
-static void iavf_rx_buffer_flip(struct iavf_ring *rx_ring,
-				struct iavf_rx_buffer *rx_buffer,
-				unsigned int size)
-{
-#if (PAGE_SIZE < 8192)
-	unsigned int truesize = iavf_rx_pg_size(rx_ring) / 2;
-
-	if (!rx_buffer)
-		return;
-	rx_buffer->page_offset ^= truesize;
-#else
-	unsigned int truesize = SKB_DATA_ALIGN(iavf_rx_offset(rx_ring) + size);
-
-	if (!rx_buffer)
-		return;
-	rx_buffer->page_offset += truesize;
-#endif
-}
-
-static void iavf_xdp_ring_update_tail(struct iavf_ring *xdp_ring)
-{
-	/* Force memory writes to complete before letting h/w
-	 * know there are new descriptors to fetch.
-	 */
-	wmb();
-	writel_relaxed(xdp_ring->next_to_use, xdp_ring->tail);
 }
 
 /**
@@ -2110,18 +2030,14 @@ static int iavf_clean_rx_irq(struct iavf_ring *rx_ring, int budget)
 	unsigned int total_rx_bytes = 0, total_rx_packets = 0;
 	struct sk_buff *skb = rx_ring->skb;
 	u16 cleaned_count = IAVF_DESC_UNUSED(rx_ring);
-	unsigned int xdp_xmit = 0;
-	struct xdp_buff xdp = {};
 	bool failure = false;
-
-#ifdef HAVE_XDP_BUFF_RXQ
-	xdp.rxq = &rx_ring->xdp_rxq;
-#endif
 
 	while (likely(total_rx_packets < (unsigned int)budget)) {
 		struct iavf_rx_extracted fields = {};
 		struct iavf_rx_buffer *rx_buffer;
 		union iavf_rx_desc *rx_desc;
+		unsigned int size;
+		u64 qword;
 
 		/* return some buffers to hardware, one at a time is too slow */
 		if (cleaned_count >= IAVF_RX_BUFFER_WRITE) {
@@ -2132,6 +2048,13 @@ static int iavf_clean_rx_irq(struct iavf_ring *rx_ring, int budget)
 
 		rx_desc = IAVF_RX_DESC(rx_ring, rx_ring->next_to_clean);
 
+		/* status_error_len will always be zero for unused descriptors
+		 * because it's cleared in cleanup, and overlaps with hdr_addr
+		 * which is always zero because packet split isn't used, if the
+		 * hardware wrote DD then the length will be non-zero
+		 */
+		qword = le64_to_cpu(rx_desc->wb.qword1.status_error_len);
+
 		/* This memory barrier is needed to keep us from reading
 		 * any other fields out of the rx_desc until we have
 		 * verified the descriptor has been written back.
@@ -2141,51 +2064,28 @@ static int iavf_clean_rx_irq(struct iavf_ring *rx_ring, int budget)
 		if (!iavf_test_staterr(rx_desc, IAVF_RXD_DD))
 			break;
 
+		size = (qword & IAVF_RXD_QW1_LENGTH_PBUF_MASK) >>
+		       IAVF_RXD_QW1_LENGTH_PBUF_SHIFT;
+
 		iavf_extract_rx_fields(rx_ring, rx_desc, &fields);
 
 		iavf_trace(clean_rx_irq, rx_ring, rx_desc, skb);
 		rx_buffer = iavf_get_rx_buffer(rx_ring, fields.size);
 
 		/* retrieve a buffer from the ring */
-		if (!skb) {
-			if (rx_buffer) {
-				xdp.data = page_address(rx_buffer->page) +
-					   rx_buffer->page_offset;
-				xdp.data_hard_start = (void *)((u8 *)xdp.data -
-						      iavf_rx_offset(rx_ring));
-				xdp.data_end = (void *)((u8 *)xdp.data + fields.size);
-				skb = iavf_run_xdp(rx_ring, &xdp);
-			} else {
-				break;
-			}
-		}
-
-		if (IS_ERR(skb)) {
-			unsigned int xdp_res = -PTR_ERR(skb);
-
-			if (xdp_res & (IAVF_XDP_TX | IAVF_XDP_REDIR)) {
-				xdp_xmit |= xdp_res;
-				iavf_rx_buffer_flip(rx_ring, rx_buffer, fields.size);
-			} else {
-				if (rx_buffer)
-					rx_buffer->pagecnt_bias++;
-			}
-			total_rx_bytes += fields.size;
-			total_rx_packets++;
-		} else if (skb) {
+		if (skb)
 			iavf_add_rx_frag(rx_ring, rx_buffer, skb, fields.size);
 #ifdef HAVE_SWIOTLB_SKIP_CPU_SYNC
-		} else if (ring_uses_build_skb(rx_ring)) {
-			skb = iavf_build_skb(rx_ring, rx_buffer, &xdp);
+		else if (ring_uses_build_skb(rx_ring))
+			skb = iavf_build_skb(rx_ring, rx_buffer, fields.size);
 #endif
-		} else {
-			skb = iavf_construct_skb(rx_ring, rx_buffer, &xdp);
-		}
+		else
+			skb = iavf_construct_skb(rx_ring, rx_buffer, fields.size);
 
 		/* exit if we failed to retrieve a buffer */
 		if (!skb) {
 			rx_ring->rx_stats.alloc_buff_failed++;
-			if (rx_buffer)
+			if (rx_buffer && size)
 				rx_buffer->pagecnt_bias++;
 			break;
 		}
@@ -2196,6 +2096,16 @@ static int iavf_clean_rx_irq(struct iavf_ring *rx_ring, int budget)
 		if (iavf_is_non_eop(rx_ring, rx_desc, skb))
 			continue;
 
+		/* ERR_MASK will only have valid bits if EOP set, and
+		 * what we are doing here is actually checking
+		 * IAVF_RX_DESC_ERROR_RXE_SHIFT, since it is the zeroth bit in
+		 * the error field
+		 */
+		if (unlikely(iavf_test_staterr(rx_desc, BIT(IAVF_RXD_QW1_ERROR_SHIFT)))) {
+			dev_kfree_skb_any(skb);
+			skb = NULL;
+			continue;
+		}
 		if (iavf_cleanup_headers(rx_ring, skb, rx_desc)) {
 			skb = NULL;
 			continue;
@@ -2222,15 +2132,6 @@ static int iavf_clean_rx_irq(struct iavf_ring *rx_ring, int budget)
 		total_rx_packets++;
 	}
 
-	if (xdp_xmit & IAVF_XDP_REDIR)
-		xdp_do_flush_map();
-
-	if (xdp_xmit & IAVF_XDP_TX) {
-		struct iavf_ring *xdp_ring =
-			rx_ring->vsi->xdp_rings[rx_ring->queue_index];
-
-		iavf_xdp_ring_update_tail(xdp_ring);
-	}
 	rx_ring->skb = skb;
 
 	u64_stats_update_begin(&rx_ring->syncp);
