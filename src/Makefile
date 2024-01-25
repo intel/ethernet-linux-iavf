@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-2.0-only
-# Copyright (C) 2013-2023 Intel Corporation
+# Copyright (C) 2013-2024 Intel Corporation
 
 ifneq ($(KERNELRELEASE),)
 # kbuild part of makefile
@@ -13,7 +13,8 @@ subdir-ccflags-y += -I$(src)
 obj-m += iavf.o
 
 iavf-y := iavf_main.o iavf_ethtool.o iavf_virtchnl.o iavf_adminq.o \
-	iavf_common.o iavf_txrx.o iavf_idc.o \
+	iavf_common.o iavf_txrx.o iavf_fdir.o iavf_adv_rss.o \
+	iavf_idc.o \
 	iavf_synce.o \
 	iavf_gnss.o \
 

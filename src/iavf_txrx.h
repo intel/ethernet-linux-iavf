@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
-/* Copyright (C) 2013-2023 Intel Corporation */
+/* Copyright (C) 2013-2024 Intel Corporation */
 
 #ifndef _IAVF_TXRX_H_
 #define _IAVF_TXRX_H_
@@ -15,8 +15,7 @@
  */
 #define IAVF_ITR_DYNAMIC	0x8000	/* use top bit as a flag */
 #define IAVF_ITR_MASK		0x1FFE	/* mask for ITR register value */
-#define IAVF_MIN_ITR		     2	/* reg uses 2 usec resolution */
-#define IAVF_ITR_100K		    10  /* all values below must be even */
+#define IAVF_ITR_100K		    10	/* all values below must be even */
 #define IAVF_ITR_50K		    20
 #define IAVF_ITR_20K		    50
 #define IAVF_ITR_18K		    60
@@ -26,8 +25,8 @@
 #define ITR_REG_ALIGN(setting) __ALIGN_MASK(setting, ~IAVF_ITR_MASK)
 #define ITR_IS_DYNAMIC(setting) (!!((setting) & IAVF_ITR_DYNAMIC))
 
-#define IAVF_ITR_RX_DEF            (IAVF_ITR_20K | IAVF_ITR_DYNAMIC)
-#define IAVF_ITR_TX_DEF            (IAVF_ITR_20K | IAVF_ITR_DYNAMIC)
+#define IAVF_ITR_RX_DEF		(IAVF_ITR_20K | IAVF_ITR_DYNAMIC)
+#define IAVF_ITR_TX_DEF		(IAVF_ITR_20K | IAVF_ITR_DYNAMIC)
 
 /* 0x40 is the enable bit for interrupt rate limiting, and must be set if
  * the value of the rate limit is non-zero
@@ -281,7 +280,6 @@ static inline unsigned int iavf_txd_use_count(unsigned int size)
 struct iavf_tx_buffer {
 	struct iavf_tx_desc *next_to_watch;
 	union {
-		struct xdp_frame *xdpf;
 		struct sk_buff *skb;
 		void *raw_buf;
 	};
@@ -375,7 +373,6 @@ struct iavf_ring {
 	void *desc;			/* Descriptor ring memory */
 	struct device *dev;		/* Used for DMA mapping */
 	struct net_device *netdev;	/* netdev ring maps to */
-	struct bpf_prog *xdp_prog;
 	union {
 		struct iavf_tx_buffer *tx_bi;
 		struct iavf_rx_buffer *rx_bi;
@@ -412,7 +409,6 @@ struct iavf_ring {
 	u16 flags;
 #define IAVF_TXR_FLAGS_WB_ON_ITR		BIT(0)
 #define IAVF_RXR_FLAGS_BUILD_SKB_ENABLED	BIT(1)
-#define IAVF_TXR_FLAGS_XDP			BIT(2)
 #define IAVF_TXRX_FLAGS_VLAN_TAG_LOC_L2TAG1	BIT(3)
 #define IAVF_TXR_FLAGS_VLAN_TAG_LOC_L2TAG2	BIT(4)
 #define IAVF_RXR_FLAGS_VLAN_TAG_LOC_L2TAG2_2	BIT(5)
@@ -451,10 +447,6 @@ struct iavf_ring {
 #define IAVF_RING_CHNL_PERF_ENA	BIT(0)
 
 	struct iavf_channel_ex *ch;
-
-#ifdef HAVE_XDP_BUFF_RXQ
-	struct xdp_rxq_info xdp_rxq;
-#endif
 } ____cacheline_internodealigned_in_smp;
 
 static inline bool ring_ch_ena(struct iavf_ring *ring)
@@ -489,16 +481,6 @@ static inline void clear_ring_build_skb_enabled(struct iavf_ring *ring)
 #define IAVF_ITR_ADAPTIVE_BULK          0x0000
 #define ITR_IS_BULK(x) (!((x) & IAVF_ITR_ADAPTIVE_LATENCY))
 
-static inline bool ring_is_xdp(struct iavf_ring *ring)
-{
-	return !!(ring->flags & IAVF_TXR_FLAGS_XDP);
-}
-
-static inline void set_ring_xdp(struct iavf_ring *ring)
-{
-	ring->flags |= IAVF_TXR_FLAGS_XDP;
-}
-
 struct iavf_ring_container {
 	struct iavf_ring *ring;		/* pointer to linked list of ring(s) */
 	unsigned long next_update;	/* jiffies value of next update */
@@ -526,26 +508,15 @@ static inline unsigned int iavf_rx_pg_order(struct iavf_ring *ring)
 
 bool iavf_alloc_rx_buffers(struct iavf_ring *rxr, u16 cleaned_count);
 netdev_tx_t iavf_xmit_frame(struct sk_buff *skb, struct net_device *netdev);
-void iavf_clean_tx_ring(struct iavf_ring *tx_ring);
-void iavf_clean_rx_ring(struct iavf_ring *rx_ring);
 int iavf_setup_tx_descriptors(struct iavf_ring *tx_ring);
 int iavf_setup_rx_descriptors(struct iavf_ring *rx_ring);
 void iavf_free_tx_resources(struct iavf_ring *tx_ring);
 void iavf_free_rx_resources(struct iavf_ring *rx_ring);
 int iavf_napi_poll(struct napi_struct *napi, int budget);
-u32 iavf_get_tx_pending(struct iavf_ring *ring, bool in_sw);
 void iavf_detect_recover_hung(struct iavf_vsi *vsi);
 void iavf_chnl_detect_recover(struct iavf_vsi *vsi);
 int __iavf_maybe_stop_tx(struct iavf_ring *tx_ring, int size);
 bool __iavf_chk_linearize(struct sk_buff *skb);
-#ifdef HAVE_XDP_FRAME_STRUCT
-int iavf_xdp_xmit(struct net_device *dev, int n, struct xdp_frame **frames,
-		  u32 flags);
-#else
-int iavf_xdp_xmit(struct net_device *dev, struct xdp_buff *xdp);
-#endif
-void iavf_xdp_flush(struct net_device *dev);
-
 
 /**
  * iavf_xmit_descriptor_count - calculate number of Tx descriptors needed

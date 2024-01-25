@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
-/* Copyright (C) 2013-2023 Intel Corporation */
+/* Copyright (C) 2013-2024 Intel Corporation */
 
 #ifndef _IAVF_H_
 #define _IAVF_H_
@@ -45,6 +45,8 @@
 #include "iavf_type.h"
 #include "virtchnl.h"
 #include "iavf_txrx.h"
+#include "iavf_fdir.h"
+#include "iavf_adv_rss.h"
 #include "iavf_ptp.h"
 #include "iavf_synce.h"
 #include "iavf_gnss.h"
@@ -70,8 +72,6 @@ struct iavf_vsi {
 #ifdef HAVE_VLAN_RX_REGISTER
 	struct vlan_group *vlgrp;
 #endif
-	/* dummy pointer - VF plans to add this functionality in the future */
-	struct iavf_ring **xdp_rings;
 	u16 seid;
 	u16 id;
 	DECLARE_BITMAP(state, __IAVF_VSI_STATE_SIZE__);
@@ -109,7 +109,7 @@ struct iavf_vsi {
 #define IAVF_MBPS_QUANTA	50
 
 #define IAVF_VIRTCHNL_VF_RESOURCE_SIZE	(sizeof(struct virtchnl_vf_resource) + \
-					 (IAVF_MAX_VF_VSI *		       \
+					 (IAVF_MAX_VF_VSI * \
 					 sizeof(struct virtchnl_vsi_resource)))
 
 #define IAVF_NETIF_F_HW_VLAN_BITS
@@ -386,8 +386,8 @@ struct iavf_mac_filter {
 	u8 macaddr[ETH_ALEN];
 	struct {
 		u8 is_new_mac:1;    /* filter is new, wait for PF decision */
-		u8 remove:1;	    /* filter needs to be removed */
-		u8 add:1;	    /* filter needs to be added */
+		u8 remove:1;        /* filter needs to be removed */
+		u8 add:1;           /* filter needs to be added */
 		u8 is_primary:1;    /* filter is a default VF MAC */
 		u8 add_handled:1;   /* received response from PF for filter add */
 		u8 padding:3;
@@ -447,7 +447,7 @@ enum iavf_state_t {
 	__IAVF_INIT_EXTENDED_CAPS,	/* process extended caps which require aq msg exchange */
 	__IAVF_INIT_CONFIG_ADAPTER,
 	__IAVF_INIT_SW,		/* got resources, setting up structs */
-	__IAVF_INIT_FAILED,		/* init failed, restarting procedure */
+	__IAVF_INIT_FAILED,	/* init failed, restarting procedure */
 	__IAVF_RESETTING,		/* in reset */
 	__IAVF_COMM_FAILED,		/* communication with PF failed */
 	__IAVF_STATE_UP_AFTER_RESET,	/* adapter failed reset, while running, up it again */
@@ -455,7 +455,7 @@ enum iavf_state_t {
 	__IAVF_DOWN,			/* ready, can be opened */
 	__IAVF_DOWN_PENDING,		/* descending, waiting for watchdog */
 	__IAVF_TESTING,		/* in ethtool self-test */
-	__IAVF_RUNNING		/* opened, working */
+	__IAVF_RUNNING,		/* opened, working */
 };
 
 enum iavf_critical_section_t {
@@ -510,7 +510,7 @@ struct iavf_vc_msg {
 struct iavf_vc_msg_queue {
 	struct list_head msgs;
 	/* Lock protecting access to the virtchnl message queue */
-	spinlock_t lock;
+	struct mutex lock;
 };
 
 enum iavf_rdma_vc_op_state {
@@ -529,11 +529,15 @@ struct iavf_rdma {
 	wait_queue_head_t vc_op_waitqueue;
 	enum iavf_rdma_vc_op_state vc_op_state;
 	struct iavf_adapter *back;
+	struct semaphore init_deinit_done;
+	struct mutex lock;	/* lock to protect aux device access */
 	struct delayed_work init_task;
+	struct delayed_work deinit_task;
 };
 
 /* board specific private data structure */
 struct iavf_adapter {
+	struct workqueue_struct *wq;
 	struct work_struct adminq_task;
 	struct delayed_work watchdog_task;
 	wait_queue_head_t down_waitqueue;
@@ -588,50 +592,54 @@ struct iavf_adapter {
 #define IAVF_FLAG_DCB_ENABLED			0
 	/* flags for admin queue service task */
 	u64 aq_required;
-#define IAVF_FLAG_AQ_ENABLE_QUEUES			BIT(0)
-#define IAVF_FLAG_AQ_DISABLE_QUEUES			BIT(1)
-#define IAVF_FLAG_AQ_ADD_MAC_FILTER			BIT(2)
-#define IAVF_FLAG_AQ_ADD_VLAN_FILTER			BIT(3)
-#define IAVF_FLAG_AQ_DEL_MAC_FILTER			BIT(4)
-#define IAVF_FLAG_AQ_DEL_VLAN_FILTER			BIT(5)
-#define IAVF_FLAG_AQ_CONFIGURE_QUEUES			BIT(6)
-#define IAVF_FLAG_AQ_MAP_VECTORS			BIT(7)
-#define IAVF_FLAG_AQ_HANDLE_RESET			BIT(8)
-#define IAVF_FLAG_AQ_CONFIGURE_RSS			BIT(9) /* direct AQ config */
-#define IAVF_FLAG_AQ_GET_CONFIG				BIT(10)
+#define IAVF_FLAG_AQ_ENABLE_QUEUES		BIT_ULL(0)
+#define IAVF_FLAG_AQ_DISABLE_QUEUES		BIT_ULL(1)
+#define IAVF_FLAG_AQ_ADD_MAC_FILTER		BIT_ULL(2)
+#define IAVF_FLAG_AQ_ADD_VLAN_FILTER		BIT_ULL(3)
+#define IAVF_FLAG_AQ_DEL_MAC_FILTER		BIT_ULL(4)
+#define IAVF_FLAG_AQ_DEL_VLAN_FILTER		BIT_ULL(5)
+#define IAVF_FLAG_AQ_CONFIGURE_QUEUES		BIT_ULL(6)
+#define IAVF_FLAG_AQ_MAP_VECTORS		BIT_ULL(7)
+#define IAVF_FLAG_AQ_HANDLE_RESET		BIT_ULL(8)
+#define IAVF_FLAG_AQ_CONFIGURE_RSS		BIT_ULL(9) /* direct AQ config */
+#define IAVF_FLAG_AQ_GET_CONFIG			BIT_ULL(10)
 /* Newer style, RSS done by the PF so we can ignore hardware vagaries. */
-#define IAVF_FLAG_AQ_GET_HENA				BIT(11)
-#define IAVF_FLAG_AQ_SET_HENA				BIT(12)
-#define IAVF_FLAG_AQ_SET_RSS_KEY			BIT(13)
-#define IAVF_FLAG_AQ_SET_RSS_LUT			BIT(14)
-#define IAVF_FLAG_AQ_CONFIGURE_PROMISC_MODE		BIT(15)
-#define IAVF_FLAG_AQ_ENABLE_VLAN_STRIPPING		BIT(19)
-#define IAVF_FLAG_AQ_DISABLE_VLAN_STRIPPING		BIT(20)
-#define IAVF_FLAG_AQ_ENABLE_CHANNELS			BIT(21)
-#define IAVF_FLAG_AQ_DISABLE_CHANNELS			BIT(22)
-#define IAVF_FLAG_AQ_ADD_CLOUD_FILTER			BIT(23)
-#define IAVF_FLAG_AQ_DEL_CLOUD_FILTER			BIT(24)
-#define IAVF_FLAG_AQ_REQUEST_STATS			BIT(25)
-#define IAVF_FLAG_AQ_GET_OFFLOAD_VLAN_V2_CAPS		BIT(26)
-#define IAVF_FLAG_AQ_ENABLE_CTAG_VLAN_STRIPPING		BIT(27)
-#define IAVF_FLAG_AQ_DISABLE_CTAG_VLAN_STRIPPING	BIT(28)
-#define IAVF_FLAG_AQ_ENABLE_STAG_VLAN_STRIPPING		BIT(29)
-#define IAVF_FLAG_AQ_DISABLE_STAG_VLAN_STRIPPING	BIT(30)
-#define IAVF_FLAG_AQ_ENABLE_CTAG_VLAN_INSERTION		BIT(31)
-#define IAVF_FLAG_AQ_DISABLE_CTAG_VLAN_INSERTION	BIT(32)
-#define IAVF_FLAG_AQ_ENABLE_STAG_VLAN_INSERTION		BIT(33)
-#define IAVF_FLAG_AQ_DISABLE_STAG_VLAN_INSERTION	BIT(34)
-#define IAVF_FLAG_AQ_GET_SUPPORTED_RXDIDS		BIT(35)
-#define IAVF_FLAG_AQ_GET_PTP_CAPS			BIT(36)
-#define IAVF_FLAG_AQ_MSG_QUEUE_PENDING			BIT(37)
-#define IAVF_FLAG_AQ_GET_MAX_RSS_QREGION		BIT(38)
+#define IAVF_FLAG_AQ_GET_HENA			BIT_ULL(11)
+#define IAVF_FLAG_AQ_SET_HENA			BIT_ULL(12)
+#define IAVF_FLAG_AQ_SET_RSS_KEY		BIT_ULL(13)
+#define IAVF_FLAG_AQ_SET_RSS_LUT		BIT_ULL(14)
+#define IAVF_FLAG_AQ_CONFIGURE_PROMISC_MODE	BIT_ULL(15)
+#define IAVF_FLAG_AQ_ENABLE_VLAN_STRIPPING	BIT_ULL(19)
+#define IAVF_FLAG_AQ_DISABLE_VLAN_STRIPPING	BIT_ULL(20)
+#define IAVF_FLAG_AQ_ENABLE_CHANNELS		BIT_ULL(21)
+#define IAVF_FLAG_AQ_DISABLE_CHANNELS		BIT_ULL(22)
+#define IAVF_FLAG_AQ_ADD_CLOUD_FILTER		BIT_ULL(23)
+#define IAVF_FLAG_AQ_DEL_CLOUD_FILTER		BIT_ULL(24)
+#define IAVF_FLAG_AQ_REQUEST_STATS		BIT_ULL(25)
+#define IAVF_FLAG_AQ_GET_OFFLOAD_VLAN_V2_CAPS	BIT_ULL(26)
+#define IAVF_FLAG_AQ_ENABLE_CTAG_VLAN_STRIPPING		BIT_ULL(27)
+#define IAVF_FLAG_AQ_DISABLE_CTAG_VLAN_STRIPPING	BIT_ULL(28)
+#define IAVF_FLAG_AQ_ENABLE_STAG_VLAN_STRIPPING		BIT_ULL(29)
+#define IAVF_FLAG_AQ_DISABLE_STAG_VLAN_STRIPPING	BIT_ULL(30)
+#define IAVF_FLAG_AQ_ENABLE_CTAG_VLAN_INSERTION		BIT_ULL(31)
+#define IAVF_FLAG_AQ_DISABLE_CTAG_VLAN_INSERTION	BIT_ULL(32)
+#define IAVF_FLAG_AQ_ENABLE_STAG_VLAN_INSERTION		BIT_ULL(33)
+#define IAVF_FLAG_AQ_DISABLE_STAG_VLAN_INSERTION	BIT_ULL(34)
+#define IAVF_FLAG_AQ_GET_SUPPORTED_RXDIDS		BIT_ULL(35)
+#define IAVF_FLAG_AQ_GET_PTP_CAPS			BIT_ULL(36)
+#define IAVF_FLAG_AQ_MSG_QUEUE_PENDING			BIT_ULL(37)
+#define IAVF_FLAG_AQ_GET_MAX_RSS_QREGION		BIT_ULL(38)
+#define IAVF_FLAG_AQ_ADD_FDIR_FILTER			BIT_ULL(39)
+#define IAVF_FLAG_AQ_DEL_FDIR_FILTER			BIT_ULL(40)
+#define IAVF_FLAG_AQ_ADD_ADV_RSS_CFG			BIT_ULL(41)
+#define IAVF_FLAG_AQ_DEL_ADV_RSS_CFG			BIT_ULL(42)
 
 	/* AQ messages that must be sent after IAVF_FLAG_AQ_GET_CONFIG, in
 	 * order to negotiated extended capabilities.
 	 */
 #define IAVF_FLAG_AQ_EXTENDED_CAPS			\
 	(IAVF_FLAG_AQ_GET_OFFLOAD_VLAN_V2_CAPS |	\
-	 IAVF_FLAG_AQ_GET_SUPPORTED_RXDIDS |		\
+	 IAVF_FLAG_AQ_GET_SUPPORTED_RXDIDS     |	\
 	 IAVF_FLAG_AQ_GET_PTP_CAPS)
 
 	/* flags for processing extended capability messages during
@@ -642,14 +650,14 @@ struct iavf_adapter {
 	 * process one flag at a time during each state loop.
 	 */
 	u64 extended_caps;
-#define IAVF_EXTENDED_CAP_SEND_VLAN_V2			BIT(0)
-#define IAVF_EXTENDED_CAP_RECV_VLAN_V2			BIT(1)
-#define IAVF_EXTENDED_CAP_SEND_RXDID			BIT(2)
-#define IAVF_EXTENDED_CAP_RECV_RXDID			BIT(3)
-#define IAVF_EXTENDED_CAP_SEND_PTP			BIT(4)
-#define IAVF_EXTENDED_CAP_RECV_PTP			BIT(5)
-#define IAVF_EXTENDED_CAP_SEND_RSS_QREGION		BIT(6)
-#define IAVF_EXTENDED_CAP_RECV_RSS_QREGION		BIT(7)
+#define IAVF_EXTENDED_CAP_SEND_VLAN_V2			BIT_ULL(0)
+#define IAVF_EXTENDED_CAP_RECV_VLAN_V2			BIT_ULL(1)
+#define IAVF_EXTENDED_CAP_SEND_RXDID			BIT_ULL(2)
+#define IAVF_EXTENDED_CAP_RECV_RXDID			BIT_ULL(3)
+#define IAVF_EXTENDED_CAP_SEND_PTP			BIT_ULL(4)
+#define IAVF_EXTENDED_CAP_RECV_PTP			BIT_ULL(5)
+#define IAVF_EXTENDED_CAP_SEND_RSS_QREGION		BIT_ULL(6)
+#define IAVF_EXTENDED_CAP_RECV_RSS_QREGION		BIT_ULL(7)
 
 #define IAVF_EXTENDED_CAPS				\
 	(IAVF_EXTENDED_CAP_SEND_VLAN_V2 |		\
@@ -724,6 +732,10 @@ struct iavf_adapter {
 #define ADV_LINK_SUPPORT(_a) ((_a)->vf_res->vf_cap_flags & \
 			      VIRTCHNL_VF_CAP_ADV_LINK_SPEED)
 #endif /* VIRTCHNL_VF_CAP_ADV_LINK_SPEED */
+#define FDIR_FLTR_SUPPORT(_a) ((_a)->vf_res->vf_cap_flags & \
+			       VIRTCHNL_VF_OFFLOAD_FDIR_PF)
+#define ADV_RSS_SUPPORT(_a) ((_a)->vf_res->vf_cap_flags & \
+			     VIRTCHNL_VF_OFFLOAD_ADV_RSS_PF)
 #define ADQ_ALLOWED(_a) ((_a)->vf_res->vf_cap_flags & \
 			  VIRTCHNL_VF_OFFLOAD_ADQ)
 #define ADQ_V2_ALLOWED(_a) ((_a)->vf_res->vf_cap_flags & \
@@ -769,6 +781,15 @@ struct iavf_adapter {
 	 */
 	int orig_num_active_queues;
 
+#define IAVF_MAX_FDIR_FILTERS 128	/* max allowed Flow Director filters */
+	u16 fdir_active_fltr;
+	struct list_head fdir_list_head;
+	spinlock_t fdir_fltr_lock;	/* protect the Flow Director filter list */
+
+	struct list_head adv_rss_list_head;
+	spinlock_t adv_rss_lock;	/* protect the RSS management list */
+
+
 	/* maximum number of queue pairs allocated during VF creation */
 	int num_max_queue_pairs;
 
@@ -806,7 +827,6 @@ struct iavf_adapter {
 /* needed by iavf_ethtool.c */
 extern char iavf_driver_name[];
 extern const char iavf_driver_version[];
-extern struct workqueue_struct *iavf_wq;
 static inline const char *iavf_state_str(enum iavf_state_t state)
 {
 	switch (state) {
@@ -939,7 +959,7 @@ void iavf_down(struct iavf_adapter *adapter);
 int iavf_process_config(struct iavf_adapter *adapter);
 int iavf_parse_vf_resource_msg(struct iavf_adapter *adapter);
 void iavf_schedule_reset(struct iavf_adapter *adapter);
-void iavf_schedule_request_stats(struct iavf_adapter *adapter);
+void iavf_schedule_aq_request(struct iavf_adapter *adapter, u64 flags);
 void iavf_reset(struct iavf_adapter *adapter);
 bool iavf_is_reset_in_progress(struct iavf_adapter *adapter);
 bool iavf_is_remove_in_progress(struct iavf_adapter *adapter);
@@ -947,7 +967,6 @@ void iavf_set_ethtool_ops(struct net_device *netdev);
 void iavf_update_stats(struct iavf_adapter *adapter);
 void iavf_reset_interrupt_capability(struct iavf_adapter *adapter);
 int iavf_init_interrupt_scheme(struct iavf_adapter *adapter);
-void iavf_irq_enable_queues(struct iavf_adapter *adapter);
 void iavf_free_all_tx_resources(struct iavf_adapter *adapter);
 void iavf_free_all_rx_resources(struct iavf_adapter *adapter);
 
@@ -1013,6 +1032,10 @@ void iavf_enable_vlan_stripping_v2(struct iavf_adapter *adapter, u16 tpid);
 void iavf_disable_vlan_stripping_v2(struct iavf_adapter *adapter, u16 tpid);
 void iavf_enable_vlan_insertion_v2(struct iavf_adapter *adapter, u16 tpid);
 void iavf_disable_vlan_insertion_v2(struct iavf_adapter *adapter, u16 tpid);
+void iavf_add_fdir_filter(struct iavf_adapter *adapter);
+void iavf_del_fdir_filter(struct iavf_adapter *adapter);
+void iavf_add_adv_rss_cfg(struct iavf_adapter *adapter);
+void iavf_del_adv_rss_cfg(struct iavf_adapter *adapter);
 int iavf_replace_primary_mac(struct iavf_adapter *adapter,
 			     const u8 *new_mac);
 void iavf_send_vc_msg(struct iavf_adapter *adapter);

@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
-/* Copyright (C) 2013-2023 Intel Corporation */
+/* Copyright (C) 2013-2024 Intel Corporation */
 
 #include <linux/idr.h>
 #include "iavf.h"
@@ -57,6 +57,43 @@ iavf_get_auxiliary_drv(struct iidc_core_dev_info *cdev_info)
 
 	return container_of(adev->dev.driver, struct iidc_auxiliary_drv,
 			    adrv.driver);
+}
+
+/**
+ * iavf_send_event_to_aux - send event to a specific aux driver
+ * @cdev_info: pointer to iidc_core_dev_info struct for this aux
+ * @event: event struct
+ */
+static void
+iavf_send_event_to_aux(struct iidc_core_dev_info *cdev_info,
+		       struct iidc_event *event)
+{
+	struct iidc_auxiliary_drv *iadrv;
+	struct iavf_adapter *adapter;
+
+	if (!cdev_info)
+		return;
+
+	adapter = iavf_pdev_to_adapter(cdev_info->pdev);
+	if (!adapter)
+		return;
+
+	if (WARN_ON_ONCE(!in_task()))
+		return;
+
+	mutex_lock(&adapter->rdma.lock);
+
+	if (!cdev_info->adev || !event) {
+		mutex_unlock(&adapter->rdma.lock);
+		return;
+	}
+
+	device_lock(&cdev_info->adev->dev);
+	iadrv = iavf_get_auxiliary_drv(cdev_info);
+	if (iadrv && iadrv->event_handler)
+		iadrv->event_handler(cdev_info, event);
+	device_unlock(&cdev_info->adev->dev);
+	mutex_unlock(&adapter->rdma.lock);
 }
 
 /**
@@ -419,22 +456,20 @@ static int iavf_plug_aux_dev(struct iavf_rdma *rdma)
 	adev->dev.parent = &cdev_info->pdev->dev;
 
 	err = auxiliary_device_init(adev);
-	if (err)
-		goto err_aux_dev_init;
+	if (err) {
+		kfree(iadev);
+		goto err_iadev_alloc;
+	}
 
 	err = auxiliary_device_add(adev);
-	if (err)
-		goto err_aux_dev_add;
+	if (err) {
+		cdev_info->adev = NULL;
+		auxiliary_device_uninit(adev);
+	}
 
-	return 0;
-
-err_aux_dev_add:
-	cdev_info->adev = NULL;
-	auxiliary_device_uninit(adev);
-err_aux_dev_init:
-	kfree(iadev);
 err_iadev_alloc:
-	ida_free(&iavf_idc_ida, rdma->aux_idx);
+	if (err)
+		ida_free(&iavf_idc_ida, rdma->aux_idx);
 
 	return err;
 }
@@ -588,6 +623,16 @@ err_out:
 static void iavf_idc_deinit_aux_device(struct iavf_adapter *adapter)
 {
 	struct iavf_rdma *rdma = &adapter->rdma;
+	struct iidc_event *event;
+
+	event = kzalloc(sizeof(*event), GFP_KERNEL);
+	if (event) {
+		set_bit(IIDC_EVENT_WARN_RESET, event->type);
+		iavf_send_event_to_aux(rdma->cdev_info, event);
+		kfree(event);
+	} else {
+		dev_warn(&adapter->pdev->dev, "Failed to notify auxiliary drivers of reset\n");
+	}
 
 	iavf_unplug_aux_dev(rdma);
 	iavf_idc_clear_rdma_info(rdma);
@@ -609,6 +654,9 @@ void iavf_idc_init_task(struct work_struct *work)
 	struct iavf_adapter *adapter = rdma->back;
 	int err;
 
+	/* make sure any de-init work is done before init */
+	cancel_delayed_work_sync(&adapter->rdma.deinit_task);
+
 	err = iavf_idc_init_aux_device(adapter);
 	if (err)
 		dev_err(&adapter->pdev->dev, "failed to initialize IDC: %d\n",
@@ -621,11 +669,14 @@ void iavf_idc_init_task(struct work_struct *work)
  */
 void iavf_idc_init(struct iavf_adapter *adapter)
 {
+	BUG_ON(adapter->state < __IAVF_INIT_CONFIG_ADAPTER ||
+	       adapter->state == __IAVF_INIT_FAILED ||
+	       adapter->state == __IAVF_COMM_FAILED);
+
 	if (!RDMA_ALLOWED(adapter))
 		return;
 
-	queue_delayed_work(iavf_wq, &adapter->rdma.init_task,
-			   msecs_to_jiffies(5));
+	schedule_delayed_work(&adapter->rdma.init_task, msecs_to_jiffies(5));
 }
 
 /**
@@ -643,16 +694,46 @@ static bool iavf_rdma_op_match(enum virtchnl_ops pending_op)
 }
 
 /**
- * iavf_idc_deinit - Called to de-initialize IDC
- * @adapter: driver private data structure
+ * iavf_idc_deinit_task - delayed worker to remove RDMA through aux/IDC
+ * @work: pointer to work_struct
  */
-void iavf_idc_deinit(struct iavf_adapter *adapter)
+void iavf_idc_deinit_task(struct work_struct *work)
 {
+	struct iavf_rdma *rdma = container_of(work, struct iavf_rdma,
+					      deinit_task.work);
+	struct iavf_adapter *adapter = rdma->back;
+
 	/* make sure any init work is done before deinit */
 	cancel_delayed_work_sync(&adapter->rdma.init_task);
+
+	iavf_idc_deinit_aux_device(adapter);
+
+	up(&adapter->rdma.init_deinit_done);
+}
+
+/**
+ * iavf_idc_deinit - Called to de-initialize IDC
+ * @adapter: driver private data structure
+ * @sync: call the deinit in the caller's task context
+ */
+void iavf_idc_deinit(struct iavf_adapter *adapter, bool sync)
+{
+	/* Reset may be called in an early state where vf_res is not set */
+	if (adapter->state < __IAVF_INIT_CONFIG_ADAPTER ||
+	    adapter->state == __IAVF_INIT_FAILED ||
+	    adapter->state == __IAVF_COMM_FAILED)
+		return;
+
+	if (!RDMA_ALLOWED(adapter) || !adapter->rdma.cdev_info)
+		return;
 
 	/* don't leave pending opeartions on deinit */
 	iavf_flush_vc_msg_queue(adapter, iavf_rdma_op_match);
 
-	iavf_idc_deinit_aux_device(adapter);
+	if (sync) {
+		iavf_idc_deinit_aux_device(adapter);
+	} else {
+		schedule_delayed_work(&adapter->rdma.deinit_task, 0);
+		down(&adapter->rdma.init_deinit_done);
+	}
 }

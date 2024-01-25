@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
-/* Copyright (C) 2013-2023 Intel Corporation */
+/* Copyright (C) 2013-2024 Intel Corporation */
 
 #include "iavf.h"
 
@@ -562,9 +562,15 @@ exit:
  * If any errors happen during the write call, a negative error value should be
  * returned instead of the number of characters that were written.
  */
+#ifdef HAVE_TTY_OP_WRITE_SIZE_T
+static ssize_t
+iavf_gnss_tty_write(struct tty_struct *tty,
+		    const unsigned char *buf, size_t count)
+#else
 static int
 iavf_gnss_tty_write(struct tty_struct *tty,
 		    const unsigned char *buf, int count)
+#endif /* HAVE_TTY_OP_WRITE_SIZE_T */
 {
 	struct iavf_gnss_write_buf *write_buf;
 	struct iavf_gnss_serial *gnss_serial;
@@ -712,7 +718,7 @@ iavf_gnss_create_tty_driver(struct iavf_adapter *adapter)
 	tty_driver->driver_state = adapter;
 	tty_set_operations(tty_driver, &tty_gps_ops);
 
-	adapter->gnss.tty_port =
+	adapter->gnss.tty_port = 
 		kzalloc(sizeof(*adapter->gnss.tty_port), GFP_KERNEL);
 	adapter->gnss.serial = NULL;
 
