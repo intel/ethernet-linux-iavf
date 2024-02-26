@@ -27,7 +27,7 @@ static const char iavf_driver_string[] =
 #define DRV_VERSION_MAJOR (4)
 #define DRV_VERSION_MINOR (5)
 #define DRV_VERSION_BUILD (3)
-#define DRV_VERSION "4.5.3.2"
+#define DRV_VERSION "4.5.3.4"
 const char iavf_driver_version[] = DRV_VERSION;
 static const char iavf_copyright[] =
 	"Copyright (c) 2013, Intel Corporation.";
@@ -3395,19 +3395,22 @@ static void iavf_adminq_task(struct work_struct *work)
 	u32 val, oldval;
 	u16 pending;
 
-	/* If the driver is in the process of being removed then return
-	 * immediately and don't re-enable the Admin Queue interrupt.
-	 */
-	if (iavf_is_remove_in_progress(adapter))
-		return;
+	if (!test_and_set_bit(__IAVF_IN_CRITICAL_TASK,
+			      &adapter->crit_section)) {
+		if (iavf_is_remove_in_progress(adapter))
+			return;
+
+		queue_work(iavf_wq, &adapter->adminq_task);
+		goto out;
+	}
 
 	if (adapter->flags & IAVF_FLAG_PF_COMMS_FAILED)
-		goto out;
+		goto unlock;
 
 	event.buf_len = IAVF_MAX_AQ_BUF_SIZE;
 	event.msg_buf = kzalloc(event.buf_len, GFP_KERNEL);
 	if (!event.msg_buf)
-		goto out;
+		goto unlock;
 
 	do {
 		ret = iavf_clean_arq_element(hw, &event, &pending);
@@ -3417,12 +3420,8 @@ static void iavf_adminq_task(struct work_struct *work)
 		if (ret || !v_op)
 			break; /* No event to process or error cleaning ARQ */
 
-		while (test_and_set_bit(__IAVF_IN_CRITICAL_TASK,
-					&adapter->crit_section))
-			usleep_range(500, 1000);
 		iavf_virtchnl_completion(adapter, v_op, v_ret, event.msg_buf,
 					 event.msg_len);
-		clear_bit(__IAVF_IN_CRITICAL_TASK, &adapter->crit_section);
 		if (pending != 0)
 			memset(event.msg_buf, 0, IAVF_MAX_AQ_BUF_SIZE);
 	} while (pending);
@@ -3471,6 +3470,8 @@ static void iavf_adminq_task(struct work_struct *work)
 
 freedom:
 	kfree(event.msg_buf);
+unlock:
+	clear_bit(__IAVF_IN_CRITICAL_TASK, &adapter->crit_section);
 out:
 	/* re-enable Admin queue interrupt cause */
 	iavf_misc_irq_enable(adapter);
