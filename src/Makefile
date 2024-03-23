@@ -10,22 +10,22 @@ ifneq ($(KERNELRELEASE),)
 ccflags-y += -I$(src)
 subdir-ccflags-y += -I$(src)
 
-obj-$(CONFIG_I40EVF) += i40evf.o
+obj-$(CONFIG_IAVF) += iavf.o
 
-i40evf-y := i40evf_main.o \
-	i40evf_ethtool.o \
-	i40evf_virtchnl.o \
-	i40evf_client.o \
-	i40e_adminq.o	 \
-	i40e_common.o	 \
-	i40e_txrx.o
+iavf-y := iavf_main.o \
+	iavf_ethtool.o \
+	iavf_virtchnl.o \
+	iavf_client.o \
+	iavf_adminq.o	 \
+	iavf_common.o	 \
+	iavf_txrx.o
 
-i40evf-y += kcompat.o
+iavf-y += kcompat.o
 
 else	# ifneq($(KERNELRELEASE),)
 # normal makefile
 
-DRIVER := i40evf
+DRIVER := iavf
 
 # If the user just wants to print the help output, don't include common.mk or
 # perform any other checks. This ensures that running "make help" will always
@@ -34,7 +34,7 @@ DRIVER := i40evf
 ifneq ($(MAKECMDGOALS),help)
 include common.mk
 
-# i40evf does not support building on kernels older than 2.6.32
+# iavf does not support building on kernels older than 2.6.32
 $(call minimum_kver_check,2,6,32)
 endif
 
