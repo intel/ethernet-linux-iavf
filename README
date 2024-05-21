@@ -1,7 +1,7 @@
 Linux* Driver for Intel(R) Ethernet Adaptive Virtual Function
 =============================================================
 
-June 14, 2022
+October 20, 2023
 
 
 Contents
@@ -65,10 +65,24 @@ which the AVF is associated. The following are base mode features:
 - Receive Side Scaling (RSS) with 64 entry indirection table and key,
   configured through the PF
 - 1 unicast MAC address reserved per VF
-- 16 MAC address filters for each VF
+- 8 MAC address filters for each VF on an Intel(R) Ethernet 800 Series devices
+- 16 MAC address filters for each VF on an Intel(R) Ethernet 700 Series device
 - Stateless offloads - non-tunneled checksums
 - AVF device ID
 - HW mailbox is used for VF to PF communications (including on Windows)
+
+
+Related Documentation
+=====================
+
+See the "Intel(R) Ethernet Adapters and Devices User Guide" for additional
+information on features. It is available on the Intel website at either of the
+following:
+
+- https://cdrdv2.intel.com/v1/dl/getContent/705831
+-
+https://www.intel.com/content/www/us/en/download/19373/adapter-user-guide-for-in
+tel-ethernet-adapters.html
 
 
 Identifying Your Adapter
@@ -342,6 +356,10 @@ Application Device Queues (ADQ) allow you to dedicate one or more queues to a
 specific application. This can reduce latency for the specified application,
 and allow Tx traffic to be rate limited per application.
 
+The ADQ information contained here is specific to the iavf driver. For more
+details, refer to the E810 ADQ Configuration Guide at:
+https://cdrdv2.intel.com/v1/dl/getContent/609008
+
 Requirements:
 - Kernel version: Varies by feature and the underlying PF device. Refer to the
 E810 ADQ Configuration Guide for more information on required kernel versions
@@ -447,6 +465,7 @@ To view all TC filters:
 
   # tc filter show dev <ethX> ingress
   # tc filter show dev <ethX> egress
+
 
 TC FILTER EXAMPLES:
 To configure TCP TC filters, where:
@@ -648,8 +667,8 @@ driver reload.
 Driver Buffer Overflow Fix
 --------------------------
 The fix to resolve CVE-2016-8105, referenced in Intel SA-00069
-<https://security-center.intel.com/advisory.aspx?intelid=INTEL-SA-00069&language
-id=en-fr>, is included in this and future versions of the driver.
+<https://www.intel.com/content/www/us/en/security-center/advisory/intel-sa-00069
+.html>, is included in this and future versions of the driver.
 
 
 Compiling the Driver
@@ -758,7 +777,7 @@ St - Fifth Floor, Boston, MA 02110-1301 USA.
 The full GNU General Public License is included in this distribution in the
 file called "COPYING".
 
-Copyright(c) 2018 - 2022 Intel Corporation.
+Copyright(c) 2018 - 2023 Intel Corporation.
 
 
 Trademarks

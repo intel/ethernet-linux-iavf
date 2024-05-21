@@ -27,7 +27,7 @@ static const char iavf_driver_string[] =
 #define DRV_VERSION_MAJOR (4)
 #define DRV_VERSION_MINOR (5)
 #define DRV_VERSION_BUILD (3)
-#define DRV_VERSION "4.5.3"
+#define DRV_VERSION "4.5.3.4"
 const char iavf_driver_version[] = DRV_VERSION;
 static const char iavf_copyright[] =
 	"Copyright (c) 2013, Intel Corporation.";
@@ -2901,6 +2901,14 @@ static void iavf_watchdog_task(struct work_struct *work)
 	if (iavf_is_remove_in_progress(adapter))
 		return;
 
+	if (adapter->flags & IAVF_FLAG_UPDATE_NETDEV_FEATURES) {
+		if (rtnl_trylock()) {
+			netdev_update_features(adapter->netdev);
+			rtnl_unlock();
+			adapter->flags &= ~IAVF_FLAG_UPDATE_NETDEV_FEATURES;
+		}
+	}
+
 	if (test_and_set_bit(__IAVF_IN_CRITICAL_TASK, &adapter->crit_section))
 		goto restart_watchdog;
 
@@ -3352,6 +3360,7 @@ static void iavf_handle_hw_reset(struct iavf_adapter *adapter)
 	} else {
 		iavf_change_state(adapter, __IAVF_DOWN);
 		wake_up(&adapter->down_waitqueue);
+		wake_up(&adapter->reset_waitqueue);
 	}
 
 	adapter->flags &= ~IAVF_FLAG_REINIT_ITR_NEEDED;
@@ -3362,11 +3371,12 @@ static void iavf_handle_hw_reset(struct iavf_adapter *adapter)
 	return;
 reset_err:
 	if (running) {
-		iavf_change_state(adapter, __IAVF_RUNNING);
-		netdev->flags |= IFF_UP;
+		set_bit(__IAVF_VSI_DOWN, adapter->vsi.state);
+		iavf_free_traffic_irqs(adapter);
 	}
+	iavf_disable_vf(adapter);
+
 	dev_err(&adapter->pdev->dev, "failed to allocate resources during reinit\n");
-	iavf_close(netdev);
 }
 
 /**
@@ -3385,19 +3395,22 @@ static void iavf_adminq_task(struct work_struct *work)
 	u32 val, oldval;
 	u16 pending;
 
-	/* If the driver is in the process of being removed then return
-	 * immediately and don't re-enable the Admin Queue interrupt.
-	 */
-	if (iavf_is_remove_in_progress(adapter))
-		return;
+	if (!test_and_set_bit(__IAVF_IN_CRITICAL_TASK,
+			      &adapter->crit_section)) {
+		if (iavf_is_remove_in_progress(adapter))
+			return;
+
+		queue_work(iavf_wq, &adapter->adminq_task);
+		goto out;
+	}
 
 	if (adapter->flags & IAVF_FLAG_PF_COMMS_FAILED)
-		goto out;
+		goto unlock;
 
 	event.buf_len = IAVF_MAX_AQ_BUF_SIZE;
 	event.msg_buf = kzalloc(event.buf_len, GFP_KERNEL);
 	if (!event.msg_buf)
-		goto out;
+		goto unlock;
 
 	do {
 		ret = iavf_clean_arq_element(hw, &event, &pending);
@@ -3407,12 +3420,8 @@ static void iavf_adminq_task(struct work_struct *work)
 		if (ret || !v_op)
 			break; /* No event to process or error cleaning ARQ */
 
-		while (test_and_set_bit(__IAVF_IN_CRITICAL_TASK,
-					&adapter->crit_section))
-			usleep_range(500, 1000);
 		iavf_virtchnl_completion(adapter, v_op, v_ret, event.msg_buf,
 					 event.msg_len);
-		clear_bit(__IAVF_IN_CRITICAL_TASK, &adapter->crit_section);
 		if (pending != 0)
 			memset(event.msg_buf, 0, IAVF_MAX_AQ_BUF_SIZE);
 	} while (pending);
@@ -3461,6 +3470,8 @@ static void iavf_adminq_task(struct work_struct *work)
 
 freedom:
 	kfree(event.msg_buf);
+unlock:
+	clear_bit(__IAVF_IN_CRITICAL_TASK, &adapter->crit_section);
 out:
 	/* re-enable Admin queue interrupt cause */
 	iavf_misc_irq_enable(adapter);
@@ -4714,6 +4725,7 @@ static int iavf_change_mtu(struct net_device *netdev, int new_mtu)
 {
 	struct iavf_adapter *adapter = netdev_priv(netdev);
 	int max_frame = new_mtu + IAVF_PACKET_HDR_PAD;
+	int ret;
 
 	if ((new_mtu < 68) || (max_frame > IAVF_MAX_RXBUFFER))
 		return -EINVAL;
@@ -4744,7 +4756,23 @@ static int iavf_change_mtu(struct net_device *netdev, int new_mtu)
 	netdev->mtu = new_mtu;
 	iavf_schedule_reset(adapter);
 
-	return 0;
+	ret = wait_event_interruptible_timeout(adapter->reset_waitqueue,
+					       !iavf_is_reset_in_progress(adapter),
+					       msecs_to_jiffies(2500));
+
+	/* If ret < 0 then it means wait was interrupted.
+	 * If ret == 0 then it means we got a timeout while waiting
+	 * for reset to finish.
+	 * If ret > 0 it means reset has finished.
+	 */
+	if (!ret) {
+		netdev_warn(netdev, "changing MTU timeout waiting for reset");
+		ret = -EBUSY;
+	} else if (ret > 0) {
+		ret = 0;
+	}
+
+	return ret;
 }
 
 #ifdef NETIF_F_HW_VLAN_CTAG_RX
@@ -5529,6 +5557,9 @@ static int iavf_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 			   msecs_to_jiffies(5 * (pdev->devfn & 0x07)));
 	/* Setup the wait queue for indicating transition to down status */
 	init_waitqueue_head(&adapter->down_waitqueue);
+
+	/* Setup the wait queue for indicating transition to running state */
+	init_waitqueue_head(&adapter->reset_waitqueue);
 
 	init_waitqueue_head(&adapter->ptp.phc_time_waitqueue);
 	init_waitqueue_head(&adapter->ptp.gpio_waitqueue);
