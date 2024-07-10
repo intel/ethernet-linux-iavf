@@ -437,6 +437,10 @@ enum iavf_rx_desc_status_bits {
 	IAVF_RX_DESC_STATUS_LAST /* this entry must be last!!! */
 };
 
+#define IAVF_RX_FLEX_DESC_STATUS_ERR0_DD_BIT	BIT(0)
+#define IAVF_RX_FLEX_DESC_STATUS_ERR0_EOP_BIT	BIT(1)
+#define IAVF_RX_FLEX_DESC_STATUS_ERR0_RXE_BIT	BIT(10)
+
 #define IAVF_RXD_QW1_STATUS_SHIFT	0
 #define IAVF_RXD_QW1_STATUS_MASK	((BIT(IAVF_RX_DESC_STATUS_LAST) - 1) \
 					 << IAVF_RXD_QW1_STATUS_SHIFT)
@@ -555,7 +559,6 @@ enum iavf_rx_l2_ptype {
 };
 
 struct iavf_rx_ptype_decoded {
-	u32 ptype:10;
 	u32 known:1;
 	u32 outer_ip:1;
 	u32 outer_ip_ver:1;

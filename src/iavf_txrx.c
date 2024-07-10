@@ -7,6 +7,26 @@
 #include "iavf_trace.h"
 #include "iavf_prototype.h"
 
+/**
+ * iavf_is_descriptor_done - tests DD bit in Rx descriptor
+ * @rx_ring: the ring parameter to distinguish descriptor type (flex/legacy)
+ * @rx_desc: pointer to receive descriptor
+ *
+ * This function tests the descriptor done bit in specified descriptor. Because
+ * there are two types of descriptors (legacy and flex) the parameter rx_ring
+ * is used to distinguish.
+ */
+static bool iavf_is_descriptor_done(struct iavf_ring *rx_ring,
+				    union iavf_rx_desc *rx_desc)
+{
+	if (rx_ring->rxdid == VIRTCHNL_RXDID_1_32B_BASE)
+		return !!(rx_desc->wb.qword1.status_error_len &
+			  cpu_to_le64(BIT(IAVF_RX_DESC_STATUS_DD_SHIFT)));
+
+	return !!(rx_desc->flex_wb.status_error0 &
+		  cpu_to_le16(IAVF_RX_FLEX_DESC_STATUS_ERR0_DD_BIT));
+}
+
 static inline __le64 build_ctob(u32 td_cmd, u32 td_offset, unsigned int size,
 				u32 td_tag)
 {
@@ -1785,7 +1805,7 @@ static void iavf_put_rx_buffer(struct iavf_ring *rx_ring,
 /**
  * iavf_is_non_eop - process handling of non-EOP buffers
  * @rx_ring: Rx ring being processed
- * @rx_desc: Rx descriptor for current buffer
+ * @fields: Rx descriptor extracted fields
  * @skb: Current socket buffer containing buffer in progress
  *
  * This function updates next to clean.  If the buffer is an EOP buffer
@@ -1794,7 +1814,7 @@ static void iavf_put_rx_buffer(struct iavf_ring *rx_ring,
  * that this is in fact a non-EOP buffer.
  **/
 static bool iavf_is_non_eop(struct iavf_ring *rx_ring,
-			    union iavf_rx_desc *rx_desc,
+			    struct iavf_rx_extracted *fields,
 			    struct sk_buff *skb)
 {
 	u32 ntc = rx_ring->next_to_clean + 1;
@@ -1806,8 +1826,7 @@ static bool iavf_is_non_eop(struct iavf_ring *rx_ring,
 	prefetch(IAVF_RX_DESC(rx_ring, ntc));
 
 	/* if we are the last buffer then there is nothing else to do */
-#define IAVF_RXD_EOF BIT(IAVF_RX_DESC_STATUS_EOF_SHIFT)
-	if (likely(iavf_test_staterr(rx_desc, IAVF_RXD_EOF)))
+	if (likely(fields->end_of_packet))
 		return false;
 
 	rx_ring->rx_stats.non_eop_descs++;
@@ -1933,12 +1952,6 @@ static void iavf_chnl_rx_stats(struct iavf_ring *rx_ring, u64 pkts)
 	}
 }
 
-struct iavf_rx_extracted {
-	unsigned int size;
-	u16 vlan_tag;
-	u16 rx_ptype;
-};
-
 /**
  * iavf_extract_legacy_rx_fields - Extract fields from the Rx descriptor
  * @rx_ring: rx descriptor ring
@@ -1946,19 +1959,19 @@ struct iavf_rx_extracted {
  * @fields: storage for extracted values
  *
  * Decode the Rx descriptor and extract relevant information including the
- * size, VLAN tag, and Rx packet type.
+ * size, VLAN tag, Rx packet type, end of packet field and RXE field value.
  *
  * This function only operates on the VIRTCHNL_RXDID_1_32B_BASE legacy 32byte
  * descriptor writeback format.
  */
-static void
-iavf_extract_legacy_rx_fields(struct iavf_ring *rx_ring, union iavf_rx_desc *rx_desc,
-			      struct iavf_rx_extracted *fields)
+static void iavf_extract_legacy_rx_fields(struct iavf_ring *rx_ring,
+					  union iavf_rx_desc *rx_desc,
+					  struct iavf_rx_extracted *fields)
 {
 	u64 qword = le64_to_cpu(rx_desc->wb.qword1.status_error_len);
 
-	fields->size = (qword & IAVF_RXD_QW1_LENGTH_PBUF_MASK) >> IAVF_RXD_QW1_LENGTH_PBUF_SHIFT;
-	fields->rx_ptype = (qword & IAVF_RXD_QW1_PTYPE_MASK) >> IAVF_RXD_QW1_PTYPE_SHIFT;
+	fields->size = FIELD_GET(IAVF_RXD_QW1_LENGTH_PBUF_MASK, qword);
+	fields->rx_ptype = FIELD_GET(IAVF_RXD_QW1_PTYPE_MASK, qword);
 
 	if (qword & BIT(IAVF_RX_DESC_STATUS_L2TAG1P_SHIFT) &&
 	    rx_ring->flags & IAVF_TXRX_FLAGS_VLAN_TAG_LOC_L2TAG1)
@@ -1968,6 +1981,10 @@ iavf_extract_legacy_rx_fields(struct iavf_ring *rx_ring, union iavf_rx_desc *rx_
 	    cpu_to_le16(BIT(IAVF_RX_DESC_EXT_STATUS_L2TAG2P_SHIFT)) &&
 	    rx_ring->flags & IAVF_RXR_FLAGS_VLAN_TAG_LOC_L2TAG2_2)
 		fields->vlan_tag = le16_to_cpu(rx_desc->wb.qword2.l2tag2_2);
+
+	fields->end_of_packet = FIELD_GET(BIT(IAVF_RX_DESC_STATUS_EOF_SHIFT),
+					  qword);
+	fields->rxe = FIELD_GET(BIT(IAVF_RXD_QW1_ERROR_SHIFT), qword);
 }
 
 /**
@@ -1977,20 +1994,24 @@ iavf_extract_legacy_rx_fields(struct iavf_ring *rx_ring, union iavf_rx_desc *rx_
  * @fields: storage for extracted values
  *
  * Decode the Rx descriptor and extract relevant information including the
- * size, VLAN tag, and Rx packet type.
+ * size, VLAN tag, Rx packet type, end of packet field and RXE field value.
  *
  * This function only operates on the VIRTCHNL_RXDID_2_FLEX_SQ_NIC flexible
  * descriptor writeback format.
  */
-static void
-iavf_extract_flex_rx_fields(struct iavf_ring *rx_ring, union iavf_rx_desc *rx_desc,
-			    struct iavf_rx_extracted *fields)
+static void iavf_extract_flex_rx_fields(struct iavf_ring *rx_ring,
+					union iavf_rx_desc *rx_desc,
+					struct iavf_rx_extracted *fields)
 {
-	__le16 status0, status1;
+	__le16 status0, status1, flexi_flags0;
 
-	fields->size = le16_to_cpu(rx_desc->flex_wb.pkt_len) & IAVF_RX_FLEX_DESC_PKT_LEN_M;
-	fields->rx_ptype = le16_to_cpu(rx_desc->flex_wb.ptype_flexi_flags0) &
-		IAVF_RX_FLEX_DESC_PTYPE_M;
+	fields->size = FIELD_GET(IAVF_RX_FLEX_DESC_PKT_LEN_M,
+				 le16_to_cpu(rx_desc->flex_wb.pkt_len));
+
+	flexi_flags0 = rx_desc->flex_wb.ptype_flexi_flags0;
+
+	fields->rx_ptype = FIELD_GET(IAVF_RX_FLEX_DESC_PTYPE_M,
+				     le16_to_cpu(flexi_flags0));
 
 	status0 = rx_desc->flex_wb.status_error0;
 	if (status0 & cpu_to_le16(BIT(IAVF_RX_FLEX_DESC_STATUS0_L2TAG1P_S)) &&
@@ -2001,11 +2022,16 @@ iavf_extract_flex_rx_fields(struct iavf_ring *rx_ring, union iavf_rx_desc *rx_de
 	if (status1 & cpu_to_le16(BIT(IAVF_RX_FLEX_DESC_STATUS1_L2TAG2P_S)) &&
 	    rx_ring->flags & IAVF_RXR_FLAGS_VLAN_TAG_LOC_L2TAG2_2)
 		fields->vlan_tag = le16_to_cpu(rx_desc->flex_wb.l2tag2_2nd);
+
+	fields->end_of_packet = FIELD_GET(IAVF_RX_FLEX_DESC_STATUS_ERR0_EOP_BIT,
+					  le16_to_cpu(status0));
+	fields->rxe = FIELD_GET(IAVF_RX_FLEX_DESC_STATUS_ERR0_RXE_BIT,
+				le16_to_cpu(status0));
 }
 
-static void
-iavf_extract_rx_fields(struct iavf_ring *rx_ring, union iavf_rx_desc *rx_desc,
-		       struct iavf_rx_extracted *fields)
+static void iavf_extract_rx_fields(struct iavf_ring *rx_ring,
+				   union iavf_rx_desc *rx_desc,
+				   struct iavf_rx_extracted *fields)
 {
 	if (rx_ring->rxdid == VIRTCHNL_RXDID_1_32B_BASE)
 		iavf_extract_legacy_rx_fields(rx_ring, rx_desc, fields);
@@ -2060,8 +2086,11 @@ static int iavf_clean_rx_irq(struct iavf_ring *rx_ring, int budget)
 		 * verified the descriptor has been written back.
 		 */
 		dma_rmb();
-#define IAVF_RXD_DD BIT(IAVF_RX_DESC_STATUS_DD_SHIFT)
-		if (!iavf_test_staterr(rx_desc, IAVF_RXD_DD))
+
+		/* If DD field (descriptor done) is unset then other fields are
+		 * not valid
+		 */
+		if (!iavf_is_descriptor_done(rx_ring, rx_desc))
 			break;
 
 		size = (qword & IAVF_RXD_QW1_LENGTH_PBUF_MASK) >>
@@ -2093,15 +2122,14 @@ static int iavf_clean_rx_irq(struct iavf_ring *rx_ring, int budget)
 		iavf_put_rx_buffer(rx_ring, rx_buffer);
 		cleaned_count++;
 
-		if (iavf_is_non_eop(rx_ring, rx_desc, skb))
+		if (iavf_is_non_eop(rx_ring, &fields, skb))
 			continue;
 
-		/* ERR_MASK will only have valid bits if EOP set, and
-		 * what we are doing here is actually checking
-		 * IAVF_RX_DESC_ERROR_RXE_SHIFT, since it is the zeroth bit in
-		 * the error field
+		/* RXE field in descriptor is an indication of the MAC errors
+		 * (like CRC, alignment, oversize etc). If it is set then iavf
+		 * should finish.
 		 */
-		if (unlikely(iavf_test_staterr(rx_desc, BIT(IAVF_RXD_QW1_ERROR_SHIFT)))) {
+		if (unlikely(fields.rxe)) {
 			dev_kfree_skb_any(skb);
 			skb = NULL;
 			continue;

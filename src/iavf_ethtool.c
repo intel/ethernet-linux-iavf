@@ -846,15 +846,19 @@ static int iavf_set_priv_flags(struct net_device *netdev, u32 flags)
 
 	/* issue a reset to force legacy-rx change to take effect */
 	if (changed_flags & IAVF_FLAG_LEGACY_RX) {
-		if (netif_running(netdev))
-			iavf_schedule_reset(adapter);
+		if (netif_running(netdev)) {
+			iavf_schedule_reset(adapter, IAVF_FLAG_RESET_NEEDED);
+			ret = iavf_wait_for_reset(adapter);
+			if (ret)
+				netdev_warn(netdev, "Changing private flags timeout or interrupted waiting for reset");
+		}
 	}
 	/* Process any additional changes needed as a result of change
 	 * in channel specific flag(s)
 	 */
 	iavf_setup_ch_info(adapter, changed_chnl_flags);
 
-	return 0;
+	return ret;
 }
 #endif /* HAVE_SWIOTLB_SKIP_CPU_SYNC */
 #ifndef HAVE_NDO_SET_FEATURES
@@ -1057,14 +1061,10 @@ static int iavf_set_ringparam(struct net_device *netdev,
 {
 	struct iavf_adapter *adapter = netdev_priv(netdev);
 	u32 new_rx_count, new_tx_count;
+	int ret = 0;
 
 	if ((ring->rx_mini_pending) || (ring->rx_jumbo_pending))
 		return -EINVAL;
-
-	if ((adapter->state == __IAVF_RESETTING) ||
-	    ((adapter->state == __IAVF_RUNNING) &&
-	     (adapter->flags & IAVF_FLAG_QUEUES_DISABLED)))
-		return -EAGAIN;
 
 	if (ring->tx_pending > IAVF_MAX_TXD ||
 	    ring->tx_pending < IAVF_MIN_TXD ||
@@ -1105,10 +1105,14 @@ static int iavf_set_ringparam(struct net_device *netdev,
 		adapter->rx_desc_count = new_rx_count;
 	}
 
-	if (netif_running(netdev))
-		iavf_schedule_reset(adapter);
+	if (netif_running(netdev)) {
+		iavf_schedule_reset(adapter, IAVF_FLAG_RESET_NEEDED);
+		ret = iavf_wait_for_reset(adapter);
+		if (ret)
+			netdev_warn(netdev, "Changing ring parameters timeout or interrupted waiting for reset");
+	}
 
-	return 0;
+	return ret;
 }
 
 /**
@@ -1877,8 +1881,7 @@ static int iavf_add_fdir_ethtool(struct iavf_adapter *adapter, struct ethtool_rx
 	if (!fltr)
 		return -ENOMEM;
 
-	while (test_and_set_bit(__IAVF_IN_CRITICAL_TASK,
-				&adapter->crit_section)) {
+	while (!mutex_trylock(&adapter->crit_lock)) {
 		if (--count == 0) {
 			kfree(fltr);
 			return -EINVAL;
@@ -1903,7 +1906,7 @@ ret:
 	if (err && fltr)
 		kfree(fltr);
 
-	clear_bit(__IAVF_IN_CRITICAL_TASK, &adapter->crit_section);
+	mutex_unlock(&adapter->crit_lock);
 	return err;
 }
 
@@ -2088,8 +2091,7 @@ iavf_set_adv_rss_hash_opt(struct iavf_adapter *adapter,
 		return -EINVAL;
 	}
 
-	while (test_and_set_bit(__IAVF_IN_CRITICAL_TASK,
-				&adapter->crit_section)) {
+	while (!mutex_trylock(&adapter->crit_lock)) {
 		if (--count == 0) {
 			kfree(rss_new);
 			return -EINVAL;
@@ -2125,7 +2127,7 @@ iavf_set_adv_rss_hash_opt(struct iavf_adapter *adapter,
 	if (!err)
 		mod_delayed_work(adapter->wq, &adapter->watchdog_task, 0);
 
-	clear_bit(__IAVF_IN_CRITICAL_TASK, &adapter->crit_section);
+	mutex_unlock(&adapter->crit_lock);
 
 	if (!rss_new_add)
 		kfree(rss_new);
@@ -2309,8 +2311,7 @@ static int iavf_set_channels(struct net_device *netdev,
 	struct iavf_adapter *adapter = netdev_priv(netdev);
 	u32 num_req = ch->combined_count;
 	struct iavf_fdir_fltr *rule;
-	int err = 0;
-	int i;
+	int ret = 0;
 
 #ifdef __TC_MQPRIO_MODE_MAX
 	if (iavf_is_adq_enabled(adapter)) {
@@ -2335,35 +2336,26 @@ static int iavf_set_channels(struct net_device *netdev,
 	list_for_each_entry(rule, &adapter->fdir_list_head, list) {
 		if (rule->action == VIRTCHNL_ACTION_QUEUE &&
 		    rule->q_index >= num_req) {
-			err = -EINVAL;
+			ret = -EINVAL;
 			break;
 		}
 	}
 	spin_unlock_bh(&adapter->fdir_fltr_lock);
 
-	if (err) {
+	if (ret) {
 		netdev_err(netdev, "Cannot set channels, Flow Director filters are conflicting with new queue count\n");
-		return err;
+		return ret;
 	}
 
 	adapter->num_req_queues = num_req;
 	adapter->flags |= IAVF_FLAG_REINIT_ITR_NEEDED;
-	iavf_schedule_reset(adapter);
+	iavf_schedule_reset(adapter, IAVF_FLAG_RESET_NEEDED);
 
-	/* wait for the reset is done */
-	for (i = 0; i < IAVF_RESET_WAIT_COMPLETE_COUNT; i++) {
-		msleep(IAVF_RESET_WAIT_MS);
-		if (adapter->flags & IAVF_FLAG_RESET_PENDING)
-			continue;
-		break;
-	}
-	if (i == IAVF_RESET_WAIT_COMPLETE_COUNT) {
-		adapter->flags &= ~IAVF_FLAG_REINIT_ITR_NEEDED;
-		adapter->num_active_queues = num_req;
-		return -EOPNOTSUPP;
-	}
+	ret = iavf_wait_for_reset(adapter);
+	if (ret)
+		netdev_warn(netdev, "Changing channel count timeout or interrupted waiting for reset");
 
-	return 0;
+	return ret;
 }
 
 #endif /* ETHTOOL_GCHANNELS */
@@ -2395,6 +2387,32 @@ static u32 iavf_get_rxfh_indir_size(struct net_device *netdev)
 	return adapter->rss_lut_size;
 }
 
+#ifdef HAVE_ETHTOOL_RXFH_PARAM
+/**
+ * iavf_get_rxfh - get the rx flow hash indirection table
+ * @netdev: network interface device structure
+ * @rxfh: pointer to param struct (indir, key, hfunc)
+ *
+ * Reads the indirection table directly from the hardware. Always returns 0.
+ **/
+static int iavf_get_rxfh(struct net_device *netdev,
+			 struct ethtool_rxfh_param *rxfh)
+{
+	struct iavf_adapter *adapter = netdev_priv(netdev);
+	u16 i;
+
+	rxfh->hfunc = ETH_RSS_HASH_TOP;
+	if (rxfh->key)
+		memcpy(rxfh->key, adapter->rss_key, adapter->rss_key_size);
+
+	if (rxfh->indir)
+		/* Each 32 bits pointed by 'indir' is stored with a lut entry */
+		for (i = 0; i < adapter->rss_lut_size; i++)
+			rxfh->indir[i] = (u32)adapter->rss_lut[i];
+
+	return 0;
+}
+#else
 /**
  * iavf_get_rxfh - get the rx flow hash indirection table
  * @netdev: network interface device structure
@@ -2428,7 +2446,57 @@ static int iavf_get_rxfh(struct net_device *netdev, u32 *indir, u8 *key)
 
 	return 0;
 }
+#endif /* HAVE_ETHTOOL_RXFH_PARAM */
 
+#ifdef HAVE_ETHTOOL_RXFH_PARAM
+/**
+ * iavf_set_rxfh - set the rx flow hash indirection table
+ * @netdev: network interface device structure
+ * @rxfh: pointer to param struct (indir, key, hfunc)
+ * @extack: extended ACK from the Netlink message
+ *
+ * Returns -EINVAL if the table specifies an invalid queue id, otherwise
+ * returns 0 after programming the table.
+ **/
+static int iavf_set_rxfh(struct net_device *netdev,
+			 struct ethtool_rxfh_param *rxfh,
+			 struct netlink_ext_ack *extack)
+{
+	struct iavf_adapter *adapter = netdev_priv(netdev);
+	u16 i;
+
+#ifdef __TC_MQPRIO_MODE_MAX
+	if (iavf_is_adq_enabled(adapter)) {
+		dev_info(&adapter->pdev->dev,
+			 "Change in RSS params is not supported when ADQ is configured.\n");
+		return -EOPNOTSUPP;
+	}
+#endif /* __TC_MQPRIO_MODE_MAX */
+	/* Only support toeplitz hash function */
+	if (rxfh->hfunc != ETH_RSS_HASH_NO_CHANGE &&
+	    rxfh->hfunc != ETH_RSS_HASH_TOP)
+		return -EOPNOTSUPP;
+
+	if (!rxfh->key && !rxfh->indir)
+		return 0;
+
+	if (rxfh->key)
+		memcpy(adapter->rss_key, rxfh->key, adapter->rss_key_size);
+
+	if (rxfh->indir) {
+		/* Verify user input. */
+		for (i = 0; i < adapter->rss_lut_size; i++) {
+			if (rxfh->indir[i] >= adapter->num_active_queues)
+				return -EINVAL;
+		}
+		/* Each 32 bits pointed by 'indir' is stored with a lut entry */
+		for (i = 0; i < adapter->rss_lut_size; i++)
+			adapter->rss_lut[i] = (u8)(rxfh->indir[i]);
+	}
+
+	return iavf_config_rss(adapter);
+}
+#else
 /**
  * iavf_set_rxfh - set the rx flow hash indirection table
  * @netdev: network interface device structure
@@ -2491,6 +2559,7 @@ static int iavf_set_rxfh(struct net_device *netdev, const u32 *indir,
 	return iavf_config_rss(adapter);
 }
 #endif /* ETHTOOL_GRSSH && ETHTOOL_SRSSH */
+#endif /* HAVE_ETHTOOL_RXFH_PARAM */
 
 #ifdef HAVE_ETHTOOL_GET_TS_INFO
 #if IS_ENABLED(CONFIG_PTP_1588_CLOCK)

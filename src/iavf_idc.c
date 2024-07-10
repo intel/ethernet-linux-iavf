@@ -28,7 +28,7 @@ static bool iavf_idc_is_adapter_ready(struct iavf_adapter *adapter)
 		return false;
 	}
 
-	if (iavf_is_remove_in_progress(adapter)) {
+	if (test_bit(__IAVF_IN_REMOVE_TASK, &adapter->crit_section)) {
 		dev_dbg(&adapter->pdev->dev, "Adapter is being removed, preventing IDC communication\n");
 		return false;
 	}
@@ -147,7 +147,7 @@ iavf_idc_request_reset(struct iidc_core_dev_info *cdev_info,
 	if (!iavf_idc_is_adapter_ready(adapter))
 		return -ENODEV;
 
-	iavf_schedule_reset(adapter);
+	iavf_schedule_reset(adapter, IAVF_FLAG_RESET_NEEDED);
 
 	return 0;
 }
@@ -654,9 +654,6 @@ void iavf_idc_init_task(struct work_struct *work)
 	struct iavf_adapter *adapter = rdma->back;
 	int err;
 
-	/* make sure any de-init work is done before init */
-	cancel_delayed_work_sync(&adapter->rdma.deinit_task);
-
 	err = iavf_idc_init_aux_device(adapter);
 	if (err)
 		dev_err(&adapter->pdev->dev, "failed to initialize IDC: %d\n",
@@ -694,46 +691,16 @@ static bool iavf_rdma_op_match(enum virtchnl_ops pending_op)
 }
 
 /**
- * iavf_idc_deinit_task - delayed worker to remove RDMA through aux/IDC
- * @work: pointer to work_struct
- */
-void iavf_idc_deinit_task(struct work_struct *work)
-{
-	struct iavf_rdma *rdma = container_of(work, struct iavf_rdma,
-					      deinit_task.work);
-	struct iavf_adapter *adapter = rdma->back;
-
-	/* make sure any init work is done before deinit */
-	cancel_delayed_work_sync(&adapter->rdma.init_task);
-
-	iavf_idc_deinit_aux_device(adapter);
-
-	up(&adapter->rdma.init_deinit_done);
-}
-
-/**
  * iavf_idc_deinit - Called to de-initialize IDC
  * @adapter: driver private data structure
- * @sync: call the deinit in the caller's task context
  */
-void iavf_idc_deinit(struct iavf_adapter *adapter, bool sync)
+void iavf_idc_deinit(struct iavf_adapter *adapter)
 {
-	/* Reset may be called in an early state where vf_res is not set */
-	if (adapter->state < __IAVF_INIT_CONFIG_ADAPTER ||
-	    adapter->state == __IAVF_INIT_FAILED ||
-	    adapter->state == __IAVF_COMM_FAILED)
-		return;
-
-	if (!RDMA_ALLOWED(adapter) || !adapter->rdma.cdev_info)
+	if (!adapter->rdma.cdev_info)
 		return;
 
 	/* don't leave pending opeartions on deinit */
 	iavf_flush_vc_msg_queue(adapter, iavf_rdma_op_match);
 
-	if (sync) {
-		iavf_idc_deinit_aux_device(adapter);
-	} else {
-		schedule_delayed_work(&adapter->rdma.deinit_task, 0);
-		down(&adapter->rdma.init_deinit_done);
-	}
+	iavf_idc_deinit_aux_device(adapter);
 }
