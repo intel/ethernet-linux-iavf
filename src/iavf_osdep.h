@@ -34,7 +34,12 @@ static inline void writeq(__u64 val, volatile void __iomem *addr)
 	writel(val >> 32, addr + 4);
 }
 #endif
+
 #include "kcompat.h"
+
+#ifdef HAVE_INCLUDE_BITFIELD
+#include <linux/bitfield.h>
+#endif /* HAVE_INCLUDE_BITFIELD */
 
 /* File to be the magic between shared code and
  * actual OS primitives

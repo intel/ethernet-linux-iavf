@@ -104,6 +104,7 @@ struct iavf_vsi {
 	(&(((struct iavf_tx_context_desc *)((R)->desc))[i]))
 
 #define IAVF_MAX_REQ_QUEUES 256
+#define IAVF_MIN_ALLOC_QUEUES	4
 
 #define IAVF_START_CHNL_TC	1
 
@@ -112,9 +113,9 @@ struct iavf_vsi {
 #define IAVF_MBPS_DIVISOR	125000 /* divisor to convert to Mbps */
 #define IAVF_MBPS_QUANTA	50
 
-#define IAVF_VIRTCHNL_VF_RESOURCE_SIZE	(sizeof(struct virtchnl_vf_resource) + \
-					 (IAVF_MAX_VF_VSI * \
-					 sizeof(struct virtchnl_vsi_resource)))
+#define IAVF_VIRTCHNL_VF_RESOURCE_SIZE					\
+	virtchnl_ss_vf_resource((struct virtchnl_vf_resource *)NULL,	\
+			     vsi_res, IAVF_MAX_VF_VSI)
 
 #define IAVF_NETIF_F_HW_VLAN_BITS
 #ifdef NETIF_F_HW_VLAN_CTAG_RX
@@ -501,6 +502,9 @@ struct iavf_cloud_filter {
 #define IAVF_RESET_WAIT_DETECTED_COUNT	500
 #define IAVF_RESET_WAIT_COMPLETE_COUNT	2000
 
+#define IAVF_POLL_WAIT_MS 10
+#define IAVF_POLL_WAIT_COUNT	10
+
 /* structure used for the virtchnl message queue */
 struct iavf_vc_msg {
 	struct list_head list;
@@ -581,7 +585,8 @@ struct iavf_adapter {
 #define IAVF_FLAG_QUEUES_DISABLED		BIT(18)
 #define IAVF_FLAG_SETUP_NETDEV_FEATURES		BIT(19)
 #define IAVF_FLAG_REINIT_MSIX_NEEDED		BIT(20)
-#define IAVF_FLAG_REINIT_CHNL_NEEDED		BIT(21)
+#define IAVF_FLAG_FDIR_ENABLED			BIT(21)
+#define IAVF_FLAG_REINIT_CHNL_NEEDED		BIT(22)
 
 
 	u32 chnl_perf_flags;

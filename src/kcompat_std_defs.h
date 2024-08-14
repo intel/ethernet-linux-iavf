@@ -190,7 +190,6 @@
 /*****************************************************************************/
 #if (LINUX_VERSION_CODE < KERNEL_VERSION(5,10,0))
 #define NEED_DEVLINK_FLASH_UPDATE_TIMEOUT_NOTIFY
-#define NEED_XSK_BUFF_DMA_SYNC_FOR_CPU
 #define NEED_XSK_BUFF_POOL_RENAME
 #else /* >= 5.10.0 */
 #define HAVE_UDP_TUNNEL_NIC_SHARED
@@ -214,15 +213,6 @@
 
 /*****************************************************************************/
 #if (LINUX_VERSION_CODE < KERNEL_VERSION(5,13,0))
-/* HAVE_KOBJ_IN_MDEV_PARENT_OPS_CREATE
- *
- * create api changed as part of the commit c2ef2f50ad0c( vfio/mdev: Remove
- * kobj from mdev_parent_ops->create())
- *
- * if flag is defined use the old API else new API
- */
-#define HAVE_KOBJ_IN_MDEV_PARENT_OPS_CREATE
-#define HAVE_DEV_IN_MDEV_API
 #else /* >= 5.13.0 */
 #define HAVE_XPS_MAP_TYPE
 #endif /* 5.13.0 */

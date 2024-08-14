@@ -90,6 +90,7 @@ function gen-devlink() {
 	gen HAVE_DEVLINK_INFO_DRIVER_NAME_PUT if fun devlink_info_driver_name_put in "$dh"
 	gen HAVE_DEVLINK_PARAMS if method validate of devlink_param matches extack in "$dh"
 	gen HAVE_DEVLINK_PARAMS_PUBLISH if fun devlink_params_publish in "$dh"
+	gen HAVE_DEVLINK_PARAMS_SET_EXTACK if method set of devlink_param matches extack in "$dh"
 	gen HAVE_DEVLINK_PORT_NEW if method port_new of devlink_ops in "$dh"
 	gen HAVE_DEVLINK_PORT_OPS if struct devlink_port_ops in "$dh"
 	gen HAVE_DEVLINK_PORT_SPLIT if method port_split of devlink_ops in "$dh"
@@ -133,6 +134,7 @@ function gen-dpll() {
 	dh='include/linux/dpll.h'
 	gen HAVE_DPLL_LOCK_STATUS_ERROR if method lock_status_get of dpll_device_ops matches status_error in "$dh"
 	gen HAVE_DPLL_PHASE_OFFSET if method phase_offset_get of dpll_pin_ops in "$dh"
+	gen NEED_DPLL_NETDEV_PIN_SET if fun dpll_netdev_pin_set absent in "$dh"
 }
 
 function gen-ethtool() {
@@ -144,6 +146,8 @@ function gen-ethtool() {
 	gen HAVE_ETHTOOL_RXFH_PARAM if struct ethtool_rxfh_param in "$eth"
 	gen NEED_ETHTOOL_SPRINTF if fun ethtool_sprintf absent in "$eth"
 	gen HAVE_ETHTOOL_FLOW_RSS if macro FLOW_RSS in "$ueth"
+	gen HAVE_ETHTOOL_LINK_MODE_FEC_NONE_BIT if enum ethtool_link_mode_bit_indices matches ETHTOOL_LINK_MODE_FEC_NONE_BIT in "$ueth"
+	gen NEED_ETHTOOL_LINK_MODE_BIT_INDICES if enum ethtool_link_mode_bit_indices absent in "$ueth"
 }
 
 function gen-filter() {
@@ -179,6 +183,13 @@ function gen-gnss() {
 	fi
 
 	gen HAVE_POLL_T if typedef __poll_t in "$th"
+}
+
+function gen-mdev() {
+	mdevh='include/linux/mdev.h'
+
+	gen HAVE_DEV_IN_MDEV_API if method probe of mdev_driver matches 'struct device \\*' in "$mdevh"
+	gen HAVE_KOBJ_IN_MDEV_PARENT_OPS_CREATE if method create of mdev_parent_ops matches 'struct kobject \\*' in "$mdevh"
 }
 
 function gen-netdevice() {
@@ -264,6 +275,18 @@ function gen-other() {
 	gen NEED_UPPER_16_BITS if macro upper_16_bits absent in include/linux/kernel.h
 	gen NEED_LIST_COUNT_NODES if fun list_count_nodes absent in include/linux/list.h
 
+	# aarch64 requires additional function to enable cross timestamping
+	if config_has CONFIG_ARM64; then
+		PTP_CROSS_TSTAMP_FUNC="$(find-fun-decl arch_timer_wrap_counter include/clocksource/arm_arch_timer.h)"
+		HAVE_CROSS_TSTAMP="${PTP_CROSS_TSTAMP_FUNC:+1}"
+	elif config_has CONFIG_X86; then
+		PTP_CROSS_TSTAMP_FUNC="$(find-fun-decl convert_art_ns_to_tsc arch/x86/include/asm/tsc.h)"
+		HAVE_CROSS_TSTAMP="${PTP_CROSS_TSTAMP_FUNC:+1}"
+	else
+		HAVE_CROSS_TSTAMP=-1
+	fi
+	gen HAVE_PTP_CROSSTIMESTAMP if string "${HAVE_CROSS_TSTAMP}" equals 1
+
 	# On aarch64 RHEL systems, mul_u64_u64_div_u64 appears to be declared
 	# in math64 header, but is not provided by kernel
 	# so on these systems, set it to need anyway.
@@ -287,7 +310,12 @@ function gen-other() {
 	gen NEED_DIFF_BY_SCALED_PPM if fun diff_by_scaled_ppm absent in include/linux/ptp_clock_kernel.h
 	gen NEED_PTP_SYSTEM_TIMESTAMP if fun ptp_read_system_prets absent in include/linux/ptp_clock_kernel.h
 	gen NEED_RADIX_TREE_EMPTY if fun radix_tree_empty absent in include/linux/radix-tree.h
+	gen NEED_SCHED_PARAM if struct sched_param absent in include/linux/sched.h
+	gen NEED_SET_SCHED_FIFO if fun sched_set_fifo absent in include/linux/sched.h
+	gen NEED_RT_H if macro MAX_RT_PRIO absent in include/linux/sched/prio.h
+	gen HAVE_SKB_CSUM_IS_SCTP if fun skb_csum_is_sctp in include/linux/skbuff.h
 	gen NEED_DEV_PAGE_IS_REUSABLE if fun dev_page_is_reusable absent in include/linux/skbuff.h
+	gen NEED_NAPI_ALLOC_SKB if fun __napi_alloc_skb in include/linux/skbuff.h
 	gen NEED_NAPI_BUILD_SKB if fun napi_build_skb absent in include/linux/skbuff.h
 	gen NEED_KREALLOC_ARRAY if fun krealloc_array absent in include/linux/slab.h
 	gen NEED_SYSFS_MATCH_STRING if macro sysfs_match_string absent in include/linux/string.h
@@ -298,6 +326,10 @@ function gen-other() {
 	gen HAVE_U64_STATS_FETCH_RETRY_IRQ if fun u64_stats_fetch_retry_irq in "$ush"
 	gen NEED_U64_STATS_READ if fun u64_stats_read absent in "$ush"
 	gen NEED_U64_STATS_SET if fun u64_stats_set absent in "$ush"
+	gen HAVE_XARRAY_API if struct xarray in include/linux/xarray.h
+	gen HAVE_NET_RPS_H if macro RPS_NO_FILTER in include/net/rps.h
+	gen NEED_XSK_BUFF_DMA_SYNC_FOR_CPU_NO_POOL if fun xsk_buff_dma_sync_for_cpu matches 'struct xsk_buff_pool' in include/net/xdp_sock_drv.h
+	gen HAVE_ASSIGN_STR_2_PARAMS if macro __assign_str matches src in include/trace/stages/stage6_event_callback.h include/trace/trace_events.h include/trace/ftrace.h
 }
 
 # all the generations, extracted from main() to keep normal code and various
@@ -320,6 +352,7 @@ function gen-all() {
 	gen-filter
 	gen-flow-dissector
 	gen-gnss
+	gen-mdev
 	gen-pci
 	gen-stddef
 	gen-vfio
@@ -327,6 +360,27 @@ function gen-all() {
 }
 
 function main() {
+	if ! [ -d "${KSRC-}" ]; then
+		echo >&2 "env KSRC=${KSRC-} does not exist or is not a directory"
+		exit 11
+	fi
+
+	# we need some flags from .config or (autoconf.h), try to find it
+	if [ -z ${CONFIG_FILE-} ]; then
+		find_config_file
+
+		if [ -z ${CONFIG_FILE-} ]; then
+			echo >&2 "unable to locate a config file at KSRC=${KSRC}. please set CONFIG_FILE to the kernel configuration file."
+			exit 10
+		fi
+	fi
+
+	if [ ! -f "${CONFIG_FILE-}" ]; then
+		echo >&2 ".config passed in by env CONFIG_FILE=${CONFIG_FILE} does not exist or is not a file"
+		exit 9
+	fi
+	CONFIG_FILE=$(realpath "${CONFIG_FILE-}")
+
 	# check if caller (like our makefile) wants to redirect output to file
 	if [ -n "${OUT-}" ]; then
 
@@ -344,9 +398,8 @@ function main() {
 		# all stdout goes to OUT since now
 		echo "/* Autogenerated for KSRC=${KSRC-} via $(basename "$0") */"
 	fi
-	if [ -d "${KSRC-}" ]; then
-		cd "${KSRC}"
-	fi
+
+	cd "${KSRC}"
 
 	# check if KSRC was ok/if we are in proper place to look for headers
 	if [ -z "$(filter-out-bad-files include/linux/kernel.h)" ]; then
@@ -354,13 +407,6 @@ function main() {
 			pwd=$(pwd); ls -l:"
 		ls -l >&2
 		exit 8
-	fi
-
-	# we need some flags from .config or (autoconf.h), required
-	if [ ! -f "${CONFFILE-}" ]; then
-		echo >&2 ".config should be passed as env CONFFILE
-			(and it's not set or not a file)"
-		exit 9
 	fi
 
 	if [ -z ${UNIFDEF_MODE-} ]; then

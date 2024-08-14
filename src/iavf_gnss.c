@@ -755,9 +755,9 @@ void iavf_gnss_init(struct iavf_adapter *adapter)
 		return;
 	}
 
-	if (WARN_ON(adapter->gnss.initialized)) {
-		dev_err(dev, "GNSS functionality was already initialized!\n");
-		return;
+	if (adapter->gnss.initialized) {
+		dev_dbg(dev, "Reset GNSS functionality.\n");
+		iavf_gnss_exit(adapter);
 	}
 
 	init_waitqueue_head(&adapter->gnss.i2c_read_waitqueue);

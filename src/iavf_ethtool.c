@@ -1469,8 +1469,7 @@ iavf_parse_rx_flow_user_data(struct ethtool_rx_flow_spec *fsp,
 #define IAVF_USERDEF_FLEX_MAX_OFFS_VAL 504
 		flex = &fltr->flex_words[cnt++];
 		flex->word = value & IAVF_USERDEF_FLEX_WORD_M;
-		flex->offset = (value & IAVF_USERDEF_FLEX_OFFS_M) >>
-			     IAVF_USERDEF_FLEX_OFFS_S;
+		flex->offset = FIELD_GET(IAVF_USERDEF_FLEX_OFFS_M, value);
 		if (flex->offset > IAVF_USERDEF_FLEX_MAX_OFFS_VAL)
 			return -EINVAL;
 	}
@@ -1513,7 +1512,7 @@ iavf_get_ethtool_fdir_entry(struct iavf_adapter *adapter,
 	struct iavf_fdir_fltr *rule = NULL;
 	int ret = 0;
 
-	if (!FDIR_FLTR_SUPPORT(adapter))
+	if (!(adapter->flags & IAVF_FLAG_FDIR_ENABLED))
 		return -EOPNOTSUPP;
 
 	spin_lock_bh(&adapter->fdir_fltr_lock);
@@ -1657,7 +1656,7 @@ iavf_get_fdir_fltr_ids(struct iavf_adapter *adapter, struct ethtool_rxnfc *cmd,
 	unsigned int cnt = 0;
 	int val = 0;
 
-	if (!FDIR_FLTR_SUPPORT(adapter))
+	if (!(adapter->flags & IAVF_FLAG_FDIR_ENABLED))
 		return -EOPNOTSUPP;
 
 	cmd->data = IAVF_MAX_FDIR_FILTERS;
@@ -1855,7 +1854,7 @@ static int iavf_add_fdir_ethtool(struct iavf_adapter *adapter, struct ethtool_rx
 	int count = 50;
 	int err;
 
-	if (!FDIR_FLTR_SUPPORT(adapter))
+	if (!(adapter->flags & IAVF_FLAG_FDIR_ENABLED))
 		return -EOPNOTSUPP;
 
 	if (fsp->flow_type & FLOW_MAC_EXT)
@@ -1896,12 +1895,16 @@ static int iavf_add_fdir_ethtool(struct iavf_adapter *adapter, struct ethtool_rx
 	spin_lock_bh(&adapter->fdir_fltr_lock);
 	iavf_fdir_list_add_fltr(adapter, fltr);
 	adapter->fdir_active_fltr++;
-	fltr->state = IAVF_FDIR_FLTR_ADD_REQUEST;
-	adapter->aq_required |= IAVF_FLAG_AQ_ADD_FDIR_FILTER;
+	if (adapter->link_up) {
+		fltr->state = IAVF_FDIR_FLTR_ADD_REQUEST;
+		adapter->aq_required |= IAVF_FLAG_AQ_ADD_FDIR_FILTER;
+	} else {
+		fltr->state = IAVF_FDIR_FLTR_INACTIVE;
+	}
 	spin_unlock_bh(&adapter->fdir_fltr_lock);
 
-	mod_delayed_work(adapter->wq, &adapter->watchdog_task, 0);
-
+	if (adapter->link_up)
+		mod_delayed_work(adapter->wq, &adapter->watchdog_task, 0);
 ret:
 	if (err && fltr)
 		kfree(fltr);
@@ -1923,7 +1926,7 @@ static int iavf_del_fdir_ethtool(struct iavf_adapter *adapter, struct ethtool_rx
 	struct iavf_fdir_fltr *fltr = NULL;
 	int err = 0;
 
-	if (!FDIR_FLTR_SUPPORT(adapter))
+	if (!(adapter->flags & IAVF_FLAG_FDIR_ENABLED))
 		return -EOPNOTSUPP;
 
 	spin_lock_bh(&adapter->fdir_fltr_lock);
@@ -1932,6 +1935,11 @@ static int iavf_del_fdir_ethtool(struct iavf_adapter *adapter, struct ethtool_rx
 		if (fltr->state == IAVF_FDIR_FLTR_ACTIVE) {
 			fltr->state = IAVF_FDIR_FLTR_DEL_REQUEST;
 			adapter->aq_required |= IAVF_FLAG_AQ_DEL_FDIR_FILTER;
+		} else if (fltr->state == IAVF_FDIR_FLTR_INACTIVE) {
+			list_del(&fltr->list);
+			kfree(fltr);
+			adapter->fdir_active_fltr--;
+			fltr = NULL;
 		} else {
 			err = -EBUSY;
 		}
@@ -2244,7 +2252,7 @@ static int iavf_get_rxnfc(struct net_device *netdev, struct ethtool_rxnfc *cmd,
 		ret = 0;
 		break;
 	case ETHTOOL_GRXCLSRLCNT:
-		if (!FDIR_FLTR_SUPPORT(adapter))
+		if (!(adapter->flags & IAVF_FLAG_FDIR_ENABLED))
 			break;
 		spin_lock_bh(&adapter->fdir_fltr_lock);
 		cmd->rule_cnt = adapter->fdir_active_fltr;
@@ -2351,6 +2359,10 @@ static int iavf_set_channels(struct net_device *netdev,
 	adapter->flags |= IAVF_FLAG_REINIT_ITR_NEEDED;
 	iavf_schedule_reset(adapter, IAVF_FLAG_RESET_NEEDED);
 
+	/* Don't wait for reset, will always timeout since we are holding RTNL */
+	if (RDMA_ALLOWED(adapter))
+		return 0;
+
 	ret = iavf_wait_for_reset(adapter);
 	if (ret)
 		netdev_warn(netdev, "Changing channel count timeout or interrupted waiting for reset");
@@ -2387,7 +2399,8 @@ static u32 iavf_get_rxfh_indir_size(struct net_device *netdev)
 	return adapter->rss_lut_size;
 }
 
-#ifdef HAVE_ETHTOOL_RXFH_PARAM
+#ifdef HAVE_RXFH_HASHFUNC
+#if defined(HAVE_ETHTOOL_RXFH_PARAM)
 /**
  * iavf_get_rxfh - get the rx flow hash indirection table
  * @netdev: network interface device structure
@@ -2397,58 +2410,51 @@ static u32 iavf_get_rxfh_indir_size(struct net_device *netdev)
  **/
 static int iavf_get_rxfh(struct net_device *netdev,
 			 struct ethtool_rxfh_param *rxfh)
+#else
+static int iavf_get_rxfh(struct net_device *netdev, u32 *indir, u8 *key,
+			 u8 *hfunc)
+#endif /* HAVE_ETHTOOL_RXFH_PARAM */
+#else
+static int iavf_get_rxfh(struct net_device *netdev, u32 *indir, u8 *key)
+#endif /* HAVE_RXFH_HASHFUNC */
 {
 	struct iavf_adapter *adapter = netdev_priv(netdev);
 	u16 i;
 
+#ifdef HAVE_RXFH_HASHFUNC
+#if defined(HAVE_ETHTOOL_RXFH_PARAM)
 	rxfh->hfunc = ETH_RSS_HASH_TOP;
+#else
+	if (hfunc)
+		*hfunc = ETH_RSS_HASH_TOP;
+#endif /* HAVE_ETHTOOL_RXFH_PARAM */
+#endif /* HAVE_RXFH_HASHFUNC */
+
+#if defined(HAVE_ETHTOOL_RXFH_PARAM)
 	if (rxfh->key)
 		memcpy(rxfh->key, adapter->rss_key, adapter->rss_key_size);
+#else
+	if (key)
+		memcpy(key, adapter->rss_key, adapter->rss_key_size);
+#endif /* HAVE_ETHTOOL_RXFH_PARAM */
 
+#if defined(HAVE_ETHTOOL_RXFH_PARAM)
 	if (rxfh->indir)
 		/* Each 32 bits pointed by 'indir' is stored with a lut entry */
 		for (i = 0; i < adapter->rss_lut_size; i++)
 			rxfh->indir[i] = (u32)adapter->rss_lut[i];
-
-	return 0;
-}
 #else
-/**
- * iavf_get_rxfh - get the rx flow hash indirection table
- * @netdev: network interface device structure
- * @indir: indirection table
- * @key: hash key
- * @hfunc: hash function in use
- *
- * Reads the indirection table directly from the hardware. Always returns 0.
- **/
-#ifdef HAVE_RXFH_HASHFUNC
-static int iavf_get_rxfh(struct net_device *netdev, u32 *indir, u8 *key,
-			 u8 *hfunc)
-#else
-static int iavf_get_rxfh(struct net_device *netdev, u32 *indir, u8 *key)
-#endif
-{
-	struct iavf_adapter *adapter = netdev_priv(netdev);
-	u16 i;
-
-#ifdef HAVE_RXFH_HASHFUNC
-	if (hfunc)
-		*hfunc = ETH_RSS_HASH_TOP;
-#endif
-	if (key)
-		memcpy(key, adapter->rss_key, adapter->rss_key_size);
-
 	if (indir)
 		/* Each 32 bits pointed by 'indir' is stored with a lut entry */
 		for (i = 0; i < adapter->rss_lut_size; i++)
 			indir[i] = (u32)adapter->rss_lut[i];
+#endif /* HAVE_ETHTOOL_RXFH_PARAM */
 
 	return 0;
 }
-#endif /* HAVE_ETHTOOL_RXFH_PARAM */
 
-#ifdef HAVE_ETHTOOL_RXFH_PARAM
+#ifdef HAVE_RXFH_HASHFUNC
+#if defined(HAVE_ETHTOOL_RXFH_PARAM)
 /**
  * iavf_set_rxfh - set the rx flow hash indirection table
  * @netdev: network interface device structure
@@ -2461,62 +2467,15 @@ static int iavf_get_rxfh(struct net_device *netdev, u32 *indir, u8 *key)
 static int iavf_set_rxfh(struct net_device *netdev,
 			 struct ethtool_rxfh_param *rxfh,
 			 struct netlink_ext_ack *extack)
-{
-	struct iavf_adapter *adapter = netdev_priv(netdev);
-	u16 i;
-
-#ifdef __TC_MQPRIO_MODE_MAX
-	if (iavf_is_adq_enabled(adapter)) {
-		dev_info(&adapter->pdev->dev,
-			 "Change in RSS params is not supported when ADQ is configured.\n");
-		return -EOPNOTSUPP;
-	}
-#endif /* __TC_MQPRIO_MODE_MAX */
-	/* Only support toeplitz hash function */
-	if (rxfh->hfunc != ETH_RSS_HASH_NO_CHANGE &&
-	    rxfh->hfunc != ETH_RSS_HASH_TOP)
-		return -EOPNOTSUPP;
-
-	if (!rxfh->key && !rxfh->indir)
-		return 0;
-
-	if (rxfh->key)
-		memcpy(adapter->rss_key, rxfh->key, adapter->rss_key_size);
-
-	if (rxfh->indir) {
-		/* Verify user input. */
-		for (i = 0; i < adapter->rss_lut_size; i++) {
-			if (rxfh->indir[i] >= adapter->num_active_queues)
-				return -EINVAL;
-		}
-		/* Each 32 bits pointed by 'indir' is stored with a lut entry */
-		for (i = 0; i < adapter->rss_lut_size; i++)
-			adapter->rss_lut[i] = (u8)(rxfh->indir[i]);
-	}
-
-	return iavf_config_rss(adapter);
-}
 #else
-/**
- * iavf_set_rxfh - set the rx flow hash indirection table
- * @netdev: network interface device structure
- * @indir: indirection table
- * @key: hash key
- * @hfunc: hash function to use
- *
- * Returns -EINVAL if the table specifies an invalid queue id, otherwise
- * returns 0 after programming the table.
- **/
-#ifdef HAVE_RXFH_HASHFUNC
 static int iavf_set_rxfh(struct net_device *netdev, const u32 *indir,
 			 const u8 *key, const u8 hfunc)
-#else
-#ifdef HAVE_RXFH_NONCONST
+#endif /* HAVE_ETHTOOL_RXFH_PARAM */
+#elif defined(HAVE_RXFH_NONCONST)
 static int iavf_set_rxfh(struct net_device *netdev, u32 *indir, u8 *key)
 #else
 static int iavf_set_rxfh(struct net_device *netdev, const u32 *indir,
 			 const u8 *key)
-#endif /* HAVE_RXFH_NONCONST */
 #endif /* HAVE_RXFH_HASHFUNC */
 {
 	struct iavf_adapter *adapter = netdev_priv(netdev);
@@ -2530,36 +2489,60 @@ static int iavf_set_rxfh(struct net_device *netdev, const u32 *indir,
 	}
 #endif /* __TC_MQPRIO_MODE_MAX */
 
-#ifdef HAVE_RXFH_HASHFUNC
 	/* Only support toeplitz hash function */
+#ifdef HAVE_RXFH_HASHFUNC
+#if defined(HAVE_ETHTOOL_RXFH_PARAM)
+	if (rxfh->hfunc != ETH_RSS_HASH_NO_CHANGE &&
+	    rxfh->hfunc != ETH_RSS_HASH_TOP)
+		return -EOPNOTSUPP;
+#else
 	if (hfunc != ETH_RSS_HASH_NO_CHANGE && hfunc != ETH_RSS_HASH_TOP)
 		return -EOPNOTSUPP;
-#endif
+#endif /* HAVE_ETHTOOL_RXFH_PARAM */
+#endif /* HAVE_RXFH_HASHFUNC */
 
-	if (indir) {
-		/* Verify user input. */
-		for (i = 0; i < adapter->rss_lut_size; i++) {
-			if (indir[i] >= adapter->num_active_queues)
-				return -EINVAL;
-		}
-	}
-
+#if defined(HAVE_ETHTOOL_RXFH_PARAM)
+	if (!rxfh->key && !rxfh->indir)
+		return 0;
+#else
 	if (!key && !indir)
 		return 0;
+#endif /* HAVE_ETHTOOL_RXFH_PARAM */
 
+#if defined(HAVE_ETHTOOL_RXFH_PARAM)
+	if (rxfh->key)
+		memcpy(adapter->rss_key, rxfh->key, adapter->rss_key_size);
+#else
 	if (key)
 		memcpy(adapter->rss_key, key, adapter->rss_key_size);
+#endif /* HAVE_ETHTOOL_RXFH_PARAM */
 
+#if defined(HAVE_ETHTOOL_RXFH_PARAM)
+	if (rxfh->indir) {
+#else
 	if (indir) {
+#endif /* HAVE_ETHTOOL_RXFH_PARAM */
+		/* Verify user input. */
+		for (i = 0; i < adapter->rss_lut_size; i++)
+#if defined(HAVE_ETHTOOL_RXFH_PARAM)
+			if (rxfh->indir[i] >= adapter->num_active_queues)
+#else
+			if (indir[i] >= adapter->num_active_queues)
+#endif /* HAVE_ETHTOOL_RXFH_PARAM */
+				return -EINVAL;
 		/* Each 32 bits pointed by 'indir' is stored with a lut entry */
 		for (i = 0; i < adapter->rss_lut_size; i++)
+#if defined(HAVE_ETHTOOL_RXFH_PARAM)
+			adapter->rss_lut[i] = (u8)(rxfh->indir[i]);
+#else
 			adapter->rss_lut[i] = (u8)(indir[i]);
+#endif /* HAVE_ETHTOOL_RXFH_PARAM */
 	}
 
 	return iavf_config_rss(adapter);
 }
+
 #endif /* ETHTOOL_GRSSH && ETHTOOL_SRSSH */
-#endif /* HAVE_ETHTOOL_RXFH_PARAM */
 
 #ifdef HAVE_ETHTOOL_GET_TS_INFO
 #if IS_ENABLED(CONFIG_PTP_1588_CLOCK)

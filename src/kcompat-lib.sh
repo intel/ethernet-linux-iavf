@@ -356,7 +356,7 @@ function gen() {
 # return 0 if given flag is enabled, 1 otherwise
 # inputs:
 # $1 - flag to check (whole word, without _MODULE suffix)
-# env flag $CONFFILE
+# env flag $CONFIG_FILE
 #
 # there are two "config" formats supported, to ease up integrators lifes
 # .config (without leading #~ prefix):
@@ -367,5 +367,37 @@ function gen() {
 #~ #define CONFIG_ACPI_AC 1
 #~ #define CONFIG_ACPI_VIDEO_MODULE 1
 function config_has() {
-	grep -qE "^(#define )?$1((_MODULE)? 1|=m|=y)$" "$CONFFILE"
+	grep -qE "^(#define )?$1((_MODULE)? 1|=m|=y)$" "$CONFIG_FILE"
+}
+
+# try to locate a suitable config file from KSRC
+#
+# On success, the CONFIG_FILE variable will be updated to reflect the full
+# path to a configuration file.
+#
+# Depends on KSRC being set
+function find_config_file() {
+	local -a CSP
+	local file
+	local diagmsgs=/dev/stderr
+
+	[ -n "${QUIET_COMPAT-}" ] && diagmsgs=/dev/null
+
+	if ! [ -d "${KSRC-}" ]; then
+		return
+	fi
+
+	CSP=(
+		"$KSRC/include/generated/autoconf.h"
+		"$KSRC/include/linux/autoconf.h"
+		"$KSRC/.config"
+	)
+
+	for file in "${CSP[@]}"; do
+		if [ -f $file ]; then
+			echo >&"$diagmsgs" "using CONFIG_FILE=$file"
+			CONFIG_FILE=$file
+			return
+		fi
+	done
 }

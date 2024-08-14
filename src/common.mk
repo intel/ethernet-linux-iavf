@@ -320,7 +320,7 @@ minimum_kver_check = $(eval $(call _minimum_kver_check,${1},${2},${3}))
 # call script that populates defines automatically
 $(if $(shell \
     $(if $(findstring 1,${V}),,QUIET_COMPAT=1) \
-    KSRC=${KSRC} OUT=${src}/kcompat_generated_defs.h CONFFILE=${CONFIG_FILE} \
+    KSRC=${KSRC} OUT=${src}/kcompat_generated_defs.h CONFIG_FILE=${CONFIG_FILE} \
     bash ${src}/kcompat-generator.sh && echo ok), , $(error kcompat-generator.sh failed))
 
 ################

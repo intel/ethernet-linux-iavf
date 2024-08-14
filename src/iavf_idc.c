@@ -298,9 +298,8 @@ iavf_vc_rdma_qv_map(struct iavf_adapter *adapter,
 		return -EINVAL;
 	}
 
-	size = sizeof(struct virtchnl_rdma_qvlist_info) +
-		(sizeof(struct virtchnl_rdma_qv_info) *
-		 (qvl_info->num_vectors - 1));
+	size = virtchnl_ss_rdma_qvlist_info(qvl_info, qv_info,
+					    qvl_info->num_vectors);
 
 	vc_msg = iavf_alloc_vc_msg(VIRTCHNL_OP_CONFIG_RDMA_IRQ_MAP, size);
 	if (!vc_msg)
