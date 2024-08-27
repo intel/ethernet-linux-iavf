@@ -1253,18 +1253,20 @@ struct virtchnl_eth_stats {
 struct virtchnl_rss_key {
 	u16 vsi_id;
 	u16 key_len;
-	u8 key[1];         /* RSS hash key, packed bytes */
+	u8 key[];          /* RSS hash key, packed bytes */
 };
 
-VIRTCHNL_CHECK_STRUCT_LEN(6, virtchnl_rss_key);
+VIRTCHNL_CHECK_STRUCT_LEN(4, virtchnl_rss_key);
+#define virtchnl_rss_key_LEGACY_SIZEOF	6
 
 struct virtchnl_rss_lut {
 	u16 vsi_id;
 	u16 lut_entries;
-	u8 lut[1];        /* RSS lookup table */
+	u8 lut[];         /* RSS lookup table */
 };
 
-VIRTCHNL_CHECK_STRUCT_LEN(6, virtchnl_rss_lut);
+VIRTCHNL_CHECK_STRUCT_LEN(4, virtchnl_rss_lut);
+#define virtchnl_rss_lut_LEGACY_SIZEOF	6
 
 /* enum virthcnl_hash_filter
  *
@@ -1906,6 +1908,18 @@ struct virtchnl_fdir_del {
 
 VIRTCHNL_CHECK_STRUCT_LEN(12, virtchnl_fdir_del);
 
+#define __vss_byone(p, member, count, old)				      \
+	(struct_size(p, member, count) + (old - 1 - struct_size(p, member, 0)))
+
+#define virtchnl_struct_size_rss(p, m, c, type)				      \
+	__vss_byone(p, m, c, type##_LEGACY_SIZEOF)
+
+#define virtchnl_struct_size_rss_key(p, m, c)				      \
+	virtchnl_struct_size_rss(p, m, c, virtchnl_rss_key)
+
+#define virtchnl_struct_size_rss_lut(p, m, c)				      \
+	virtchnl_struct_size_rss(p, m, c, virtchnl_rss_lut)
+
 /* Status returned to VF after VF requests FSUB commands
  * VIRTCHNL_FSUB_SUCCESS
  * VF FLOW related request is successfully done by PF
@@ -2179,6 +2193,7 @@ VIRTCHNL_CHECK_STRUCT_LEN(12, virtchnl_quanta_cfg);
 #define VIRTCHNL_1588_PTP_CAP_PIN_CFG		BIT(5)
 #define VIRTCHNL_1588_PTP_CAP_SYNCE		BIT(6)
 #define VIRTCHNL_1588_PTP_CAP_GNSS		BIT(7)
+#define VIRTCHNL_1588_PTP_CAP_HARDWARE_CLOCK_ID	BIT(8)
 
 /**
  * struct virtchnl_phc_regs
@@ -2275,6 +2290,10 @@ enum virtchnl_ptp_tstamp_format {
  *                    by the virtchnl_ptp_tstamp enumeration. Note that Rx
  *                    timestamps are tied to the descriptor format, and do not
  *                    have a separate format field.
+ * @hardware_clock_id: An unique identifier of PTP Hardware Clock. Must be the
+ *                     same for all VFs on adapter that use the same PHC.
+ *                     Reserved if VIRTCHNL_1588_PTP_CAP_HARDWARE_CLOCK_ID is
+ *                     not enabled.
  * @rsvd: Reserved bits for future extension.
  *
  * PTP capabilities
@@ -2325,6 +2344,11 @@ enum virtchnl_ptp_tstamp_format {
  * capabilities, i.e. Access onboard GNSS Module (if present) through I2C GNSS
  * console for GNSS Configuration, Status, and NMEA Messages.
  *
+ * VIRTCHNL_1588_PTP_CAP_HARDWARE_CLOCK_ID  indicates that PF is generating an
+ * unique hardware clock ID and sends it in @hardware_clock_id. It is needed by
+ * VFs to make sure there is only one PTP clock registered in kernel for each
+ * physical adapter.
+ *
  * Note that in the future, additional capability flags may be added which
  * indicate additional extended support. All fields marked as reserved by this
  * header will be set to zero. VF implementations should verify this to ensure
@@ -2340,7 +2364,8 @@ struct virtchnl_ptp_caps {
 	u8 n_pins;
 	/* see enum virtchnl_ptp_tstamp_format */
 	u8 tx_tstamp_format;
-	u8 rsvd[11];
+	u8 hardware_clock_id;
+	u8 rsvd[10];
 };
 VIRTCHNL_CHECK_STRUCT_LEN(48, virtchnl_ptp_caps);
 
@@ -2868,6 +2893,12 @@ struct virtchnl_synce_get_input_pin_cfg {
 	u8 flags2;
 #define VIRTCHNL_GET_CGU_IN_CFG_FLG2_INPUT_EN		BIT(5)
 #define VIRTCHNL_GET_CGU_IN_CFG_FLG2_ESYNC_EN		BIT(6)
+#define VIRTCHNL_GET_CGU_IN_CFG_FLG2_ESYNC_REFSYNC_EN_SHIFT	6
+#define VIRTHCNL_GET_CGU_IN_CFG_FLG2_ESYNC_REFSYNC_EN \
+	MAKEMASK(0x3, VIRTCHNL_GET_CGU_IN_CFG_FLG2_ESYNC_REFSYNC_EN_SHIFT)
+#define VIRTCHNL_GET_CGU_IN_CFG_ESYNC_DIS			0
+#define VIRTCHNL_GET_CGU_IN_CFG_ESYNC_EN			1
+#define VIRTCHNL_GET_CGU_IN_CFG_REFSYNC_EN			2
 	u8 rsvd[3];
 };
 
@@ -2904,6 +2935,12 @@ struct virtchnl_synce_set_input_pin_cfg {
 	u8 flags2;
 #define VIRTCHNL_SET_CGU_IN_CFG_FLG2_INPUT_EN		BIT(5)
 #define VIRTCHNL_SET_CGU_IN_CFG_FLG2_ESYNC_EN		BIT(6)
+#define VIRTCHNL_SET_CGU_IN_CFG_FLG2_ESYNC_REFSYNC_EN_SHIFT	6
+#define VIRTCHNL_SET_CGU_IN_CFG_FLG2_ESYNC_REFSYNC_EN \
+	MAKEMASK(0x3, ICE_AQC_SET_CGU_IN_CFG_FLG2_ESYNC_REFSYNC_EN_SHIFT)
+#define VIRTCHNL_SET_CGU_IN_CFG_ESYNC_DIS			0
+#define VIRTCHNL_SET_CGU_IN_CFG_ESYNC_EN			1
+#define VIRTCHNL_SET_CGU_IN_CFG_REFSYNC_EN			2
 	u8 rsvd[5];
 };
 
@@ -3495,7 +3532,7 @@ virtchnl_vc_validate_vf_msg(struct virtchnl_version_info *ver, u32 v_opcode,
 		}
 		break;
 	case VIRTCHNL_OP_CONFIG_RSS_KEY:
-		valid_len = sizeof(struct virtchnl_rss_key);
+		valid_len = virtchnl_rss_key_LEGACY_SIZEOF;
 		if (msglen >= valid_len) {
 			struct virtchnl_rss_key *vrk =
 				(struct virtchnl_rss_key *)msg;
@@ -3505,11 +3542,12 @@ virtchnl_vc_validate_vf_msg(struct virtchnl_version_info *ver, u32 v_opcode,
 				break;
 			}
 
-			valid_len += vrk->key_len - 1;
+			valid_len = virtchnl_struct_size_rss_key(vrk, key,
+								 vrk->key_len);
 		}
 		break;
 	case VIRTCHNL_OP_CONFIG_RSS_LUT:
-		valid_len = sizeof(struct virtchnl_rss_lut);
+		valid_len = virtchnl_rss_lut_LEGACY_SIZEOF;
 		if (msglen >= valid_len) {
 			struct virtchnl_rss_lut *vrl =
 				(struct virtchnl_rss_lut *)msg;
@@ -3519,7 +3557,8 @@ virtchnl_vc_validate_vf_msg(struct virtchnl_version_info *ver, u32 v_opcode,
 				break;
 			}
 
-			valid_len += vrl->lut_entries - 1;
+			valid_len = virtchnl_struct_size_rss_lut(vrl, lut,
+								 vrl->lut_entries);
 		}
 		break;
 	case VIRTCHNL_OP_GET_RSS_HENA_CAPS:

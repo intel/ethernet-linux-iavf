@@ -1153,8 +1153,9 @@ static int iavf_ptp_register_clock(struct iavf_adapter *adapter)
 
 	memset(ptp_info, 0, sizeof(*ptp_info));
 
-	snprintf(ptp_info->name, sizeof(ptp_info->name) - 1, "%s-%s-clk", dev_driver_string(dev),
-		 netdev_name(adapter->netdev));
+	snprintf(ptp_info->name, sizeof(ptp_info->name) - 1, "%s-%s-clk",
+		 dev_driver_string(dev),
+		 dev_name(dev));
 	ptp_info->owner = THIS_MODULE;
 	ptp_info->max_adj = adapter->ptp.hw_caps.max_adj;
 
@@ -1183,12 +1184,12 @@ static int iavf_ptp_register_clock(struct iavf_adapter *adapter)
 	/* Support configuring any GPIO pins we have been given control of */
 	iavf_ptp_init_gpio_pins(adapter, ptp_info);
 
-	dev_info(&adapter->pdev->dev, "registering PTP clock %s\n", adapter->ptp.info.name);
-
 	adapter->ptp.clock = ptp_clock_register(ptp_info, dev);
 	if (IS_ERR(adapter->ptp.clock))
 		return PTR_ERR(adapter->ptp.clock);
 
+	dev_info(&adapter->pdev->dev, "PTP clock %s registered\n",
+		 adapter->ptp.info.name);
 	return 0;
 }
 
@@ -1299,7 +1300,8 @@ void iavf_ptp_init(struct iavf_adapter *adapter)
 
 	err = iavf_ptp_register_clock(adapter);
 	if (err) {
-		dev_warn(dev, "Failed to register PTP clock device\n");
+		dev_warn(dev, "Failed to register PTP clock device (%d)\n",
+			 err);
 		return;
 	}
 

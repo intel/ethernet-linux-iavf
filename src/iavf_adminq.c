@@ -639,16 +639,16 @@ bool iavf_asq_done(struct iavf_hw *hw)
  *  queue.  It runs the queue, cleans the queue, etc
  **/
 enum iavf_status iavf_asq_send_command(struct iavf_hw *hw,
-				struct iavf_aq_desc *desc,
-				void *buff, /* can be NULL */
-				u16  buff_size,
-				struct iavf_asq_cmd_details *cmd_details)
+				       struct iavf_aq_desc *desc,
+				       void *buff, /* can be NULL */
+				       u16  buff_size,
+				       struct iavf_asq_cmd_details *cmd_details)
 {
-	enum iavf_status status = 0;
 	struct iavf_dma_mem *dma_buff = NULL;
 	struct iavf_asq_cmd_details *details;
 	struct iavf_aq_desc *desc_on_ring;
 	bool cmd_completed = false;
+	enum iavf_status status = 0;
 	u16  retval = 0;
 	u32  val = 0;
 
