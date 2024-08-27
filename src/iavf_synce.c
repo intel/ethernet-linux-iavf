@@ -2147,9 +2147,9 @@ void iavf_synce_init(struct iavf_adapter *adapter)
 	if (!iavf_ptp_cap_supported(adapter, VIRTCHNL_1588_PTP_CAP_SYNCE))
 		return;
 
-	if (WARN_ON(synce->initialized)) {
-		dev_err(dev, "SyncE functionality was already initialized!\n");
-		return;
+	if (synce->initialized) {
+		dev_dbg(dev, "Reset SyncE functionality.\n");
+		iavf_synce_release(adapter);
 	}
 	synce->pdev = adapter->pdev;
 	if (iavf_synce_aq_get_hw_info(adapter)) {

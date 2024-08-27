@@ -5953,9 +5953,6 @@ int _kc_kstrtobool(const char *s, bool *res);
 #else /* >= 4.6.0 */
 #define HAVE_PAGE_COUNT_BULK_UPDATE
 #define HAVE_ETHTOOL_FLOW_UNION_IP6_SPEC
-#ifdef CONFIG_X86
-#define HAVE_PTP_CROSSTIMESTAMP
-#endif
 #define HAVE_TC_SETUP_CLSFLOWER
 #define HAVE_TC_SETUP_CLSU32
 #endif /* 4.6.0 */

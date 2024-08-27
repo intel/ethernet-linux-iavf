@@ -94,7 +94,11 @@ DECLARE_EVENT_CLASS(
 		__entry->ring = ring;
 		__entry->desc = desc;
 		__entry->buf = buf;
+#ifdef HAVE_ASSIGN_STR_2_PARAMS
 		__assign_str(devname, ring->netdev->name);
+#else
+		__assign_str(devname);
+#endif /* HAVE_ASSIGN_STR_2_PARAMS */
 	),
 
 	TP_printk(
@@ -139,7 +143,11 @@ DECLARE_EVENT_CLASS(
 		__entry->ring = ring;
 		__entry->desc = desc;
 		__entry->skb = skb;
+#ifdef HAVE_ASSIGN_STR_2_PARAMS
 		__assign_str(devname, ring->netdev->name);
+#else
+		__assign_str(devname);
+#endif /* HAVE_ASSIGN_STR_2_PARAMS */
 	),
 
 	TP_printk(
@@ -181,7 +189,11 @@ DECLARE_EVENT_CLASS(
 	TP_fast_assign(
 		__entry->skb = skb;
 		__entry->ring = ring;
+#ifdef HAVE_ASSIGN_STR_2_PARAMS
 		__assign_str(devname, ring->netdev->name);
+#else
+		__assign_str(devname);
+#endif /* HAVE_ASSIGN_STR_2_PARAMS */
 	),
 
 	TP_printk(

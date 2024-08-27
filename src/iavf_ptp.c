@@ -1283,10 +1283,13 @@ static void iavf_validate_tx_tstamp_format(struct iavf_adapter *adapter)
  * Initialize PTP functionality, based on the capabilities that the PF has
  * enabled for this VF.
  */
-void iavf_ptp_init(struct iavf_adapter *adapter)
+static void iavf_ptp_init(struct iavf_adapter *adapter)
 {
 	struct device *dev = &adapter->pdev->dev;
 	int err;
+
+	if (!PTP_ALLOWED(adapter))
+		return;
 
 	if (WARN_ON(adapter->ptp.initialized)) {
 		dev_err(dev, "PTP functionality was already initialized!\n");
@@ -1367,7 +1370,7 @@ void iavf_ptp_process_caps(struct iavf_adapter *adapter)
 {
 	struct device *dev = &adapter->pdev->dev;
 
-	dev_dbg(dev, "PTP capabilities changed at runtime\n");
+	dev_dbg(dev, "Process PTP capabilities.\n");
 
 	/* Check if we lost PTP capability after loading */
 	if (adapter->ptp.initialized &&
