@@ -24,8 +24,8 @@ static const char iavf_driver_string[] =
 
 #define DRV_VERSION_MAJOR (4)
 #define DRV_VERSION_MINOR (12)
-#define DRV_VERSION_BUILD (5)
-#define DRV_VERSION "4.12.5"
+#define DRV_VERSION_BUILD (6)
+#define DRV_VERSION "4.12.6"
 const char iavf_driver_version[] = DRV_VERSION;
 static const char iavf_copyright[] =
 	"Copyright (C) 2013-2024 Intel Corporation";
