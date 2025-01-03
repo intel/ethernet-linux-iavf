@@ -1,5 +1,8 @@
 .\" Man page generated from reStructuredText.
 .
+.TH "IAVF" "7" "December 09, 2024" "" "Linux iavf readme"
+.SH NAME
+iavf \- iavf -- Intel Adaptive Virtual Function Driver
 .
 .nr rst2man-indent-level 0
 .
@@ -27,9 +30,6 @@ level margin: \\n[rst2man-indent\\n[rst2man-indent-level]]
 .\" new: \\n[rst2man-indent\\n[rst2man-indent-level]]
 .in \\n[rst2man-indent\\n[rst2man-indent-level]]u
 ..
-.TH "IAVF" "7" "August 13, 2024" "" "Linux iavf readme"
-.SH NAME
-iavf \- iavf -- Intel Adaptive Virtual Function Driver
 .SS Contents
 .INDENT 0.0
 .IP \(bu 2
@@ -92,7 +92,7 @@ it is associated. This allows system administrators to update a PF without
 having to update all the VFs associated with it. All AVFs have a single common
 device ID and branding string.
 .sp
-AVFs have a minimum set of features known as \(dqbase mode,\(dq but may provide
+AVFs have a minimum set of features known as "base mode," but may provide
 additional features depending on what features are available in the PF with
 which the AVF is associated. The following are base mode features:
 .INDENT 0.0
@@ -131,7 +131,7 @@ HW mailbox is used for VF to PF communications (including on Windows)
 .UNINDENT
 .SH RELATED DOCUMENTATION
 .sp
-See the \(dqIntel(R) Ethernet Adapters and Devices User Guide\(dq for additional
+See the "Intel(R) Ethernet Adapters and Devices User Guide" for additional
 information on . It is available on the Intel website at
 \fI\%https://cdrdv2.intel.com/v1/dl/getContent/705831/\fP
 .SH IDENTIFYING YOUR ADAPTER
@@ -476,7 +476,7 @@ ethtool \-\-offload <ethX> rxvlan on/off
 .sp
 The IEEE 802.1ad standard, informally known as QinQ, allows for multiple VLAN
 IDs within a single Ethernet frame. VLAN IDs are sometimes referred to as
-\(dqtags,\(dq and multiple VLAN IDs are thus referred to as a \(dqtag stack.\(dq Tag stacks
+"tags," and multiple VLAN IDs are thus referred to as a "tag stack." Tag stacks
 allow L2 tunneling and the ability to separate traffic within a particular VLAN
 ID, among other uses.
 .sp
@@ -1073,7 +1073,7 @@ Check if the interface is dropping Rx packets due to buffers being full
 .sp
 .nf
 .ft C
-ethtool \-S <ethX> | grep \(dqrx_dropped\(dq
+ethtool \-S <ethX> | grep "rx_dropped"
 .ft P
 .fi
 .UNINDENT
@@ -1112,6 +1112,89 @@ ethtool \-G <ethX> rx 2048
 .ft P
 .fi
 .UNINDENT
+.UNINDENT
+.UNINDENT
+.UNINDENT
+.SS Transmit/Receive Queue Allocation
+.sp
+The driver allocates a number of transmit/receive queue pairs equal to the
+number of local node CPU threads with the following constraints:
+.INDENT 0.0
+.IP \(bu 2
+The driver will allocate a minimum of 8 queue pairs, or the total number of
+CPUs, whichever is lower.
+.IP \(bu 2
+The PF driver will allocate a maximum of 256 queue pairs for the VF driver.
+.UNINDENT
+.sp
+You can set the number of symmetrical (Rx/Tx) or asymmetrical (mix of combined
+and Tx or Rx) queues using the \fBethtool \-L\fP command. Use the \fBcombined\fP
+parameter to set the symmetrical part of the configuration, and then use
+either \fBrx\fP or \fBtx\fP to set the remaining asymmetrical part of the
+configuration. For example:
+.INDENT 0.0
+.IP \(bu 2
+To set 16 queue pairs, regardless of what the previous configuration was:
+.INDENT 2.0
+.INDENT 3.5
+.sp
+.nf
+.ft C
+ethtool \-L <ethX> combined 16 rx 0 tx 0
+.ft P
+.fi
+.UNINDENT
+.UNINDENT
+.sp
+\fBNOTE:\fP
+.INDENT 2.0
+.INDENT 3.5
+If the current configuration is already symmetric, you can omit
+the \fBrx\fP and \fBtx\fP parameters. For example:
+.INDENT 0.0
+.INDENT 3.5
+.sp
+.nf
+.ft C
+ethtool \-L <ethX> combined 16
+.ft P
+.fi
+.UNINDENT
+.UNINDENT
+.UNINDENT
+.UNINDENT
+.IP \(bu 2
+To set 16 Tx queues and 8 Rx queues:
+.INDENT 2.0
+.INDENT 3.5
+.sp
+.nf
+.ft C
+ethtool \-L <ethX> combined 8 tx 8
+.ft P
+.fi
+.UNINDENT
+.UNINDENT
+.UNINDENT
+.sp
+\fBNOTE:\fP
+.INDENT 0.0
+.INDENT 3.5
+.INDENT 0.0
+.IP \(bu 2
+You cannot configure less than 1 queue pair. Attempts to do so will
+be rejected by the kernel.
+.IP \(bu 2
+You cannot configure more Tx/Rx queues than there are MSI\-X interrupts
+available. Attempts to do so will be rejected by the driver.
+.IP \(bu 2
+\fBethtool\fP preserves the previous values of \fBcombined\fP, \fBrx\fP, and
+\fBtx\fP independently, same as it handles flags. If you do not specify
+a certain value in the command, it will stay the same instead of being set
+to zero.
+.IP \(bu 2
+Tx/Rx queues cannot exist outside of queue pairs simultaneously, so either
+\fBrx\fP or \fBtx\fP parameter has to be zero.
 .UNINDENT
 .UNINDENT
 .UNINDENT
@@ -1266,7 +1349,7 @@ Alternatively, you can install the interfaces in separate broadcast domains
 (either in different switches or in a switch partitioned to VLANs).
 .SS Rx page allocation errors
 .sp
-Errors that read, \(dqPage allocation failure. order:0,\(dq may occur under stress
+Errors that read, "Page allocation failure. order:0," may occur under stress
 with kernels 2.6.25 and newer. This is caused by the way the Linux kernel reports
 this stressed condition.
 .SS Host may reboot after removing PF when VF is active in guest
@@ -1326,7 +1409,7 @@ this program; if not, write to the Free Software Foundation, Inc., 51 Franklin
 St \- Fifth Floor, Boston, MA 02110\-1301 USA.
 .sp
 The full GNU General Public License is included in this distribution in the
-file called \(dqCOPYING\(dq.
+file called "COPYING".
 .SH TRADEMARKS
 .sp
 Intel is a trademark or registered trademark of Intel Corporation or its

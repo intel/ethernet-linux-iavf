@@ -23,9 +23,9 @@ static const char iavf_driver_string[] =
 	"Intel(R) Ethernet Adaptive Virtual Function Network Driver";
 
 #define DRV_VERSION_MAJOR (4)
-#define DRV_VERSION_MINOR (12)
-#define DRV_VERSION_BUILD (6)
-#define DRV_VERSION "4.12.6"
+#define DRV_VERSION_MINOR (13)
+#define DRV_VERSION_BUILD (3)
+#define DRV_VERSION "4.13.3"
 const char iavf_driver_version[] = DRV_VERSION;
 static const char iavf_copyright[] =
 	"Copyright (C) 2013-2024 Intel Corporation";

@@ -2554,7 +2554,13 @@ static int iavf_set_rxfh(struct net_device *netdev, const u32 *indir,
  * Based on device features enabled, report the Tx and Rx timestamp
  * capabilities, as well as the PTP hardware clock index to user space.
  */
-static int iavf_get_ts_info(struct net_device *netdev, struct ethtool_ts_info *info)
+#ifdef HAVE_ETHTOOL_KERNEL_TS_INFO
+static int iavf_get_ts_info(struct net_device *netdev,
+			    struct kernel_ethtool_ts_info *info)
+#else
+static int iavf_get_ts_info(struct net_device *netdev,
+			    struct ethtool_ts_info *info)
+#endif /* HAVE_ETHTOOL_KERNEL_TS_INFO */
 {
 	struct iavf_adapter *adapter = netdev_priv(netdev);
 

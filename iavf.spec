@@ -1,6 +1,6 @@
 Name: iavf
 Summary: Intel(R) Ethernet Adaptive Virtual Function Driver
-Version: 4.12.6
+Version: 4.13.3
 Release: 1
 Source: %{name}-%{version}.tar.gz
 Vendor: Intel Corporation
@@ -93,6 +93,7 @@ cd %{buildroot}
 %{!?privkey: %define privkey %{_sysconfdir}/pki/SECURE-BOOT-KEY.priv}
 %{!?pubkey: %define pubkey %{_sysconfdir}/pki/SECURE-BOOT-KEY.der}
 %{!?_signfile: %define _signfile ${_ksrc}/scripts/sign-file}
+export MOD_SO=%{_mod_so}
 for module in `find . -type f -name *.ko`;
 do
 strip --strip-debug ${module}

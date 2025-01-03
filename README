@@ -1,7 +1,7 @@
 iavf Linux* Driver for Intel(R) Ethernet Adaptive Virtual Function
 ******************************************************************
 
-August 13, 2024
+December 09, 2024
 
 
 Contents
@@ -794,6 +794,58 @@ Note:
   example:
 
      ethtool -G <ethX> rx 2048
+
+
+Transmit/Receive Queue Allocation
+---------------------------------
+
+The driver allocates a number of transmit/receive queue pairs equal to
+the number of local node CPU threads with the following constraints:
+
+* The driver will allocate a minimum of 8 queue pairs, or the total
+  number of CPUs, whichever is lower.
+
+* The PF driver will allocate a maximum of 256 queue pairs for the VF
+  driver.
+
+You can set the number of symmetrical (Rx/Tx) or asymmetrical (mix of
+combined and Tx or Rx) queues using the "ethtool -L" command. Use the
+"combined" parameter to set the symmetrical part of the configuration,
+and then use either "rx" or "tx" to set the remaining asymmetrical
+part of the configuration. For example:
+
+* To set 16 queue pairs, regardless of what the previous configuration
+  was:
+
+     ethtool -L <ethX> combined 16 rx 0 tx 0
+
+  Note:
+
+    If the current configuration is already symmetric, you can omit
+    the "rx" and "tx" parameters. For example:
+
+       ethtool -L <ethX> combined 16
+
+* To set 16 Tx queues and 8 Rx queues:
+
+     ethtool -L <ethX> combined 8 tx 8
+
+Note:
+
+  * You cannot configure less than 1 queue pair. Attempts to do so
+    will be rejected by the kernel.
+
+  * You cannot configure more Tx/Rx queues than there are MSI-X
+    interrupts available. Attempts to do so will be rejected by the
+    driver.
+
+  * "ethtool" preserves the previous values of "combined", "rx", and
+    "tx" independently, same as it handles flags. If you do not
+    specify a certain value in the command, it will stay the same
+    instead of being set to zero.
+
+  * Tx/Rx queues cannot exist outside of queue pairs simultaneously,
+    so either "rx" or "tx" parameter has to be zero.
 
 
 Known Issues/Troubleshooting
