@@ -1,7 +1,7 @@
 iavf Linux* Driver for Intel(R) Ethernet Adaptive Virtual Function
 ******************************************************************
 
-December 09, 2024
+June 12, 2025
 
 
 Contents
@@ -123,6 +123,18 @@ Identifying Your Adapter
 This driver is compatible with virtual functions bound to devices
 based on the following:
 
+* Intel(R) Ethernet Controller I710
+
+* Intel(R) Ethernet Controller V710
+
+* Intel(R) Ethernet Controller X710
+
+* Intel(R) Ethernet Controller XL710
+
+* Intel(R) Ethernet Controller XXV710
+
+* Intel(R) Ethernet Network Connection X722
+
 * Intel(R) Ethernet Controller E810-C
 
 * Intel(R) Ethernet Controller E810-XXV
@@ -135,17 +147,7 @@ based on the following:
 
 * Intel(R) Ethernet Connection E823-L
 
-* Intel(R) Ethernet Controller I710
-
-* Intel(R) Ethernet Controller X710
-
-* Intel(R) Ethernet Controller XL710
-
-* Intel(R) Ethernet Network Connection X722
-
-* Intel(R) Ethernet Controller XXV710
-
-* Intel(R) Ethernet Controller V710
+* Intel(R) Ethernet Controller E830
 
 For information on how to identify your adapter, and for the latest
 Intel network drivers, refer to the Intel Support website at

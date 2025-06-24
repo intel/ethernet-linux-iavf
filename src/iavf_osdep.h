@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
-/* Copyright (C) 2013-2024 Intel Corporation */
+/* Copyright (C) 2013-2025 Intel Corporation */
 
 #ifndef _IAVF_OSDEP_H_
 #define _IAVF_OSDEP_H_

@@ -1,8 +1,16 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
-/* Copyright (C) 2013-2024 Intel Corporation */
+/* Copyright (C) 2013-2025 Intel Corporation */
 
 #ifndef _KCOMPAT_IMPL_H_
 #define _KCOMPAT_IMPL_H_
+
+#ifdef HAVE_STRING_HELPERS_H
+#include <linux/string_helpers.h>
+#endif /* HAVE_STRING_HELPERS_H */
+
+#ifdef HAVE_STRING_CHOICES_H
+#include <linux/string_choices.h>
+#endif /* HAVE_STRING_CHOICES_H */
 
 /* devlink support */
 #if IS_ENABLED(CONFIG_NET_DEVLINK)
@@ -112,6 +120,73 @@ static inline bool __netdev_tx_sent_queue(struct netdev_queue *dev_queue,
 	return true;
 }
 #endif /* NEED_NETDEV_TX_SENT_QUEUE */
+
+/*HAVE_NETIF_SUBQUEUE_MAYBE_STOP
+ *
+ * netif_subqueue_maybe_stop was added in kernel 6.3 upstream commit
+ * c91c46de6bbc ("net: provide macros for commonly copied lockless queue
+ * stop/wake code")
+ */
+#ifndef HAVE_NETIF_SUBQUEUE_MAYBE_STOP
+#define netif_txq_try_stop(txq, get_desc, start_thrs)			\
+	({								\
+		int _res;						\
+									\
+		netif_tx_stop_queue(txq);				\
+		/* Producer index and stop bit must be visible		\
+		 * to consumer before we recheck.			\
+		 * Pairs with a barrier in __netif_txq_completed_wake(). \
+		 */							\
+		smp_mb__after_atomic();					\
+									\
+		/* We need to check again in a case another		\
+		 * CPU has just made room available.			\
+		 */							\
+		_res = 0;						\
+		if (unlikely(get_desc >= start_thrs)) {			\
+			netif_tx_start_queue(txq);			\
+			_res = -1;					\
+		}							\
+		_res;							\
+	})
+
+/**
+ * netif_txq_maybe_stop() - locklessly stop a Tx queue, if needed
+ * @txq:	struct netdev_queue to stop/start
+ * @get_desc:	get current number of free descriptors (see requirements below!)
+ * @stop_thrs:	minimal number of available descriptors for queue to be left
+ *		enabled
+ * @start_thrs:	minimal number of descriptors to re-enable the queue, can be
+ *		equal to @stop_thrs or higher to avoid frequent waking
+ *
+ * All arguments may be evaluated multiple times, beware of side effects.
+ * @get_desc must be a formula or a function call, it must always
+ * return up-to-date information when evaluated!
+ * Expected to be used from ndo_start_xmit, see the comment on top of the file.
+ *
+ * Returns:
+ *	 0 if the queue was stopped
+ *	 1 if the queue was left enabled
+ *	-1 if the queue was re-enabled (raced with waking)
+ */
+#define netif_txq_maybe_stop(txq, get_desc, stop_thrs, start_thrs)	\
+	({								\
+		int _res;						\
+									\
+		_res = 1;						\
+		if (unlikely(get_desc < stop_thrs))			\
+			_res = netif_txq_try_stop(txq, get_desc, start_thrs); \
+		_res;							\
+	})
+
+#define netif_subqueue_maybe_stop(dev, idx, get_desc, stop_thrs, start_thrs) \
+	({								\
+		struct netdev_queue *txq;				\
+									\
+		txq = netdev_get_tx_queue(dev, idx);			\
+		netif_txq_maybe_stop(txq, get_desc, stop_thrs, start_thrs); \
+	})
+#endif /* !HAVE_NETIF_SUBQUEUE_MAYBE_STOP */
 
 /* NEED_NET_PREFETCH
  *
@@ -357,34 +432,28 @@ static inline bool macvlan_supports_dest_filter(struct net_device *dev)
 /* devlink support */
 #if IS_ENABLED(CONFIG_NET_DEVLINK)
 
-#ifdef HAVE_DEVLINK_REGIONS
-/* NEED_DEVLINK_REGION_CREATE_OPS
+/* NEED_DEVLINK_FMSG_PUT
  *
- * The ops parameter to devlink_region_create was added by commit e8937681797c
- * ("devlink: prepare to support region operations")
+ * devlink_fmsg_put was introduced upstream by commit 346947223bac ("devlink:
+ * add devlink_fmsg_put() macro") as a way to simplify adding data to
+ * a devlink health report based on its type.
  *
- * For older kernels, define _kc_devlink_region_create that takes an ops
- * parameter, and calls the old implementation function by extracting the name
- * from the structure.
+ * For older kernels, it is straight forward to re-implement here. Note that
+ * it does require _Generic support from the compiler.
  */
-#ifdef NEED_DEVLINK_REGION_CREATE_OPS
-struct devlink_region_ops {
-	const char *name;
-	void (*destructor)(const void *data);
-};
-
-static inline struct devlink_region *
-_kc_devlink_region_create(struct devlink *devlink,
-			  const struct devlink_region_ops *ops,
-			  u32 region_max_snapshots, u64 region_size)
-{
-	return devlink_region_create(devlink, ops->name, region_max_snapshots,
-				     region_size);
-}
-
-#define devlink_region_create _kc_devlink_region_create
-#endif /* NEED_DEVLINK_REGION_CREATE_OPS */
-#endif /* HAVE_DEVLINK_REGIONS */
+#ifdef NEED_DEVLINK_FMSG_PUT
+#define devlink_fmsg_put(fmsg, name, value) (			\
+	_Generic((value),					\
+		bool :		devlink_fmsg_bool_pair_put,	\
+		u8 :		devlink_fmsg_u8_pair_put,	\
+		u16 :		devlink_fmsg_u32_pair_put,	\
+		u32 :		devlink_fmsg_u32_pair_put,	\
+		u64 :		devlink_fmsg_u64_pair_put,	\
+		int :		devlink_fmsg_u32_pair_put,	\
+		char * :	devlink_fmsg_string_pair_put,	\
+		const char * :	devlink_fmsg_string_pair_put)	\
+	(fmsg, name, (value)))
+#endif /* NEED_DEVLINK_FMSG_PUT */
 
 /* NEED_DEVLINK_FLASH_UPDATE_STATUS_NOTIFY
  *
@@ -422,7 +491,9 @@ struct devlink_flash_update_params {
 	const char *component;
 	u32 overwrite_mask;
 };
+#endif /* !HAVE_DEVLINK_FLASH_UPDATE_PARAMS */
 
+#ifndef HAVE_DEVLINK_FLASH_UPDATE_PARAMS_OVERWRITE_MASK
 #ifndef DEVLINK_FLASH_OVERWRITE_SETTINGS
 #define DEVLINK_FLASH_OVERWRITE_SETTINGS BIT(0)
 #endif
@@ -430,7 +501,10 @@ struct devlink_flash_update_params {
 #ifndef DEVLINK_FLASH_OVERWRITE_IDENTIFIERS
 #define DEVLINK_FLASH_OVERWRITE_IDENTIFIERS BIT(1)
 #endif
-#endif /* !HAVE_DEVLINK_FLASH_UPDATE_PARAMS */
+
+#define DEVLINK_SUPPORT_FLASH_UPDATE_COMPONENT          BIT(0)
+#define DEVLINK_SUPPORT_FLASH_UPDATE_OVERWRITE_MASK     BIT(1)
+#endif /* HAVE_DEVLINK_FLASH_UPDATE_PARAMS_OVERWRITE_MASK */
 
 /* NEED_DEVLINK_FLASH_UPDATE_TIMEOUT_NOTIFY
  *
@@ -450,25 +524,6 @@ devlink_flash_update_timeout_notify(struct devlink *devlink,
 	devlink_flash_update_status_notify(devlink, status_msg, component, 0, 0);
 }
 #endif /* NEED_DEVLINK_FLASH_UPDATE_TIMEOUT_NOTIFY */
-
-/* NEED_DEVLINK_HEALTH_DEFAULT_AUTO_RECOVER
- *
- * Upstream commit ba7d16c77942 ("devlink: Implicitly set auto recover flag when
- * registering health reporter") removed auto_recover param.
- * CORE code does not need to bother about this param, we could simply provide
- * it via compat.
- */
-#ifdef NEED_DEVLINK_HEALTH_DEFAULT_AUTO_RECOVER
-static inline struct devlink_health_reporter *
-_kc_devlink_health_reporter_create(struct devlink *devlink,
-				  const struct devlink_health_reporter_ops *ops,
-				  u64 graceful_period, void *priv)
-{
-	return devlink_health_reporter_create(devlink, ops, graceful_period,
-					      !!ops->recover, priv);
-}
-#define devlink_health_reporter_create _kc_devlink_health_reporter_create
-#endif /* NEED_DEVLINK_HEALTH_DEFAULT_AUTO_RECOVER */
 
 /*
  * NEED_DEVLINK_PORT_ATTRS_SET_STRUCT
@@ -622,26 +677,6 @@ static inline int devl_resource_size_get(struct devlink *devlink,
 	return devlink_resource_size_get(devlink, resource_id, p_resource_size);
 }
 #endif /* NEED_DEVLINK_UNLOCKED_RESOURCE */
-
-#ifdef NEED_DEVLINK_RESOURCES_UNREGISTER_NO_RESOURCE
-/*
- * NEED_DEVLINK_RESOURCES_UNREGISTER_NO_RESOURCE
- *
- * Commit 4c897cfc46 ("devlink: Simplify devlink resources unregister call")
- * removed struct devlink_resource *resource parameter from
- * devlink_resources_unregister() function, if NULL is passed as a resource
- * parameter old version of devlink_resources_unregister() behaves the same
- * way as new implementation removing all resources from:
- * &devlink->resource_list.
- */
-static inline void
-_kc_devlink_resources_unregister(struct devlink *devlink)
-{
-	return devlink_resources_unregister(devlink, NULL);
-}
-
-#define devlink_resources_unregister _kc_devlink_resources_unregister
-#endif /* NEED_DEVLINK_RESOURCES_UNREGISTER_NO_RESOURCE */
 #endif /* HAVE_DEVLINK_RELOAD_ACTION_AND_LIMIT */
 
 #ifdef NEED_DEVLINK_TO_DEV
@@ -658,6 +693,277 @@ devlink_to_dev(const struct devlink *devlink)
 }
 #endif /* NEED_DEVLINK_TO_DEV */
 
+#ifdef NEED_DEVL_LOCK
+static inline void devl_lock(struct devlink *devlink)
+{
+}
+
+static inline void devl_unlock(struct devlink *devlink)
+{
+}
+#endif /* NEED_DEVL_LOCK */
+
+#ifdef NEED_DEVL_RESOURCE_REGISTER
+static inline int
+devl_resource_register(struct devlink *devlink, const char *resource_name,
+		       u64 resource_size, u64 resource_id,
+		       u64 parent_resource_id,
+		       const struct devlink_resource_size_params *size_params)
+{
+	int err;
+
+	devl_unlock(devlink);
+	err = devlink_resource_register(devlink, resource_name, resource_size,
+					resource_id, parent_resource_id,
+					size_params);
+	devl_lock(devlink);
+
+	return err;
+}
+
+static inline void devl_resources_unregister(struct devlink *devlink)
+{
+	devl_unlock(devlink);
+#ifdef NEED_DEVLINK_RESOURCES_UNREGISTER_NO_RESOURCE
+	devlink_resources_unregister(devlink, NULL);
+#else
+	devlink_resources_unregister(devlink);
+#endif /* NEED_DEVLINK_RESOURCES_UNREGISTER_NO_RESOURCE */
+	devl_lock(devlink);
+}
+
+static inline void
+devl_resource_occ_get_register(struct devlink *devlink, u64 resource_id,
+			       devlink_resource_occ_get_t *occ_get,
+			       void *occ_get_priv)
+{
+	devl_unlock(devlink);
+	devlink_resource_occ_get_register(devlink, resource_id, occ_get,
+					  occ_get_priv);
+	devl_lock(devlink);
+}
+
+static inline void devl_resource_occ_get_unregister(struct devlink *devlink,
+						    u64 resource_id)
+{
+	devl_unlock(devlink);
+	devlink_resource_occ_get_unregister(devlink, resource_id);
+	devl_lock(devlink);
+}
+#endif /* NEED_DEVL_RESOURCE_REGISTER */
+
+#ifdef NEED_DEVL_PORT_REGISTER
+static inline int devl_port_register(struct devlink *devlink,
+				     struct devlink_port *devlink_port,
+				     unsigned int port_index)
+{
+	int err;
+
+	devl_unlock(devlink);
+	err = devlink_port_register(devlink, devlink_port, port_index);
+	devl_lock(devlink);
+
+	return err;
+}
+
+static inline void devl_port_unregister(struct devlink_port *devlink_port)
+{
+	devl_unlock(devlink_port->devlink);
+	devlink_port_unregister(devlink_port);
+	devl_lock(devlink_port->devlink);
+}
+#endif /* NEED_DEVL_PORT_REGISTER */
+
+#ifdef HAVE_DEVLINK_REGIONS
+#ifdef NEED_DEVL_REGION_CREATE
+
+struct _kc_devlink_region {
+	void *devlink;
+};
+
+static inline struct devlink_region
+*devl_region_create(struct devlink *devlink,
+		    const struct devlink_region_ops *ops,
+		    u32 region_max_snapshots, u64 region_size)
+{
+	struct devlink_region *region;
+
+	devl_unlock(devlink);
+#ifdef NEED_DEVLINK_REGION_CREATE_OPS
+	region = devlink_region_create(devlink, ops->name, region_max_snapshots,
+				       region_size);
+#else
+	region = devlink_region_create(devlink, ops, region_max_snapshots,
+				       region_size);
+#endif /* NEED_DEVLINK_REGION_CREATE_OPS */
+	devl_lock(devlink);
+
+	return region;
+}
+
+static inline void devl_region_destroy(struct devlink_region *region)
+{
+	devl_unlock(((struct _kc_devlink_region *)(region))->devlink);
+	devlink_region_destroy(region);
+	devl_lock(((struct _kc_devlink_region *)(region))->devlink);
+}
+#endif /* NEED_DEVL_REGION_CREATE */
+#endif /* HAVE_DEVLINK_REGIONS */
+
+#ifdef NEED_DEVL_PARAMS_REGISTER
+static inline int devl_params_register(struct devlink *devlink,
+				       const struct devlink_param *params,
+				       size_t params_count)
+{
+	int err;
+
+	devl_unlock(devlink);
+	err = devlink_params_register(devlink, params, params_count);
+	devl_lock(devlink);
+
+	return err;
+}
+
+static inline void devl_params_unregister(struct devlink *devlink,
+					  const struct devlink_param *params,
+					  size_t params_count)
+{
+	devl_unlock(devlink);
+	devlink_params_unregister(devlink, params, params_count);
+	devl_lock(devlink);
+}
+#endif /* NEED_DEVL_PARAMS_REGISTER */
+
+#ifdef NEED_DEVL_REGISTER
+static inline int devl_register(struct devlink *devlink)
+{
+	devl_unlock(devlink);
+#ifdef HAVE_DEVLINK_REGISTER_SETS_DEV
+	devlink_register(devlink, devlink->dev);
+#else
+	devlink_register(devlink);
+#endif /* HAVE_DEVLINK_REGISTER_SETS_DEV */
+	devl_lock(devlink);
+
+	return 0;
+}
+
+static inline void devl_unregister(struct devlink *devlink)
+{
+	devl_unlock(devlink);
+	devlink_unregister(devlink);
+	devl_lock(devlink);
+}
+#endif /* NEED_DEVL_REGISTER */
+
+#ifdef HAVE_DEVLINK_HEALTH
+#ifdef NEED_DEVL_HEALTH_REPORTER_CREATE
+
+struct kc_devlink_health_reporter {
+	struct list_head list;
+	void *priv;
+	const struct devlink_health_reporter_ops *ops;
+	struct devlink *devlink;
+};
+
+static inline struct devlink_health_reporter *
+devl_health_reporter_create(struct devlink *devlink,
+			    const struct devlink_health_reporter_ops *ops,
+			    u64 graceful_period, void *priv)
+{
+	struct devlink_health_reporter *reporter;
+
+	devl_unlock(devlink);
+#ifdef NEED_DEVLINK_HEALTH_DEFAULT_AUTO_RECOVER
+	reporter = devlink_health_reporter_create(devlink, ops, graceful_period,
+						  !!ops->recover, priv);
+#else
+	reporter = devlink_health_reporter_create(devlink, ops, graceful_period,
+						  priv);
+#endif /* NEED_DEVLINK_HEALTH_DEFAULT_AUTO_RECOVER */
+	devl_lock(devlink);
+
+	return reporter;
+}
+
+static inline void
+devl_health_reporter_destroy(struct devlink_health_reporter *reporter)
+{
+	devl_unlock(((struct kc_devlink_health_reporter *)(reporter))->devlink);
+	devlink_health_reporter_destroy(reporter);
+	devl_lock(((struct kc_devlink_health_reporter *)(reporter))->devlink);
+}
+#endif /* NEED_DEVL_HEALTH_REPORTER_CREATE */
+
+#ifdef NEED_DEVLINK_FMSG_DUMP_SKB
+/**
+ * devlink_fmsg_dump_skb - Dump sk_buffer structure
+ * @fmsg: devlink formatted message pointer
+ * @skb: pointer to skb
+ *
+ * Dump diagnostic information about sk_buff structure, like headroom, length,
+ * tailroom, MAC, etc.
+ */
+static inline void devlink_fmsg_dump_skb(struct devlink_fmsg *fmsg,
+					 const struct sk_buff *skb)
+{
+	struct skb_shared_info *sh = skb_shinfo(skb);
+	struct sock *sk = skb->sk;
+	bool has_mac, has_trans;
+
+	has_mac = skb_mac_header_was_set(skb);
+	has_trans = skb_transport_header_was_set(skb);
+
+	devlink_fmsg_pair_nest_start(fmsg, "skb");
+	devlink_fmsg_obj_nest_start(fmsg);
+	devlink_fmsg_put(fmsg, "actual len", skb->len);
+	devlink_fmsg_put(fmsg, "head len", skb_headlen(skb));
+	devlink_fmsg_put(fmsg, "data len", skb->data_len);
+	devlink_fmsg_put(fmsg, "tail len", skb_tailroom(skb));
+	devlink_fmsg_put(fmsg, "MAC", has_mac ? skb->mac_header : -1);
+	devlink_fmsg_put(fmsg, "MAC len",
+			 has_mac ? skb_mac_header_len(skb) : -1);
+	devlink_fmsg_put(fmsg, "network hdr", skb->network_header);
+	devlink_fmsg_put(fmsg, "network hdr len",
+			 has_trans ? skb_network_header_len(skb) : -1);
+	devlink_fmsg_put(fmsg, "transport hdr",
+			 has_trans ? skb->transport_header : -1);
+	devlink_fmsg_put(fmsg, "csum", (__force u32)skb->csum);
+	devlink_fmsg_put(fmsg, "csum_ip_summed", (u8)skb->ip_summed);
+	devlink_fmsg_put(fmsg, "csum_complete_sw", !!skb->csum_complete_sw);
+	devlink_fmsg_put(fmsg, "csum_valid", !!skb->csum_valid);
+	devlink_fmsg_put(fmsg, "csum_level", (u8)skb->csum_level);
+	devlink_fmsg_put(fmsg, "sw_hash", !!skb->sw_hash);
+	devlink_fmsg_put(fmsg, "l4_hash", !!skb->l4_hash);
+	devlink_fmsg_put(fmsg, "proto", ntohs(skb->protocol));
+	devlink_fmsg_put(fmsg, "pkt_type", (u8)skb->pkt_type);
+	devlink_fmsg_put(fmsg, "iif", skb->skb_iif);
+
+	if (sk) {
+		devlink_fmsg_pair_nest_start(fmsg, "sk");
+		devlink_fmsg_obj_nest_start(fmsg);
+		devlink_fmsg_put(fmsg, "family", sk->sk_type);
+		devlink_fmsg_put(fmsg, "type", sk->sk_type);
+		devlink_fmsg_put(fmsg, "proto", sk->sk_protocol);
+		devlink_fmsg_obj_nest_end(fmsg);
+		devlink_fmsg_pair_nest_end(fmsg);
+	}
+
+	devlink_fmsg_obj_nest_end(fmsg);
+	devlink_fmsg_pair_nest_end(fmsg);
+
+	devlink_fmsg_pair_nest_start(fmsg, "shinfo");
+	devlink_fmsg_obj_nest_start(fmsg);
+	devlink_fmsg_put(fmsg, "tx_flags", sh->tx_flags);
+	devlink_fmsg_put(fmsg, "nr_frags", sh->nr_frags);
+	devlink_fmsg_put(fmsg, "gso_size", sh->gso_size);
+	devlink_fmsg_put(fmsg, "gso_type", sh->gso_type);
+	devlink_fmsg_put(fmsg, "gso_segs", sh->gso_segs);
+	devlink_fmsg_obj_nest_end(fmsg);
+	devlink_fmsg_pair_nest_end(fmsg);
+}
+#endif /* NEED_DEVLINK_FMSG_DUMP_SKB */
+#endif /* HAVE_DEVLINK_HEALTH */
 #endif /* CONFIG_NET_DEVLINK */
 
 #ifdef NEED_IDA_ALLOC_MIN_MAX_RANGE_FREE
@@ -783,6 +1089,84 @@ tc_cls_can_offload_and_chain0(const struct net_device *dev,
 #ifdef NEED_TC_SETUP_QDISC_MQPRIO
 #define TC_SETUP_QDISC_MQPRIO TC_SETUP_MQPRIO
 #endif /* NEED_TC_SETUP_QDISC_MQPRIO */
+
+#ifdef NEED_TCF_MIRRED_DEV
+/* NEED_TCF_MIRRED_DEV
+ *
+ * tcf_mirred_dev was introduced by upstream commit 9f8a739e72f1 ("act_mirred:
+ * get rid of tcfm_ifindex from struct tcf_mirred"), which replaced
+ * tcf_mirred_ifindex.
+ */
+#define tcf_mirred_dev(a) \
+	rtnl_dereference(to_mirred(a)->tcfm_dev)
+#endif /* NEED_TCF_MIRRED_DEV */
+
+#ifdef NEED_TCF_MIRRED_EGRESS_REDIRECT
+/* NEED_TCF_MIRRED_EGRESS_REDIRECT
+ *
+ * is_tcf_mirred_egress_redirect was added by upstream commit 5724b8b56947
+ * ("net/sched: tc_mirred: Rename public predicates 'is_tcf_mirred_redirect'
+ * and 'is_tcf_mirred_mirror'"), and is a simple rename of
+ * is_tcf_mirred_redirect.
+ */
+#define is_tcf_mirred_egress_redirect(a) is_tcf_mirred_redirect(a)
+#endif /* NEED_TCF_MIRRED_EGRESS_REDIRECT */
+
+#ifdef NEED_FLOW_BLOCK_BINDER_TYPE
+/* NEED_FLOW_BLOCK_BINDER_TYPE
+ *
+ * The TCF_BLOCK_BINDER_TYPE enumerations were renamed by commit 32f8c4093ac3
+ * ("net: flow_offload: rename TCF_BLOCK_BINDER_TYPE_* to
+ * FLOW_BLOCK_BINDER_TYPE_*")
+ */
+#define FLOW_BLOCK_BINDER_TYPE_UNSPEC TCF_BLOCK_BINDER_TYPE_UNSPEC
+#define FLOW_BLOCK_BINDER_TYPE_CLSACT_INGRESS \
+	TCF_BLOCK_BINDER_TYPE_CLSACT_INGRESS
+#define FLOW_BLOCK_BINDER_TYPE_CLSACT_EGRESS \
+	TCF_BLOCK_BINDER_TYPE_CLSACT_EGRESS
+#endif /* NEED_FLOW_BLOCK_BINDER_TYPE */
+
+#ifdef NEED_FLOW_BLOCK_BIND
+/* NEED_FLOW_BLOCK_BIND
+ *
+ * The TCF_BLOCK_BIND and TCF_BLOCK_UNBIND were renamed by commit 9c0e189ec988
+ * ("net: flow_offload: rename TC_BLOCK_{UN}BIND to FLOW_BLOCK_{UN}BIND")
+ */
+#define FLOW_BLOCK_BIND TC_BLOCK_BIND
+#define FLOW_BLOCK_UNBIND TC_BLOCK_UNBIND
+#endif /* NEED_FLOW_BLOCK_BIND */
+
+#ifdef NEED_FLOW_BLOCK_CB_SETUP_SIMPLE
+/* NEED_FLOW_BLOCK_CB_SETUP_SIMPLE
+ *
+ * flow_block_cb_setup_simple was introduced by commit 4e95bc268b91
+ * ("net: flow_offload: add flow_block_cb_setup_simple()") along with several
+ * related macros.
+ *
+ * These are only used by drivers if HAVE_TC_CB_AND_SETUP_QDISC_MQPRIO is
+ * true.
+ */
+#define FLOW_CLS_REPLACE TC_CLSFLOWER_REPLACE
+#define FLOW_CLS_DESTROY TC_CLSFLOWER_DESTROY
+#define FLOW_CLS_STATS TC_CLSFLOWER_STATS
+#define FLOW_CLS_TMPLT_CREATE TC_CLSFLOWER_TMPLT_CREATE
+#define FLOW_CLS_TMPLT_DESTROY TC_CLSFLOWER_TMPLT_DESTROY
+
+#ifdef HAVE_TC_CB_AND_SETUP_QDISC_MQPRIO
+#include <net/pkt_cls.h>
+
+int _kc_flow_block_cb_setup_simple(struct flow_block_offload *f,
+				   struct list_head *driver_list,
+				   tc_setup_cb_t *cb,
+				   void *cb_ident, void *cb_priv,
+				   bool ingress_only);
+
+#define flow_block_cb_setup_simple(f, driver_list, cb, cb_ident, cb_priv, \
+				   ingress_only) \
+	_kc_flow_block_cb_setup_simple(f, driver_list, cb, cb_ident, cb_priv, \
+			       ingress_only)
+#endif /* HAVE_TC_CB_AND_SETUP_QDISC_MQPRIO */
+#endif /* NEED_FLOW_BLOCK_CB_SETUP_SIMPLE */
 
 /* ART/TSC functions */
 #ifdef HAVE_PTP_CROSSTIMESTAMP
@@ -1118,6 +1502,124 @@ static inline void eth_hw_addr_set(struct net_device *dev, const u8 *addr)
 }
 #endif /* NEED_ETH_HW_ADDR_SET */
 
+#ifdef NEED_ETH_GET_HEADLEN
+/* This is missing on pre 3.18 kernels, most notably on 3.10 used for ESX
+ * certification.
+ */
+
+/* include headers needed for get_headlen function */
+#if defined(CONFIG_FCOE) || defined(CONFIG_FCOE_MODULE)
+#include <scsi/fc/fc_fcoe.h>
+#endif
+#ifdef HAVE_SCTP
+#include <linux/sctp.h>
+#endif
+u32 eth_get_headlen(unsigned char *data, unsigned int max_len)
+{
+	union {
+		unsigned char *network;
+		/* l2 headers */
+		struct ethhdr *eth;
+		struct vlan_hdr *vlan;
+		/* l3 headers */
+		struct iphdr *ipv4;
+		struct ipv6hdr *ipv6;
+	} hdr;
+	__be16 proto;
+	u8 nexthdr = 0;	/* default to not TCP */
+	u8 hlen;
+
+	/* this should never happen, but better safe than sorry */
+	if (max_len < ETH_HLEN)
+		return max_len;
+
+	/* initialize network frame pointer */
+	hdr.network = data;
+
+	/* set first protocol and move network header forward */
+	proto = hdr.eth->h_proto;
+	hdr.network += ETH_HLEN;
+
+again:
+	switch (proto) {
+	/* handle any vlan tag if present */
+	case __constant_htons(ETH_P_8021AD):
+	case __constant_htons(ETH_P_8021Q):
+		if ((hdr.network - data) > (max_len - VLAN_HLEN))
+			return max_len;
+
+		proto = hdr.vlan->h_vlan_encapsulated_proto;
+		hdr.network += VLAN_HLEN;
+		goto again;
+	/* handle L3 protocols */
+	case __constant_htons(ETH_P_IP):
+		if ((hdr.network - data) > (max_len - sizeof(struct iphdr)))
+			return max_len;
+
+		/* access ihl as a u8 to avoid unaligned access on ia64 */
+		hlen = (hdr.network[0] & 0x0F) << 2;
+
+		/* verify hlen meets minimum size requirements */
+		if (hlen < sizeof(struct iphdr))
+			return hdr.network - data;
+
+		/* record next protocol if header is present */
+		if (!(hdr.ipv4->frag_off & htons(IP_OFFSET)))
+			nexthdr = hdr.ipv4->protocol;
+
+		hdr.network += hlen;
+		break;
+#ifdef NETIF_F_TSO6
+	case __constant_htons(ETH_P_IPV6):
+		if ((hdr.network - data) > (max_len - sizeof(struct ipv6hdr)))
+			return max_len;
+
+		/* record next protocol */
+		nexthdr = hdr.ipv6->nexthdr;
+		hdr.network += sizeof(struct ipv6hdr);
+		break;
+#endif /* NETIF_F_TSO6 */
+#if defined(CONFIG_FCOE) || defined(CONFIG_FCOE_MODULE)
+	case __constant_htons(ETH_P_FCOE):
+		hdr.network += FCOE_HEADER_LEN;
+		break;
+#endif
+	default:
+		return hdr.network - data;
+	}
+
+	/* finally sort out L4 */
+	switch (nexthdr) {
+	case IPPROTO_TCP:
+		if ((hdr.network - data) > (max_len - sizeof(struct tcphdr)))
+			return max_len;
+
+		/* access doff as a u8 to avoid unaligned access on ia64 */
+		hdr.network += max_t(u8, sizeof(struct tcphdr),
+				     (hdr.network[12] & 0xF0) >> 2);
+
+		break;
+	case IPPROTO_UDP:
+	case IPPROTO_UDPLITE:
+		hdr.network += sizeof(struct udphdr);
+		break;
+#ifdef HAVE_SCTP
+	case IPPROTO_SCTP:
+		hdr.network += sizeof(struct sctphdr);
+		break;
+#endif
+	}
+
+	/*
+	 * If everything has gone correctly hdr.network should be the
+	 * data section of the packet and will be the end of the header.
+	 * If not then it probably represents the end of the last recognized
+	 * header.
+	 */
+	return min_t(unsigned int, hdr.network - data, max_len);
+}
+#endif /* NEED_ETH_GET_HEADLEN */
+
 /* NEED_ETH_GET_HEADLEN_NET_DEVICE_ARG
  *
  *
@@ -1309,12 +1811,7 @@ static inline u64 roundup_u64(u64 x, u32 y)
 }
 #endif /* NEED_ROUNDUP_U64 */
 
-#ifndef HAVE_LINKMODE
-static inline void linkmode_set_bit(int nr, volatile unsigned long *addr)
-{
-	__set_bit(nr, addr);
-}
-
+#ifdef NEED_LINKMODE_ZERO
 static inline void linkmode_zero(unsigned long *dst)
 {
 	bitmap_zero(dst, __ETHTOOL_LINK_MODE_MASK_NBITS);
@@ -1325,11 +1822,68 @@ static inline void linkmode_copy(unsigned long *dst, const unsigned long *src)
 	bitmap_copy(dst, src, __ETHTOOL_LINK_MODE_MASK_NBITS);
 }
 
+static inline void linkmode_and(unsigned long *dst, const unsigned long *a,
+				const unsigned long *b)
+{
+	bitmap_and(dst, a, b, __ETHTOOL_LINK_MODE_MASK_NBITS);
+}
+
+static inline void linkmode_or(unsigned long *dst, const unsigned long *a,
+				const unsigned long *b)
+{
+	bitmap_or(dst, a, b, __ETHTOOL_LINK_MODE_MASK_NBITS);
+}
+
 static inline bool linkmode_empty(const unsigned long *src)
 {
 	return bitmap_empty(src, __ETHTOOL_LINK_MODE_MASK_NBITS);
 }
-#endif /* !HAVE_LINKMODE */
+
+static inline int linkmode_andnot(unsigned long *dst, const unsigned long *src1,
+				  const unsigned long *src2)
+{
+	return bitmap_andnot(dst, src1, src2,  __ETHTOOL_LINK_MODE_MASK_NBITS);
+}
+
+static inline void linkmode_set_bit(int nr, volatile unsigned long *addr)
+{
+	__set_bit(nr, addr);
+}
+
+static inline void linkmode_clear_bit(int nr, volatile unsigned long *addr)
+{
+	__clear_bit(nr, addr);
+}
+
+static inline void linkmode_change_bit(int nr, volatile unsigned long *addr)
+{
+	__change_bit(nr, addr);
+}
+
+static inline int linkmode_test_bit(int nr, volatile unsigned long *addr)
+{
+	return test_bit(nr, addr);
+}
+
+static inline int linkmode_equal(const unsigned long *src1,
+				 const unsigned long *src2)
+{
+	return bitmap_equal(src1, src2, __ETHTOOL_LINK_MODE_MASK_NBITS);
+}
+#else /* !NEED_LINKMODE_ZERO */
+#include <linux/linkmode.h>
+#endif /* NEED_LINKMODE_ZERO */
+
+#ifdef NEED_LINKMODE_SET_BIT_ARRAY
+static inline void linkmode_set_bit_array(const int *array, int array_size,
+					  unsigned long *addr)
+{
+	int i;
+
+	for (i = 0; i < array_size; i++)
+		linkmode_set_bit(array[i], addr);
+}
+#endif /* NEED_LINKMODE_SET_BIT_ARRAY */
 
 #ifdef NEED_ETHTOOL_LINK_MODE_BIT_INDICES
 /* Link mode bit indices */
@@ -2127,6 +2681,38 @@ static inline void _kc_devm_kfree(struct device *dev, const void *p)
 #define devm_kzalloc(dev, size, flags) kzalloc(size, flags)
 #endif /* NEED_DEVM_KZALLOC */
 
+#ifdef NEED_DEVM_KCALLOC
+/* NEED_DEVM_KCALLOC
+ *
+ * Since commit 64c862a839a8 ("devres: add kernel standard devm_k.alloc
+ * functions"), the kernel has provided several devres variants of the
+ * standard allocation functions.
+ */
+#define devm_kcalloc(dev, cnt, size, flags) \
+	devm_kzalloc(dev, array_size((cnt), (size)), flags)
+#endif /* NEED_DEVM_KCALLOC */
+
+#ifdef NEED_DEVM_KSTRDUP
+/* NEED_DEVM_KSTRDUP
+ *
+ * devm_kstrdup was introduced upstream by commit e31108cad3de ("devres:
+ * introduce API "devm_kstrdup"").
+ */
+char *_kc_devm_kstrdup(struct device *dev, const char *s, gfp_t gfp);
+#define devm_kstrdup(dev, s, gfp) _kc_devm_kstrdup(dev, s, gfp)
+#endif /* NEED_DEVM_KSTRDUP */
+
+#ifdef NEED_DEVM_KMEMDUP
+/* NEED_DEVM_KMEMDUP
+ *
+ * devm_kmemdup was introduced upstream by commit 3046365bb470 ("devres:
+ * introduce API "devm_kmemdup").
+ */
+void *_kc_devm_kmemdup(struct device *dev, const void *src, size_t len,
+		       gfp_t gfp);
+#define devm_kmemdup _kc_devm_kmemdup
+#endif /* NEED_DEVM_KMEMDUP */
+
 /* NEED_DIFF_BY_SCALED_PPM
  *
  * diff_by_scaled_ppm and adjust_by_scaled_ppm were introduced in
@@ -2233,6 +2819,14 @@ static inline int pci_enable_ptm(struct pci_dev *dev, u8 *granularity)
 { return -EINVAL; }
 #endif /* CONFIG_PCIE_PTM */
 #endif /* NEED_PCI_ENABLE_PTM */
+
+#ifdef NEED_PCI_DISABLE_PTM
+/* NEED_PCI_DISABLE_PTM
+ *
+ * This declares/defines the function for kernels missing it in linux/pci.h
+ */
+void pci_disable_ptm(struct pci_dev *dev);
+#endif /* NEED_PCI_DISABLE_PTM */
 
 /* NEED_PCIE_FLR
  * NEED_PCIE_FLR_RETVAL
@@ -2477,11 +3071,27 @@ static inline void *__must_check krealloc_array(void *p,
 }
 #endif /* NEED_KREALLOC_ARRAY */
 
+/* NEED_KMEM_CACHE_ALLOC_LRU
+ *
+ * Added in commit 88f2ef73fd66 ("mm: introduce kmem_cache_alloc_lru"),
+ * later changed to macro.
+ *
+ * This improves memory usage, and fallbacks to old impl when lru is NULL,
+ * or just when non "_lru" variant is called. We will do that.
+ */
+#ifdef NEED_KMEM_CACHE_ALLOC_LRU
+static inline void *
+kmem_cache_alloc_lru(struct kmem_cache *s, struct list_lru *lru, gfp_t gfpflags)
+{
+	return kmem_cache_alloc(s, gfpflags);
+}
+#endif /* NEED_KMEM_CACHE_ALLOC_LRU */
+
 /* NEED_XDP_DO_FLUSH
  *
  * Upstream commit 1d233886dd90 ("xdp: Use bulking for non-map XDP_REDIRECT
  * and consolidate code paths") replaced xdp_do_flush_map with xdp_do_flush
- * and 7f04bd109d4c ("net: Tree wide: Replace xdp_do_flush_map() with 
+ * and 7f04bd109d4c ("net: Tree wide: Replace xdp_do_flush_map() with
  * xdp_do_flush()") cleaned up related code.
  */
 #ifdef NEED_XDP_DO_FLUSH
@@ -2895,6 +3505,23 @@ static inline u32 linkmode_to_mii_eee_cap1_t(unsigned long *adv)
 #define _kc__assign_str(dst, src) __assign_str(dst)
 #endif
 
+#if defined(NEED_DIM_END_SAMPLE_BY_POINTER) && defined(HAVE_CONFIG_DIMLIB)
+#include <linux/dim.h>
+
+/* Since commit 61bf0009a765 ("dim: pass dim_sample to net_dim() by reference")
+ * the net_dim function has accepted a const struct dim_sample * parameter
+ * instead of passing struct dim_sample by value.
+ */
+static inline void _kc_net_dim(struct dim *dim,
+			       const struct dim_sample *end_sample)
+{
+	if (end_sample)
+		net_dim(dim, *end_sample);
+}
+
+#define net_dim(_dim, _dim_sample) _kc_net_dim(_dim, _dim_sample)
+#endif
+
 #ifdef NEED_XSK_BUFF_DMA_SYNC_FOR_CPU_NO_POOL
 #include <net/xdp_sock_drv.h>
 static inline void
@@ -2913,4 +3540,54 @@ _kc_xsk_buff_dma_sync_for_cpu(struct xdp_buff *xdp)
 #define xdp_convert_buff_to_frame convert_to_xdp_frame
 #endif
 
+#ifdef NEED_STR_ENABLED_DISABLED
+static inline const char *str_enable_disable(bool v)
+{
+	return v ? "enable" : "disable";
+}
+
+static inline const char *str_enabled_disabled(bool v)
+{
+	return v ? "enabled" : "disabled";
+}
+
+static inline const char *str_read_write(bool v)
+{
+	return v ? "read" : "write";
+}
+
+static inline const char *str_on_off(bool v)
+{
+	return v ? "on" : "off";
+}
+
+static inline const char *str_yes_no(bool v)
+{
+	return v ? "yes" : "no";
+}
+#endif /* NEED_STR_ENABLED_DISABLED */
+#if !defined(HAVE_LINUX_REFCOUNT_TYPES_HEADER) && !defined(HAVE_LINUX_REFCOUNT_HEADER)
+
+	typedef struct refcount_struct {
+		atomic_t refs;
+	} refcount_t;
+#endif /* HAVE_LINUX_REFCOUNT_TYPES_HEADER && HAVE_LINUX_REFCOUNT_HEADER */
+
+#ifdef NEED_TIMER_DELETE
+#define timer_delete del_timer
+#define timer_delete_sync del_timer_sync
+#endif /* NEED_TIMER_DELETE */
+
+/* Since commit 3652117f8548 ("eventfd: simplify eventfd_signal()") the
+ * eventfd_signal() function only takes a single argument. The second
+ * argument was only ever passed as 1.
+ */
+#ifdef NEED_EVENTFD_SIGNAL_NO_COUNTER
+static inline
+void _kc_eventfd_signal(struct eventfd_ctx *ctx)
+{
+	eventfd_signal(ctx, 1);
+}
+#define eventfd_signal(ctx) _kc_eventfd_signal(ctx)
+#endif /* NEED_EVENTFD_SIGNAL_NO_COUNTER */
 #endif /* _KCOMPAT_IMPL_H_ */
