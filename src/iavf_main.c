@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
-/* Copyright (C) 2013-2024 Intel Corporation */
+/* Copyright (C) 2013-2025 Intel Corporation */
 
 #include "iavf.h"
 #include "iavf_helper.h"
@@ -24,11 +24,11 @@ static const char iavf_driver_string[] =
 
 #define DRV_VERSION_MAJOR (4)
 #define DRV_VERSION_MINOR (13)
-#define DRV_VERSION_BUILD (3)
-#define DRV_VERSION "4.13.3"
+#define DRV_VERSION_BUILD (14)
+#define DRV_VERSION "4.13.14"
 const char iavf_driver_version[] = DRV_VERSION;
 static const char iavf_copyright[] =
-	"Copyright (C) 2013-2024 Intel Corporation";
+	"Copyright (C) 2013-2025 Intel Corporation";
 
 /* iavf_pci_tbl - PCI Device ID Table
  *
@@ -1740,6 +1740,31 @@ void iavf_set_queue_vlan_tag_loc(struct iavf_adapter *adapter)
 	}
 }
 
+#define IAVF_MAX_SMALL_RSS_QS	16
+#define IAVF_MAX_MEDIUM_RSS_QS	64
+#define IAVF_MAX_LARGE_RSS_QS	256
+
+#define IAVF_LUT_GLOBAL_SIZE	512
+#define IAVF_LUT_PF_SIZE	2048
+/**
+ * iavf_lut_size_to_qs_num - Return the default number of queues for LUT size
+ *
+ * @lut_type: the size of RSS LUT
+ *
+ * Return: the number of default value of RSS queues per selected LUT size
+ */
+static int iavf_lut_size_to_qs_num(u16 lut_size)
+{
+	switch (lut_size) {
+	case IAVF_LUT_PF_SIZE:
+		return IAVF_MAX_LARGE_RSS_QS;
+	case IAVF_LUT_GLOBAL_SIZE:
+		return IAVF_MAX_MEDIUM_RSS_QS;
+	default:
+		return IAVF_MAX_SMALL_RSS_QS;
+	}
+}
+
 /**
  * iavf_alloc_queues - Allocate memory for all rings
  * @adapter: board private structure to initialize
@@ -2731,7 +2756,8 @@ int iavf_parse_vf_resource_msg(struct iavf_adapter *adapter)
 	}
 
 	/* Try to match queues to vcpus */
-	qnum = min_t(int, IAVF_MAX_REQ_QUEUES, (int)(num_online_cpus()));
+	qnum = min_t(int, num_online_cpus(),
+		     iavf_lut_size_to_qs_num(adapter->rss_lut_size));
 	if (qnum < IAVF_MIN_ALLOC_QUEUES)
 		qnum = IAVF_MIN_ALLOC_QUEUES;
 	if (!iavf_is_adq_enabled(adapter) &&

@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
-/* Copyright (C) 2013-2024 Intel Corporation */
+/* Copyright (C) 2013-2025 Intel Corporation */
 
 #ifndef CONFIG_TRACEPOINTS
 #if !defined(_IAVF_TRACE_H_)
@@ -87,8 +87,7 @@ DECLARE_EVENT_CLASS(
 		__field(void*, ring)
 		__field(void*, desc)
 		__field(void*, buf)
-		__string(devname, ring->netdev->name)
-	),
+		__string(devname, ring->netdev->name)),
 
 	TP_fast_assign(
 		__entry->ring = ring;
@@ -104,8 +103,7 @@ DECLARE_EVENT_CLASS(
 	TP_printk(
 		"netdev: %s ring: %p desc: %p buf %p",
 		__get_str(devname), __entry->ring,
-		__entry->desc, __entry->buf)
-);
+		__entry->desc, __entry->buf));
 
 DEFINE_EVENT(
 	iavf_tx_template, iavf_clean_tx_irq,
@@ -136,8 +134,7 @@ DECLARE_EVENT_CLASS(
 		__field(void*, ring)
 		__field(void*, desc)
 		__field(void*, skb)
-		__string(devname, ring->netdev->name)
-	),
+		__string(devname, ring->netdev->name)),
 
 	TP_fast_assign(
 		__entry->ring = ring;
@@ -153,8 +150,7 @@ DECLARE_EVENT_CLASS(
 	TP_printk(
 		"netdev: %s ring: %p desc: %p skb %p",
 		__get_str(devname), __entry->ring,
-		__entry->desc, __entry->skb)
-);
+		__entry->desc, __entry->skb));
 
 DEFINE_EVENT(
 	iavf_rx_template, iavf_clean_rx_irq,
@@ -183,8 +179,7 @@ DECLARE_EVENT_CLASS(
 	TP_STRUCT__entry(
 		__field(void*, skb)
 		__field(void*, ring)
-		__string(devname, ring->netdev->name)
-	),
+		__string(devname, ring->netdev->name)),
 
 	TP_fast_assign(
 		__entry->skb = skb;
@@ -199,8 +194,7 @@ DECLARE_EVENT_CLASS(
 	TP_printk(
 		"netdev: %s skb: %p ring: %p",
 		__get_str(devname), __entry->skb,
-		__entry->ring)
-);
+		__entry->ring));
 
 DEFINE_EVENT(
 	iavf_xmit_template, iavf_xmit_frame_ring,

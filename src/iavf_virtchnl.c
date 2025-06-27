@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
-/* Copyright (C) 2013-2024 Intel Corporation */
+/* Copyright (C) 2013-2025 Intel Corporation */
 
 #include "iavf.h"
 #include "iavf_prototype.h"
@@ -19,6 +19,11 @@ static int iavf_send_pf_msg(struct iavf_adapter *adapter,
 {
 	struct iavf_hw *hw = &adapter->hw;
 	enum iavf_status status;
+
+	if (WARN_ONCE(len > IAVF_MAX_AQ_BUF_SIZE,
+		      "message of len %u is too big for AQ VC, opcode %d\n",
+		      len, op))
+		return -EFBIG;
 
 	if (adapter->flags & IAVF_FLAG_PF_COMMS_FAILED)
 		return 0; /* nothing to see here, move along */
@@ -616,9 +621,12 @@ void iavf_configure_queues(struct iavf_adapter *adapter)
 	}
 	adapter->current_op = VIRTCHNL_OP_CONFIG_VSI_QUEUES;
 
+	/* -1 to avoid overflowing IAVF_MAX_AQ_BUF_SIZE because virtchnl_ss_vsi_queue_config_info
+	 * adds one more pair due to *_LEGACY_SIZEOF including it.
+	 */
 	max_pairs = (IAVF_MAX_AQ_BUF_SIZE -
 			sizeof(struct virtchnl_vsi_queue_config_info)) /
-			sizeof(struct virtchnl_queue_pair_info);
+			sizeof(struct virtchnl_queue_pair_info) - 1;
 
 	if (iavf_ptp_cap_supported(adapter, VIRTCHNL_1588_PTP_CAP_RX_TSTAMP))
 		rx_flags |= VIRTCHNL_PTP_RX_TSTAMP;

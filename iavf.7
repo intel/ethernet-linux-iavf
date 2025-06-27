@@ -1,8 +1,5 @@
 .\" Man page generated from reStructuredText.
 .
-.TH "IAVF" "7" "December 09, 2024" "" "Linux iavf readme"
-.SH NAME
-iavf \- iavf -- Intel Adaptive Virtual Function Driver
 .
 .nr rst2man-indent-level 0
 .
@@ -30,6 +27,9 @@ level margin: \\n[rst2man-indent\\n[rst2man-indent-level]]
 .\" new: \\n[rst2man-indent\\n[rst2man-indent-level]]
 .in \\n[rst2man-indent\\n[rst2man-indent-level]]u
 ..
+.TH "IAVF" "7" "June 12, 2025" "" "Linux iavf readme"
+.SH NAME
+iavf \- iavf -- Intel Adaptive Virtual Function Driver
 .SS Contents
 .INDENT 0.0
 .IP \(bu 2
@@ -92,7 +92,7 @@ it is associated. This allows system administrators to update a PF without
 having to update all the VFs associated with it. All AVFs have a single common
 device ID and branding string.
 .sp
-AVFs have a minimum set of features known as "base mode," but may provide
+AVFs have a minimum set of features known as \(dqbase mode,\(dq but may provide
 additional features depending on what features are available in the PF with
 which the AVF is associated. The following are base mode features:
 .INDENT 0.0
@@ -131,7 +131,7 @@ HW mailbox is used for VF to PF communications (including on Windows)
 .UNINDENT
 .SH RELATED DOCUMENTATION
 .sp
-See the "Intel(R) Ethernet Adapters and Devices User Guide" for additional
+See the \(dqIntel(R) Ethernet Adapters and Devices User Guide\(dq for additional
 information on . It is available on the Intel website at
 \fI\%https://cdrdv2.intel.com/v1/dl/getContent/705831/\fP
 .SH IDENTIFYING YOUR ADAPTER
@@ -139,6 +139,18 @@ information on . It is available on the Intel website at
 This driver is compatible with virtual functions bound to devices based on the
 following:
 .INDENT 0.0
+.IP \(bu 2
+Intel(R) Ethernet Controller I710
+.IP \(bu 2
+Intel(R) Ethernet Controller V710
+.IP \(bu 2
+Intel(R) Ethernet Controller X710
+.IP \(bu 2
+Intel(R) Ethernet Controller XL710
+.IP \(bu 2
+Intel(R) Ethernet Controller XXV710
+.IP \(bu 2
+Intel(R) Ethernet Network Connection X722
 .IP \(bu 2
 Intel(R) Ethernet Controller E810\-C
 .IP \(bu 2
@@ -152,17 +164,7 @@ Intel(R) Ethernet Connection E823\-C
 .IP \(bu 2
 Intel(R) Ethernet Connection E823\-L
 .IP \(bu 2
-Intel(R) Ethernet Controller I710
-.IP \(bu 2
-Intel(R) Ethernet Controller X710
-.IP \(bu 2
-Intel(R) Ethernet Controller XL710
-.IP \(bu 2
-Intel(R) Ethernet Network Connection X722
-.IP \(bu 2
-Intel(R) Ethernet Controller XXV710
-.IP \(bu 2
-Intel(R) Ethernet Controller V710
+Intel(R) Ethernet Controller E830
 .UNINDENT
 .sp
 For information on how to identify your adapter, and for the latest Intel
@@ -476,7 +478,7 @@ ethtool \-\-offload <ethX> rxvlan on/off
 .sp
 The IEEE 802.1ad standard, informally known as QinQ, allows for multiple VLAN
 IDs within a single Ethernet frame. VLAN IDs are sometimes referred to as
-"tags," and multiple VLAN IDs are thus referred to as a "tag stack." Tag stacks
+\(dqtags,\(dq and multiple VLAN IDs are thus referred to as a \(dqtag stack.\(dq Tag stacks
 allow L2 tunneling and the ability to separate traffic within a particular VLAN
 ID, among other uses.
 .sp
@@ -1073,7 +1075,7 @@ Check if the interface is dropping Rx packets due to buffers being full
 .sp
 .nf
 .ft C
-ethtool \-S <ethX> | grep "rx_dropped"
+ethtool \-S <ethX> | grep \(dqrx_dropped\(dq
 .ft P
 .fi
 .UNINDENT
@@ -1349,7 +1351,7 @@ Alternatively, you can install the interfaces in separate broadcast domains
 (either in different switches or in a switch partitioned to VLANs).
 .SS Rx page allocation errors
 .sp
-Errors that read, "Page allocation failure. order:0," may occur under stress
+Errors that read, \(dqPage allocation failure. order:0,\(dq may occur under stress
 with kernels 2.6.25 and newer. This is caused by the way the Linux kernel reports
 this stressed condition.
 .SS Host may reboot after removing PF when VF is active in guest
@@ -1409,7 +1411,7 @@ this program; if not, write to the Free Software Foundation, Inc., 51 Franklin
 St \- Fifth Floor, Boston, MA 02110\-1301 USA.
 .sp
 The full GNU General Public License is included in this distribution in the
-file called "COPYING".
+file called \(dqCOPYING\(dq.
 .SH TRADEMARKS
 .sp
 Intel is a trademark or registered trademark of Intel Corporation or its

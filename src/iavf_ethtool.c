@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
-/* Copyright (C) 2013-2024 Intel Corporation */
+/* Copyright (C) 2013-2025 Intel Corporation */
 
 /* ethtool support for iavf */
 #include "iavf.h"
@@ -40,7 +40,7 @@
  * arguments to the iavf_add_stat_string() helper function.
  **/
 struct iavf_stats {
-	char stat_string[ETH_GSTRING_LEN];
+	const char *stat_string;
 	int sizeof_stat;
 	int stat_offset;
 };
@@ -446,7 +446,7 @@ static const struct iavf_stats iavf_gstrings_stats[] = {
  * our one private flag is actually available.
  */
 struct iavf_priv_flags {
-	char flag_string[ETH_GSTRING_LEN];
+	const char *flag_string;
 	u32 flag;
 	bool read_only;
 };
@@ -484,6 +484,9 @@ static int iavf_get_link_ksettings(struct net_device *netdev,
 				   struct ethtool_link_ksettings *cmd)
 {
 	struct iavf_adapter *adapter = netdev_priv(netdev);
+#ifdef VIRTCHNL_VF_CAP_ADV_LINK_SPEED
+	int status = 0;
+#endif /* VIRTCHNL_VF_CAP_ADV_LINK_SPEED */
 
 	ethtool_link_ksettings_zero_link_mode(cmd, supported);
 	ethtool_link_ksettings_zero_link_mode(cmd, advertising);
@@ -493,6 +496,13 @@ static int iavf_get_link_ksettings(struct net_device *netdev,
 	cmd->base.duplex = DUPLEX_FULL;
 
 #ifdef VIRTCHNL_VF_CAP_ADV_LINK_SPEED
+	mutex_lock(&adapter->crit_lock);
+
+	if (!adapter->vf_res) {
+		status = -EFAULT;
+		goto unlock;
+	}
+
 	if (ADV_LINK_SUPPORT(adapter)) {
 		if (adapter->link_speed_mbps &&
 		    adapter->link_speed_mbps < U32_MAX)
@@ -500,7 +510,7 @@ static int iavf_get_link_ksettings(struct net_device *netdev,
 		else
 			cmd->base.speed = SPEED_UNKNOWN;
 
-		return 0;
+		goto unlock;
 	}
 
 #endif /* VIRTCHNL_VF_CAP_ADV_LINK_SPEED */
@@ -539,7 +549,13 @@ static int iavf_get_link_ksettings(struct net_device *netdev,
 		break;
 	}
 
+#ifdef VIRTCHNL_VF_CAP_ADV_LINK_SPEED
+unlock:
+	mutex_unlock(&adapter->crit_lock);
+	return status;
+#else
 	return 0;
+#endif /* VIRTCHNL_VF_CAP_ADV_LINK_SPEED */
 }
 
 #ifndef ETHTOOL_GLINKSETTINGS
@@ -556,8 +572,12 @@ static int iavf_get_settings(struct net_device *netdev,
 			       struct ethtool_cmd *ecmd)
 {
 	struct ethtool_link_ksettings ks;
+	int status;
 
-	iavf_get_link_ksettings(netdev, &ks);
+	status = iavf_get_link_ksettings(netdev, &ks);
+	if (status)
+		return status;
+
 	_kc_ethtool_ksettings_to_cmd(&ks, ecmd);
 	ecmd->transceiver = XCVR_EXTERNAL;
 	return 0;
@@ -2278,13 +2298,13 @@ static int iavf_get_rxnfc(struct net_device *netdev, struct ethtool_rxnfc *cmd,
 #endif /* ETHTOOL_GRXRINGS */
 #ifdef ETHTOOL_GCHANNELS
 /**
- * iavf_get_channels: get the number of channels supported by the device
+ * iavf_get_channels - get the number of channels supported by the device
  * @netdev: network interface device structure
  * @ch: channel information structure
  *
  * For the purposes of our device, we only use combined channels, i.e. a tx/rx
  * queue pair. Report one extra channel to match our "other" MSI-X vector.
- **/
+ */
 static void iavf_get_channels(struct net_device *netdev,
 			      struct ethtool_channels *ch)
 {
@@ -2305,14 +2325,15 @@ static void iavf_get_channels(struct net_device *netdev,
 }
 
 /**
- * iavf_set_channels: set the new channel count
+ * iavf_set_channels - set the new channel count
  * @netdev: network interface device structure
  * @ch: channel information structure
  *
  * Negotiate a new number of channels with the PF then do a reset.  During
- * reset we'll realloc queues and fix the RSS table.  Returns 0 on success,
- * negative on failure.
- **/
+ * reset we'll realloc queues and fix the RSS table.
+ *
+ * Return: 0 on success, negative on failure.
+ */
 static int iavf_set_channels(struct net_device *netdev,
 			     struct ethtool_channels *ch)
 {
