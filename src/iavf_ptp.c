@@ -1177,7 +1177,7 @@ static int iavf_ptp_register_clock(struct iavf_adapter *adapter)
 #else
 	ptp_info->adjfreq = iavf_ptp_adjfreq;
 #endif
-#ifdef HAVE_PTP_CLOCK_DO_AUX_WORK
+#ifdef HAVE_PTP_CANCEL_WORKER_SYNC
 	ptp_info->do_aux_work = iavf_ptp_do_aux_work;
 #endif
 
@@ -1276,6 +1276,46 @@ static void iavf_validate_tx_tstamp_format(struct iavf_adapter *adapter)
 	}
 }
 
+#ifndef HAVE_PTP_CANCEL_WORKER_SYNC
+/**
+ * iavf_ptp_periodic_work - Do PTP periodic work
+ * @work: PTP work
+ */
+static void iavf_ptp_periodic_work(struct kthread_work *work)
+{
+	struct iavf_ptp *ptp = container_of(work, struct iavf_ptp, work.work);
+	long delay;
+
+	delay = iavf_ptp_do_aux_work(&ptp->info);
+	if (delay >= 0)
+		kthread_queue_delayed_work(ptp->kworker, &ptp->work, delay);
+}
+
+/**
+ * iavf_ptp_init_work - Initialize PTP work threads
+ * @adapter: Driver specific private structure
+ *
+ * Return: 0 on success, negative error code otherwise.
+ */
+static int iavf_ptp_init_work(struct iavf_adapter *adapter)
+{
+	struct iavf_ptp *ptp = &adapter->ptp;
+	struct kthread_worker *kworker;
+
+	kthread_init_delayed_work(&ptp->work, iavf_ptp_periodic_work);
+
+	kworker = kthread_create_worker(0, "iavf-ptp");
+
+	if (IS_ERR(kworker))
+		return PTR_ERR(kworker);
+
+	ptp->kworker = kworker;
+	kthread_queue_delayed_work(ptp->kworker, &ptp->work, 0);
+
+	return 0;
+}
+#endif /* !HAVE_PTP_CANCEL_WORKER_SYNC */
+
 /**
  * iavf_ptp_init - Initialize PTP support if capability was negotiated
  * @adapter: private adapter structure
@@ -1308,8 +1348,12 @@ static void iavf_ptp_init(struct iavf_adapter *adapter)
 		return;
 	}
 
-#ifdef HAVE_PTP_CLOCK_DO_AUX_WORK
+#ifdef HAVE_PTP_CANCEL_WORKER_SYNC
 	ptp_schedule_worker(adapter->ptp.clock, 0);
+#else
+	err = iavf_ptp_init_work(adapter);
+	if (err)
+		return;
 #endif
 
 	iavf_ptp_map_phc_addr(adapter);
@@ -1341,6 +1385,11 @@ static bool iavf_ptp_op_match(enum virtchnl_ops pending_op)
 void iavf_ptp_release(struct iavf_adapter *adapter)
 {
 	if (!IS_ERR_OR_NULL(adapter->ptp.clock)) {
+#ifdef HAVE_PTP_CANCEL_WORKER_SYNC
+		ptp_cancel_worker_sync(adapter->ptp.clock);
+#else
+		kthread_cancel_delayed_work_sync(&adapter->ptp.work);
+#endif
 		dev_info(&adapter->pdev->dev, "removing PTP clock %s\n", adapter->ptp.info.name);
 		ptp_clock_unregister(adapter->ptp.clock);
 		adapter->ptp.clock = NULL;

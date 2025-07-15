@@ -15,7 +15,7 @@
  **/
 enum iavf_status iavf_set_mac_type(struct iavf_hw *hw)
 {
-	enum iavf_status status = IAVF_SUCCESS;
+	enum iavf_status status = 0;
 
 	if (hw->vendor_id == PCI_VENDOR_ID_INTEL) {
 		switch (hw->device_id) {
@@ -262,8 +262,8 @@ const char *iavf_stat_str(struct iavf_hw *hw, enum iavf_status stat_err)
 void iavf_debug_aq(struct iavf_hw *hw, enum iavf_debug_mask mask, void *desc,
 		   void *buffer, u16 buf_len)
 {
-	struct iavf_aq_desc *aq_desc = (struct iavf_aq_desc *)desc;
-	u8 *buf = (u8 *)buffer;
+	struct iavf_aq_desc *aq_desc = desc;
+	u8 *buf = buffer;
 	u16 len;
 
 	if ((!(mask & hw->debug_mask)) || (desc == NULL))
