@@ -27,7 +27,7 @@ level margin: \\n[rst2man-indent\\n[rst2man-indent-level]]
 .\" new: \\n[rst2man-indent\\n[rst2man-indent-level]]
 .in \\n[rst2man-indent\\n[rst2man-indent-level]]u
 ..
-.TH "IAVF" "7" "June 12, 2025" "" "Linux iavf readme"
+.TH "IAVF" "7" "June 13, 2025" "" "Linux iavf readme"
 .SH NAME
 iavf \- iavf -- Intel Adaptive Virtual Function Driver
 .SS Contents
@@ -133,7 +133,7 @@ HW mailbox is used for VF to PF communications (including on Windows)
 .sp
 See the \(dqIntel(R) Ethernet Adapters and Devices User Guide\(dq for additional
 information on . It is available on the Intel website at
-\fI\%https://cdrdv2.intel.com/v1/dl/getContent/705831/\fP
+\X'tty: link https://cdrdv2.intel.com/v1/dl/getContent/705831/'\fI\%https://cdrdv2.intel.com/v1/dl/getContent/705831/\fP\X'tty: link'
 .SH IDENTIFYING YOUR ADAPTER
 .sp
 This driver is compatible with virtual functions bound to devices based on the
@@ -169,7 +169,7 @@ Intel(R) Ethernet Controller E830
 .sp
 For information on how to identify your adapter, and for the latest Intel
 network drivers, refer to the Intel Support website at
-\fI\%https://www.intel.com/support\fP\&.
+\X'tty: link https://www.intel.com/support'\fI\%https://www.intel.com/support\fP\X'tty: link'\&.
 .SH BUILDING AND INSTALLATION
 .SS To Manually Build the Driver
 .INDENT 0.0
@@ -434,7 +434,7 @@ This setting is not saved across reboots.
 The driver utilizes the ethtool interface for driver configuration and
 diagnostics, as well as displaying statistical information. The latest ethtool
 version is required for this functionality. Download it at
-\fI\%https://kernel.org/pub/software/network/ethtool/\fP\&.
+\X'tty: link https://kernel.org/pub/software/network/ethtool/'\fI\%https://kernel.org/pub/software/network/ethtool/\fP\X'tty: link'\&.
 .SS Setting VLAN Tag Stripping
 .sp
 If you have applications that require Virtual Functions (VFs) to receive
@@ -666,7 +666,7 @@ and allow Tx traffic to be rate limited per application.
 .sp
 The ADQ information contained here is specific to the iavf driver. For more
 details, refer to the E810 ADQ Configuration Guide at:
-\fI\%https://cdrdv2.intel.com/v1/dl/getContent/609008\fP\&.
+\X'tty: link https://cdrdv2.intel.com/v1/dl/getContent/609008'\fI\%https://cdrdv2.intel.com/v1/dl/getContent/609008\fP\X'tty: link'\&.
 .sp
 Requirements:
 .INDENT 0.0
@@ -1276,7 +1276,7 @@ machine. This static MAC address will survive a VF driver reload.
 .SS Driver buffer overflow fix
 .sp
 The fix to resolve CVE\-2016\-8105, referenced in Intel SA\-00069
-<\fI\%https://www.intel.com/content/www/us/en/security\-center/advisory/intel\-sa\-00069.html\fP>,
+<\X'tty: link https://www.intel.com/content/www/us/en/security-center/advisory/intel-sa-00069.html'\fI\%https://www.intel.com/content/www/us/en/security\-center/advisory/intel\-sa\-00069.html\fP\X'tty: link'>,
 is included in this and future versions of the driver.
 .SS Compiling the driver
 .sp
@@ -1388,14 +1388,14 @@ more information, see the systemd.link man page.
 .SH SUPPORT
 .sp
 For general information, go to the Intel support website at
-\fI\%https://www.intel.com/support/\fP
+\X'tty: link https://www.intel.com/support/'\fI\%https://www.intel.com/support/\fP\X'tty: link'
 .sp
 or the Intel Ethernet Linux project hosted by GitHub at
-\fI\%https://github.com/intel/ethernet\-linux\-iavf\fP
+\X'tty: link https://github.com/intel/ethernet-linux-iavf'\fI\%https://github.com/intel/ethernet\-linux\-iavf\fP\X'tty: link'
 .sp
 If an issue is identified with the released source code on a supported kernel
 with a supported adapter, contact Intel Customer Support at
-\fI\%https://www.intel.com/content/www/us/en/support/products/36773/ethernet\-products.html\fP
+\X'tty: link https://www.intel.com/content/www/us/en/support/products/36773/ethernet-products.html'\fI\%https://www.intel.com/content/www/us/en/support/products/36773/ethernet\-products.html\fP\X'tty: link'
 .SH LICENSE
 .sp
 This program is free software; you can redistribute it and/or modify it under

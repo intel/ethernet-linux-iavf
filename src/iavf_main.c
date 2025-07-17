@@ -24,8 +24,8 @@ static const char iavf_driver_string[] =
 
 #define DRV_VERSION_MAJOR (4)
 #define DRV_VERSION_MINOR (13)
-#define DRV_VERSION_BUILD (14)
-#define DRV_VERSION "4.13.14"
+#define DRV_VERSION_BUILD (15)
+#define DRV_VERSION "4.13.15"
 const char iavf_driver_version[] = DRV_VERSION;
 static const char iavf_copyright[] =
 	"Copyright (C) 2013-2025 Intel Corporation";
@@ -3359,12 +3359,6 @@ static void iavf_watchdog_task(struct work_struct *work)
 			iavf_detect_recover_hung(&adapter->vsi);
 			iavf_chnl_detect_recover(&adapter->vsi);
 		}
-#ifndef HAVE_PTP_CLOCK_DO_AUX_WORK
-#if IS_ENABLED(CONFIG_PTP_1588_CLOCK)
-		if (adapter->ptp.initialized)
-			iavf_ptp_do_aux_work(&adapter->ptp.info);
-#endif
-#endif
 		if (adapter->synce.initialized)
 			iavf_synce_dpll_update(adapter);
 		break;

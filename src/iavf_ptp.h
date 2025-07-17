@@ -9,6 +9,9 @@
 #include <linux/net_tstamp.h>
 #include <linux/ptp_clock_kernel.h>
 #endif /* CONFIG_PTP_1588_CLOCK */
+#ifndef HAVE_PTP_CANCEL_WORKER_SYNC
+#include "kcompat_kthread.h"
+#endif /* HAVE_PTP_CANCEL_WORKER_SYNC */
 
 struct iavf_adapter;
 
@@ -36,6 +39,10 @@ struct iavf_ptp {
 #if IS_ENABLED(CONFIG_PTP_1588_CLOCK)
 	struct ptp_clock_info info;
 	struct ptp_clock *clock;
+#endif
+#ifndef HAVE_PTP_CANCEL_WORKER_SYNC
+	struct kthread_delayed_work work;
+	struct kthread_worker *kworker;
 #endif
 };
 
