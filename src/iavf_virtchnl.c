@@ -3723,9 +3723,6 @@ void iavf_virtchnl_completion(struct iavf_adapter *adapter,
 			} else {
 				adapter->rdma.vc_op_state =
 					IAVF_RDMA_VC_OP_FAILED;
-				dev_err(&adapter->pdev->dev, "PF returned error %d to our request %s-%d\n",
-					v_retval, virtchnl_op_str(v_opcode),
-					v_opcode);
 			}
 
 			wake_up(&adapter->rdma.vc_op_waitqueue);
