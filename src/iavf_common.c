@@ -15,7 +15,7 @@
  **/
 enum iavf_status iavf_set_mac_type(struct iavf_hw *hw)
 {
-	enum iavf_status status = 0;
+	enum iavf_status status = IAVF_SUCCESS;
 
 	if (hw->vendor_id == PCI_VENDOR_ID_INTEL) {
 		switch (hw->device_id) {

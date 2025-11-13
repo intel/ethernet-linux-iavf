@@ -1,8 +1,10 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 /* Copyright (C) 2013-2025 Intel Corporation */
 
-#include <linux/idr.h>
 #include "iavf.h"
+
+#include <linux/idr.h>
+
 #include "iavf_idc.h"
 
 static DEFINE_IDA(iavf_idc_ida);

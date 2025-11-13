@@ -24,8 +24,8 @@ static const char iavf_driver_string[] =
 
 #define DRV_VERSION_MAJOR (4)
 #define DRV_VERSION_MINOR (13)
-#define DRV_VERSION_BUILD (16)
-#define DRV_VERSION "4.13.16"
+#define DRV_VERSION_BUILD (19)
+#define DRV_VERSION "4.13.19"
 const char iavf_driver_version[] = DRV_VERSION;
 static const char iavf_copyright[] =
 	"Copyright (C) 2013-2025 Intel Corporation";
@@ -966,6 +966,10 @@ static void iavf_restore_filters(struct iavf_adapter *adapter)
  */
 u16 iavf_get_num_vlans_added(struct iavf_adapter *adapter)
 {
+	/* TODO: add annotation:
+	lockdep_assert_held(&adapter->mac_vlan_list_lock);
+	*/
+
 	return adapter->num_vlan_filters;
 }
 
@@ -996,9 +1000,10 @@ static u16 iavf_get_max_vlans_allowed(struct iavf_adapter *adapter)
  **/
 static bool iavf_max_vlans_added(struct iavf_adapter *adapter)
 {
-	if (iavf_get_num_vlans_added(adapter) <
-	    iavf_get_max_vlans_allowed(adapter))
-		return false;
+	scoped_guard(spinlock_bh, &adapter->mac_vlan_list_lock)
+		if (iavf_get_num_vlans_added(adapter) <
+		    iavf_get_max_vlans_allowed(adapter))
+			return false;
 
 	return true;
 }
@@ -1231,6 +1236,15 @@ static bool iavf_is_mac_set_handled(struct net_device *netdev,
 	spin_unlock_bh(&adapter->mac_vlan_list_lock);
 
 	return ret;
+}
+
+static bool iavf_chnl_filters_exist(struct iavf_adapter *adapter)
+{
+	if (!iavf_is_adq_v2_enabled(adapter))
+		return false;
+
+	scoped_guard(spinlock_bh, &adapter->cloud_filter_list_lock)
+		return adapter->num_cloud_filters;
 }
 
 /**
@@ -4533,7 +4547,7 @@ static int iavf_parse_cls_flower(struct iavf_adapter *adapter,
 				field_flags |= IAVF_CLOUD_FIELD_IIP;
 			} else {
 				dev_err(&adapter->pdev->dev, "Bad ip src mask 0x%08x\n",
-					be32_to_cpu(match.mask->dst));
+					be32_to_cpu(match.mask->src));
 				return -EINVAL;
 			}
 		}
@@ -4695,8 +4709,9 @@ static int iavf_configure_clsflower(struct iavf_adapter *adapter,
 				    struct flow_cls_offload *cls_flower)
 {
 	int tc = tc_classid_to_hwtc(adapter->netdev, cls_flower->classid);
-	struct iavf_cloud_filter *filter = NULL;
-	int err = -EINVAL, count = 50;
+	struct iavf_cloud_filter *filter;
+	bool needs_unlock = false;
+	int err;
 
 	if (tc < IAVF_START_CHNL_TC) {
 		dev_err(&adapter->pdev->dev, "Invalid traffic class\n");
@@ -4709,37 +4724,40 @@ static int iavf_configure_clsflower(struct iavf_adapter *adapter,
 		return -EOPNOTSUPP;
 	}
 
-	if (adapter->num_cloud_filters >= IAVF_MAX_CLOUD_ADQ_FILTERS) {
-		dev_err(&adapter->pdev->dev,
-			"Unable to add filter (action is forward to TC) because VF reached the limit of max allowed filters (%u)\n",
-			IAVF_MAX_CLOUD_ADQ_FILTERS);
-		return -ENOSPC;
-	}
-
-	/* bail out here if filter already exists */
-	spin_lock_bh(&adapter->cloud_filter_list_lock);
-	if (iavf_find_cf(adapter, &cls_flower->cookie)) {
-		dev_err(&adapter->pdev->dev, "Failed to add TC Flower filter, it already exists\n");
-		spin_unlock_bh(&adapter->cloud_filter_list_lock);
-		return -EEXIST;
-	}
-	spin_unlock_bh(&adapter->cloud_filter_list_lock);
-
 	filter = kzalloc(sizeof(*filter), GFP_KERNEL);
 	if (!filter)
 		return -ENOMEM;
 
-	while (!mutex_trylock(&adapter->crit_lock)) {
-		if (--count == 0) {
-			kfree(filter);
-			return err;
+	for (int i = 50; i--; ) {
+		if (mutex_trylock(&adapter->crit_lock)) {
+			needs_unlock = true;
+			break;
+		}
+		if (!i) {
+			err = -ENOLCK;
+			goto err;
 		}
 		udelay(1);
 	}
+
+	spin_lock_bh(&adapter->cloud_filter_list_lock);
+
+	if (adapter->num_cloud_filters >= IAVF_MAX_CLOUD_ADQ_FILTERS) {
+		dev_err(&adapter->pdev->dev,
+			"Unable to add filter (action is forward to TC) because VF reached the limit of max allowed filters (%u)\n",
+			IAVF_MAX_CLOUD_ADQ_FILTERS);
+		err = -ENOSPC;
+		goto err;
+	}
+
+	/* bail out here if filter already exists */
+	if (iavf_find_cf(adapter, &cls_flower->cookie)) {
+		dev_err(&adapter->pdev->dev, "Failed to add TC Flower filter, it already exists\n");
+		err = -EEXIST;
+		goto err;
+	}
 	filter->cookie = cls_flower->cookie;
 
-	/* set the mask to all zeroes to begin with */
-	memset(&filter->f.mask.tcp_spec, 0, sizeof(struct virtchnl_l4_spec));
 	/* start out with flow type and eth type IPv4 to begin with */
 	filter->f.flow_type = VIRTCHNL_TCP_V4_FLOW;
 	err = iavf_parse_cls_flower(adapter, cls_flower, filter);
@@ -4756,29 +4774,27 @@ static int iavf_configure_clsflower(struct iavf_adapter *adapter,
 	if (tc >= IAVF_START_CHNL_TC &&
 	    tc < ARRAY_SIZE(adapter->ch_config.ch_ex_info))
 		filter->ch = &adapter->ch_config.ch_ex_info[tc];
-	else
-		filter->ch = NULL;
 
 	/* add filter to the list */
-	spin_lock_bh(&adapter->cloud_filter_list_lock);
 	list_add_tail(&filter->list, &adapter->cloud_filter_list);
 	adapter->num_cloud_filters++;
 	filter->add = true;
 	adapter->aq_required |= IAVF_FLAG_AQ_ADD_CLOUD_FILTER;
-	spin_unlock_bh(&adapter->cloud_filter_list_lock);
-
 	/* instead of waiting for the timer to expire (which could be as long as
 	 * 1 sec), trigger the watchdog_task so that filter add command can be
 	 * sent immediately. This will also reduce the time lag between when
 	 * the filter add user command 'completes' and when the filter is
 	 * actually added in HW.
 	 */
-	if (filter && filter->add)
-		mod_delayed_work(adapter->wq, &adapter->watchdog_task, 0);
 err:
-	if (err && filter)
+	if (needs_unlock) {
+		spin_unlock_bh(&adapter->cloud_filter_list_lock);
+		if (!err)
+			mod_delayed_work(adapter->wq, &adapter->watchdog_task, 0);
+		mutex_unlock(&adapter->crit_lock);
+	}
+	if (err)
 		kfree(filter);
-	mutex_unlock(&adapter->crit_lock);
 	return err;
 }
 
@@ -5601,7 +5617,8 @@ iavf_fix_strip_features(struct iavf_adapter *adapter,
 
 	crc_offload_req = CRC_OFFLOAD_ALLOWED(adapter) &&
 			  (requested_features & NETIF_F_RXFCS);
-	num_non_zero_vlan = iavf_get_num_vlans_added(adapter);
+	scoped_guard(spinlock_bh, &adapter->mac_vlan_list_lock)
+		num_non_zero_vlan = iavf_get_num_vlans_added(adapter);
 #ifdef NETIF_F_HW_VLAN_CTAG_RX
 	vlan_strip = (NETIF_F_HW_VLAN_CTAG_RX | NETIF_F_HW_VLAN_STAG_RX);
 #else
@@ -6168,7 +6185,7 @@ static int iavf_resume(struct pci_dev *pdev)
 	struct pci_dev *pdev = to_pci_dev(dev_d);
 #endif /* USE_LEGACY_PM_SUPPORT */
 	struct iavf_adapter *adapter;
-	u32 err;
+	int err;
 
 	adapter = iavf_pdev_to_adapter(pdev);
 #ifdef USE_LEGACY_PM_SUPPORT
