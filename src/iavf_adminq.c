@@ -254,7 +254,7 @@ static void iavf_free_asq_bufs(struct iavf_hw *hw)
  **/
 static enum iavf_status iavf_config_asq_regs(struct iavf_hw *hw)
 {
-	enum iavf_status ret_code = IAVF_SUCCESS;
+	enum iavf_status ret_code = 0;
 	u32 reg = 0;
 
 	/* Clear Head and Tail */
@@ -283,7 +283,7 @@ static enum iavf_status iavf_config_asq_regs(struct iavf_hw *hw)
  **/
 static enum iavf_status iavf_config_arq_regs(struct iavf_hw *hw)
 {
-	enum iavf_status ret_code = IAVF_SUCCESS;
+	enum iavf_status ret_code = 0;
 	u32 reg = 0;
 
 	/* Clear Head and Tail */
@@ -322,7 +322,7 @@ static enum iavf_status iavf_config_arq_regs(struct iavf_hw *hw)
  **/
 static enum iavf_status iavf_init_asq(struct iavf_hw *hw)
 {
-	enum iavf_status ret_code = IAVF_SUCCESS;
+	enum iavf_status ret_code = 0;
 
 	if (hw->aq.asq.count > 0) {
 		/* queue already initialized */
@@ -385,7 +385,7 @@ init_adminq_exit:
  **/
 static enum iavf_status iavf_init_arq(struct iavf_hw *hw)
 {
-	enum iavf_status ret_code = IAVF_SUCCESS;
+	enum iavf_status ret_code = 0;
 
 	if (hw->aq.arq.count > 0) {
 		/* queue already initialized */
@@ -437,7 +437,7 @@ init_adminq_exit:
  **/
 static enum iavf_status iavf_shutdown_asq(struct iavf_hw *hw)
 {
-	enum iavf_status ret_code = IAVF_SUCCESS;
+	enum iavf_status ret_code = 0;
 
 	iavf_acquire_spinlock(&hw->aq.asq_spinlock);
 
@@ -471,7 +471,7 @@ shutdown_asq_out:
  **/
 static enum iavf_status iavf_shutdown_arq(struct iavf_hw *hw)
 {
-	enum iavf_status ret_code = IAVF_SUCCESS;
+	enum iavf_status ret_code = 0;
 
 	iavf_acquire_spinlock(&hw->aq.arq_spinlock);
 
@@ -558,7 +558,7 @@ init_adminq_exit:
  **/
 enum iavf_status iavf_shutdown_adminq(struct iavf_hw *hw)
 {
-	enum iavf_status ret_code = IAVF_SUCCESS;
+	enum iavf_status ret_code = 0;
 
 	if (iavf_check_asq_alive(hw))
 		iavf_aq_queue_shutdown(hw, true);
@@ -648,7 +648,7 @@ enum iavf_status iavf_asq_send_command(struct iavf_hw *hw,
 	struct iavf_asq_cmd_details *details;
 	struct iavf_aq_desc *desc_on_ring;
 	bool cmd_completed = false;
-	enum iavf_status status = IAVF_SUCCESS;
+	enum iavf_status status = 0;
 	u16  retval = 0;
 	u32  val = 0;
 
@@ -778,9 +778,8 @@ enum iavf_status iavf_asq_send_command(struct iavf_hw *hw,
 	/* if ready, copy the desc back to temp */
 	if (iavf_asq_done(hw)) {
 		memcpy(desc, desc_on_ring, sizeof(struct iavf_aq_desc));
-		if (buff != NULL) {
+		if (buff != NULL)
 			memcpy(buff, dma_buff->va, buff_size);
-		}
 		retval = le16_to_cpu(desc->retval);
 		if (retval != 0) {
 			iavf_debug(hw,
@@ -806,10 +805,9 @@ enum iavf_status iavf_asq_send_command(struct iavf_hw *hw,
 	iavf_debug_aq(hw, IAVF_DEBUG_AQ_COMMAND, (void *)desc, buff, buff_size);
 
 	/* save writeback aq if requested */
-	if (details->wb_desc) {
+	if (details->wb_desc)
 		memcpy(details->wb_desc, desc_on_ring,
 		       sizeof(struct iavf_aq_desc));
-	}
 
 	/* update the error if time out occurred */
 	if ((!cmd_completed) &&
@@ -860,7 +858,7 @@ enum iavf_status iavf_clean_arq_element(struct iavf_hw *hw,
 					     struct iavf_arq_event_info *e,
 					     u16 *pending)
 {
-	enum iavf_status ret_code = IAVF_SUCCESS;
+	enum iavf_status ret_code = 0;
 	u16 ntc = hw->aq.arq.next_to_clean;
 	struct iavf_aq_desc *desc;
 	struct iavf_dma_mem *bi;
@@ -908,10 +906,9 @@ enum iavf_status iavf_clean_arq_element(struct iavf_hw *hw,
 	memcpy(&e->desc, desc, sizeof(struct iavf_aq_desc));
 	datalen = le16_to_cpu(desc->datalen);
 	e->msg_len = min(datalen, e->buf_len);
-	if (e->msg_buf != NULL && (e->msg_len != 0)) {
+	if (e->msg_buf != NULL && (e->msg_len != 0))
 		memcpy(e->msg_buf, hw->aq.arq.r.arq_bi[desc_idx].va,
 		       e->msg_len);
-	}
 
 	iavf_debug(hw, IAVF_DEBUG_AQ_MESSAGE, "AQRX: desc and buffer:\n");
 	iavf_debug_aq(hw, IAVF_DEBUG_AQ_COMMAND, (void *)desc, e->msg_buf,
