@@ -4,6 +4,8 @@
 #ifndef _IAVF_OSDEP_H_
 #define _IAVF_OSDEP_H_
 
+#include "kcompat.h"
+
 #include <linux/types.h>
 #include <linux/if_ether.h>
 #include <linux/if_vlan.h>
@@ -34,8 +36,6 @@ static inline void writeq(__u64 val, volatile void __iomem *addr)
 	writel(val >> 32, addr + 4);
 }
 #endif
-
-#include "kcompat.h"
 
 #ifdef HAVE_INCLUDE_BITFIELD
 #include <linux/bitfield.h>

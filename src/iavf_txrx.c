@@ -1,9 +1,10 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 /* Copyright (C) 2013-2025 Intel Corporation */
 
+#include "iavf.h"
+
 #include <linux/prefetch.h>
 
-#include "iavf.h"
 #include "iavf_trace.h"
 #include "iavf_prototype.h"
 

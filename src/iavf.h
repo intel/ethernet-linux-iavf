@@ -4,6 +4,9 @@
 #ifndef _IAVF_H_
 #define _IAVF_H_
 
+/* must be the very first header included */
+#include "kcompat.h"
+
 #include <linux/module.h>
 #include <linux/pci.h>
 #include <linux/aer.h>
@@ -39,8 +42,6 @@
 #include <net/tc_act/tc_gact.h>
 #include <net/tc_act/tc_mirred.h>
 #endif /* __TC_MQPRIO_MODE_MAX */
-
-#include "kcompat.h"
 
 #include "iavf_type.h"
 #include "virtchnl.h"
@@ -890,19 +891,6 @@ static inline bool iavf_is_adq_enabled(struct iavf_adapter *adapter)
 static inline bool iavf_is_adq_v2_enabled(struct iavf_adapter *adapter)
 {
 	return (iavf_is_adq_enabled(adapter) && ADQ_V2_ALLOWED(adapter));
-}
-
-/**
- * iavf_chnl_filters_exist - channel filters exists
- * @adapter: pointer to adapter
- *
- * This function returns true if adq_v2_enabled is true and if there
- * are active filters otherwise false
- **/
-static inline bool iavf_chnl_filters_exist(struct iavf_adapter *adapter)
-{
-	return (iavf_is_adq_v2_enabled(adapter) &&
-		adapter->num_cloud_filters) ? true : false;
 }
 
 static inline void iavf_change_state(struct iavf_adapter *adapter,

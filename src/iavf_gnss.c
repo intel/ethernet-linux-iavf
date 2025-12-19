@@ -574,8 +574,8 @@ iavf_gnss_tty_write(struct tty_struct *tty,
 {
 	struct iavf_gnss_write_buf *write_buf;
 	struct iavf_gnss_serial *gnss_serial;
+	unsigned char *cmd_buf = NULL;
 	struct iavf_adapter *adapter;
-	unsigned char *cmd_buf;
 	int err = count;
 
 	/* We cannot write a single byte using our I2C implementation. */
@@ -614,10 +614,12 @@ iavf_gnss_tty_write(struct tty_struct *tty,
 
 	write_buf->buf = cmd_buf;
 	write_buf->size = count;
+	cmd_buf = NULL; /* remove ownership from cmd_buf */
 	INIT_LIST_HEAD(&write_buf->queue);
 	list_add_tail(&write_buf->queue, &gnss_serial->queue);
 	kthread_queue_work(gnss_serial->kworker, &gnss_serial->write_work);
 exit:
+	kfree(cmd_buf);
 	mutex_unlock(&gnss_serial->gnss_mutex);
 
 	return err;

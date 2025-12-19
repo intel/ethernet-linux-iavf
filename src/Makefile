@@ -2,6 +2,8 @@
 # Copyright (C) 2013-2025 Intel Corporation
 
 ifneq ($(KERNELRELEASE),)
+include $(src)/common.mk
+
 # kbuild part of makefile
 #
 # Makefile for the Intel(R) Ethernet Adaptive Virtual Function Driver

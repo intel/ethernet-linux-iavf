@@ -973,14 +973,19 @@ void iavf_add_ether_addrs(struct iavf_adapter *adapter)
 	int len, i = 0, count = 0;
 	struct iavf_mac_filter *f;
 
+	veal = kzalloc(IAVF_MAX_AQ_BUF_SIZE, GFP_KERNEL);
+	if (!veal)
+		return;
+
+	spin_lock_bh(&adapter->mac_vlan_list_lock);
+
 	if (adapter->current_op != VIRTCHNL_OP_UNKNOWN) {
 		/* bail because we already have a command pending */
 		dev_err(&adapter->pdev->dev, "Cannot add filters, command %d pending\n",
 			adapter->current_op);
-		return;
+		goto out;
 	}
 
-	spin_lock_bh(&adapter->mac_vlan_list_lock);
 	list_for_each_entry(f, &adapter->mac_filter_list, list) {
 		if (f->add) {
 			if (f->is_primary)
@@ -990,48 +995,36 @@ void iavf_add_ether_addrs(struct iavf_adapter *adapter)
 		}
 	}
 
-	if (is_primary) {
-		if (count > 1)
-			more = true;
-
+	if (is_primary && count > 1) {
+		more = true;
 		count = 1;
 	}
 
 	if (!count) {
 		adapter->aq_required &= ~IAVF_FLAG_AQ_ADD_MAC_FILTER;
-		spin_unlock_bh(&adapter->mac_vlan_list_lock);
-		return;
+		goto out;
 	}
 	adapter->current_op = VIRTCHNL_OP_ADD_ETH_ADDR;
 
 	len = virtchnl_ss_ether_addr_list(veal, list, count);
 	if (len > IAVF_MAX_AQ_BUF_SIZE) {
 		dev_warn(&adapter->pdev->dev, "Too many add MAC changes in one request\n");
-		count = (IAVF_MAX_AQ_BUF_SIZE -
-			 sizeof(struct virtchnl_ether_addr_list)) /
-			sizeof(struct virtchnl_ether_addr);
-		len = sizeof(struct virtchnl_ether_addr_list) +
-		      (count * sizeof(struct virtchnl_ether_addr));
-		while (len > IAVF_MAX_AQ_BUF_SIZE)
-			len = virtchnl_ss_ether_addr_list(veal, list, --count);
+		while (len > IAVF_MAX_AQ_BUF_SIZE) {
+			count--;
+			len = virtchnl_ss_ether_addr_list(veal, list, count);
+		}
 		more = true;
-	}
-
-	veal = kzalloc(len, GFP_ATOMIC);
-	if (!veal) {
-		spin_unlock_bh(&adapter->mac_vlan_list_lock);
-		return;
 	}
 
 	veal->vsi_id = adapter->vsi_res->vsi_id;
 	veal->num_elements = count;
 	list_for_each_entry(f, &adapter->mac_filter_list, list) {
-		if (is_primary && !(f->is_primary && f->add))
-			continue;
 		if (!f->add)
 			continue;
-		ether_addr_copy(veal->list[i].addr,
-				f->macaddr);
+		if (is_primary && !f->is_primary)
+			continue;
+
+		ether_addr_copy(veal->list[i].addr, f->macaddr);
 		iavf_set_mac_addr_type(&veal->list[i], f);
 		f->add = false;
 		i++;
@@ -1043,9 +1036,11 @@ void iavf_add_ether_addrs(struct iavf_adapter *adapter)
 	if (!more)
 		adapter->aq_required &= ~IAVF_FLAG_AQ_ADD_MAC_FILTER;
 
+out:
 	spin_unlock_bh(&adapter->mac_vlan_list_lock);
-
-	iavf_send_pf_msg(adapter, VIRTCHNL_OP_ADD_ETH_ADDR, (u8 *)veal, len);
+	if (count)
+		iavf_send_pf_msg(adapter, VIRTCHNL_OP_ADD_ETH_ADDR, (u8 *)veal,
+				 len);
 	kfree(veal);
 }
 
@@ -1063,14 +1058,18 @@ void iavf_del_ether_addrs(struct iavf_adapter *adapter)
 	bool more = false;
 	size_t len;
 
+	veal = kzalloc(IAVF_MAX_AQ_BUF_SIZE, GFP_KERNEL);
+	if (!veal)
+		return;
+
+	spin_lock_bh(&adapter->mac_vlan_list_lock);
+
 	if (adapter->current_op != VIRTCHNL_OP_UNKNOWN) {
 		/* bail because we already have a command pending */
 		dev_err(&adapter->pdev->dev, "Cannot remove filters, command %d pending\n",
 			adapter->current_op);
-		return;
+		goto out;
 	}
-
-	spin_lock_bh(&adapter->mac_vlan_list_lock);
 
 	list_for_each_entry(f, &adapter->mac_filter_list, list) {
 		if (f->remove)
@@ -1078,8 +1077,7 @@ void iavf_del_ether_addrs(struct iavf_adapter *adapter)
 	}
 	if (!count) {
 		adapter->aq_required &= ~IAVF_FLAG_AQ_DEL_MAC_FILTER;
-		spin_unlock_bh(&adapter->mac_vlan_list_lock);
-		return;
+		goto out;
 	}
 	adapter->current_op = VIRTCHNL_OP_DEL_ETH_ADDR;
 
@@ -1089,11 +1087,6 @@ void iavf_del_ether_addrs(struct iavf_adapter *adapter)
 		while (len > IAVF_MAX_AQ_BUF_SIZE)
 			len = virtchnl_ss_ether_addr_list(veal, list, --count);
 		more = true;
-	}
-	veal = kzalloc(len, GFP_ATOMIC);
-	if (!veal) {
-		spin_unlock_bh(&adapter->mac_vlan_list_lock);
-		return;
 	}
 
 	veal->vsi_id = adapter->vsi_res->vsi_id;
@@ -1111,10 +1104,11 @@ void iavf_del_ether_addrs(struct iavf_adapter *adapter)
 	}
 	if (!more)
 		adapter->aq_required &= ~IAVF_FLAG_AQ_DEL_MAC_FILTER;
-
+out:
 	spin_unlock_bh(&adapter->mac_vlan_list_lock);
-
-	iavf_send_pf_msg(adapter, VIRTCHNL_OP_DEL_ETH_ADDR, (u8 *)veal, len);
+	if (count)
+		iavf_send_pf_msg(adapter, VIRTCHNL_OP_DEL_ETH_ADDR, (u8 *)veal,
+				 len);
 	kfree(veal);
 }
 
@@ -1229,72 +1223,61 @@ static void iavf_vlan_add_reject(struct iavf_adapter *adapter)
  **/
 void iavf_add_vlans(struct iavf_adapter *adapter)
 {
-	int len, i = 0, count = 0;
 	struct iavf_vlan_filter *f;
+	int len, i = 0, count = 0;
+	enum virtchnl_ops op;
 	bool more = false;
+	void *vcmsg;
+
+	vcmsg = kzalloc(IAVF_MAX_AQ_BUF_SIZE, GFP_KERNEL);
+	if (!vcmsg)
+		return;
+
+	spin_lock_bh(&adapter->mac_vlan_list_lock);
 
 	if (adapter->current_op != VIRTCHNL_OP_UNKNOWN) {
 		/* bail because we already have a command pending */
 		dev_err(&adapter->pdev->dev, "Cannot add VLANs, command %d pending\n",
 			adapter->current_op);
-		return;
+		goto out;
 	}
 
-	spin_lock_bh(&adapter->mac_vlan_list_lock);
-
-	list_for_each_entry(f, &adapter->vlan_filter_list, list) {
-		if (f->state == IAVF_VLAN_ADD)
-			count++;
+	if (VLAN_FILTERING_ALLOWED(adapter)) {
+		list_for_each_entry(f, &adapter->vlan_filter_list, list)
+			if (f->state == IAVF_VLAN_ADD)
+				count++;
 	}
-	if (!count || !VLAN_FILTERING_ALLOWED(adapter)) {
+	if (!count) {
 		adapter->aq_required &= ~IAVF_FLAG_AQ_ADD_VLAN_FILTER;
-		spin_unlock_bh(&adapter->mac_vlan_list_lock);
-		return;
+		goto out;
 	}
 
 	if (VLAN_ALLOWED(adapter)) {
-		struct virtchnl_vlan_filter_list *vvfl;
+		struct virtchnl_vlan_filter_list *vvfl = vcmsg;
 
-		adapter->current_op = VIRTCHNL_OP_ADD_VLAN;
-
+		op = VIRTCHNL_OP_ADD_VLAN;
 		len = virtchnl_ss_vlan_filter_list(vvfl, vlan_id, count);
 		if (len > IAVF_MAX_AQ_BUF_SIZE) {
-			dev_warn(&adapter->pdev->dev, "Too many add VLAN changes in one request\n");
+			dev_warn(&adapter->pdev->dev, "Too many add VLAN changes in one request (A)\n");
 			while (len > IAVF_MAX_AQ_BUF_SIZE)
 				len = virtchnl_ss_vlan_filter_list(vvfl, vlan_id,
 								   --count);
 			more = true;
 		}
-		vvfl = kzalloc(len, GFP_ATOMIC);
-		if (!vvfl) {
-			spin_unlock_bh(&adapter->mac_vlan_list_lock);
-			return;
-		}
-
 		vvfl->vsi_id = adapter->vsi_res->vsi_id;
 		vvfl->num_elements = count;
 		list_for_each_entry(f, &adapter->vlan_filter_list, list) {
 			if (f->state == IAVF_VLAN_ADD) {
 				vvfl->vlan_id[i] = f->vlan.vid;
-				i++;
 				f->state = IAVF_VLAN_IS_NEW;
-				if (i == count)
+				if (++i == count)
 					break;
 			}
 		}
-		if (!more)
-			adapter->aq_required &= ~IAVF_FLAG_AQ_ADD_VLAN_FILTER;
-
-		spin_unlock_bh(&adapter->mac_vlan_list_lock);
-
-		iavf_send_pf_msg(adapter, VIRTCHNL_OP_ADD_VLAN, (u8 *)vvfl, len);
-		kfree(vvfl);
 	} else {
 		u16 max_vlans = adapter->vlan_v2_caps.filtering.max_filters;
 		u16 current_vlans = iavf_get_num_vlans_added(adapter);
-		struct virtchnl_vlan_filter_list_v2 *vvfl_v2;
-
-		adapter->current_op = VIRTCHNL_OP_ADD_VLAN_V2;
+		struct virtchnl_vlan_filter_list_v2 *vvfl_v2 = vcmsg;
 
 		if ((count + current_vlans) > max_vlans &&
 		    current_vlans < max_vlans) {
@@ -1302,20 +1285,15 @@ void iavf_add_vlans(struct iavf_adapter *adapter)
 			more = true;
 		}
 
+		op = VIRTCHNL_OP_ADD_VLAN_V2;
 		len = virtchnl_ss_vlan_filter_list_v2(vvfl_v2, filters, count);
 		if (len > IAVF_MAX_AQ_BUF_SIZE) {
-			dev_warn(&adapter->pdev->dev, "Too many add VLAN changes in one request\n");
+			dev_warn(&adapter->pdev->dev, "Too many add VLAN changes in one request (B)\n");
 			while (len > IAVF_MAX_AQ_BUF_SIZE)
 				len = virtchnl_ss_vlan_filter_list_v2(vvfl_v2,
 								      filters,
 								      --count);
 			more = true;
-		}
-
-		vvfl_v2 = kzalloc(len, GFP_ATOMIC);
-		if (!vvfl_v2) {
-			spin_unlock_bh(&adapter->mac_vlan_list_lock);
-			return;
 		}
 
 		vvfl_v2->vport_id = adapter->vsi_res->vsi_id;
@@ -1326,8 +1304,6 @@ void iavf_add_vlans(struct iavf_adapter *adapter)
 					&adapter->vlan_v2_caps.filtering.filtering_support;
 				struct virtchnl_vlan *vlan;
 
-				if (i == count)
-					break;
 				/* give priority over outer if it's enabled */
 				if (filtering_support->outer)
 					vlan = &vvfl_v2->filters[i].outer;
@@ -1337,20 +1313,20 @@ void iavf_add_vlans(struct iavf_adapter *adapter)
 				vlan->tci = f->vlan.vid;
 				vlan->tpid = f->vlan.tpid;
 
-				i++;
 				f->state = IAVF_VLAN_IS_NEW;
+				if (++i == count)
+					break;
 			}
 		}
-
-		if (!more)
-			adapter->aq_required &= ~IAVF_FLAG_AQ_ADD_VLAN_FILTER;
-
-		spin_unlock_bh(&adapter->mac_vlan_list_lock);
-
-		iavf_send_pf_msg(adapter, VIRTCHNL_OP_ADD_VLAN_V2,
-				 (u8 *)vvfl_v2, len);
-		kfree(vvfl_v2);
 	}
+	if (!more)
+		adapter->aq_required &= ~IAVF_FLAG_AQ_ADD_VLAN_FILTER;
+	adapter->current_op = op;
+out:
+	spin_unlock_bh(&adapter->mac_vlan_list_lock);
+	if (count)
+		iavf_send_pf_msg(adapter, op, vcmsg, len);
+	kfree(vcmsg);
 }
 
 /**
@@ -1363,60 +1339,60 @@ void iavf_del_vlans(struct iavf_adapter *adapter)
 {
 	struct iavf_vlan_filter *f, *ftmp;
 	int len, i = 0, count = 0;
+	enum virtchnl_ops op;
 	bool more = false;
+	void *vcmsg;
+
+	vcmsg = kzalloc(IAVF_MAX_AQ_BUF_SIZE, GFP_KERNEL);
+	if (!vcmsg)
+		return;
+
+	spin_lock_bh(&adapter->mac_vlan_list_lock);
 
 	if (adapter->current_op != VIRTCHNL_OP_UNKNOWN) {
 		/* bail because we already have a command pending */
 		dev_err(&adapter->pdev->dev, "Cannot remove VLANs, command %d pending\n",
 			adapter->current_op);
-		return;
+		goto out;
 	}
 
-	spin_lock_bh(&adapter->mac_vlan_list_lock);
-
 	list_for_each_entry_safe(f, ftmp, &adapter->vlan_filter_list, list) {
-		/* since VLAN capabilities are not allowed, we dont want to send
+		/* if VLAN capabilities are not allowed, we dont want to send
 		 * a VLAN delete request because it will most likely fail and
 		 * create unnecessary errors/noise, so just free the VLAN
 		 * filters marked for removal to enable bailing out before
 		 * sending a virtchnl message
 		 */
-		if (f->state == IAVF_VLAN_REMOVE &&
-		    !VLAN_FILTERING_ALLOWED(adapter)) {
-			list_del(&f->list);
-			kfree(f);
-			adapter->num_vlan_filters--;
-		} else if (f->state == IAVF_VLAN_DISABLE &&
-		    !VLAN_FILTERING_ALLOWED(adapter)) {
-			f->state = IAVF_VLAN_INACTIVE;
+		if (!VLAN_FILTERING_ALLOWED(adapter)) {
+			if (f->state == IAVF_VLAN_REMOVE) {
+				list_del(&f->list);
+				kfree(f);
+				adapter->num_vlan_filters--;
+			} else if (f->state == IAVF_VLAN_DISABLE) {
+				f->state = IAVF_VLAN_INACTIVE;
+			}
 		} else if (f->state == IAVF_VLAN_REMOVE ||
 			   f->state == IAVF_VLAN_DISABLE) {
 			count++;
 		}
 	}
-	if (!count || !VLAN_FILTERING_ALLOWED(adapter)) {
+	if (!count) {
 		adapter->aq_required &= ~IAVF_FLAG_AQ_DEL_VLAN_FILTER;
-		spin_unlock_bh(&adapter->mac_vlan_list_lock);
-		return;
+		goto out;
 	}
 
 	if (VLAN_ALLOWED(adapter)) {
-		struct virtchnl_vlan_filter_list *vvfl;
+		struct virtchnl_vlan_filter_list *vvfl = vcmsg;
 
-		adapter->current_op = VIRTCHNL_OP_DEL_VLAN;
+		op = VIRTCHNL_OP_DEL_VLAN;
 
 		len = virtchnl_ss_vlan_filter_list(vvfl, vlan_id, count);
 		if (len > IAVF_MAX_AQ_BUF_SIZE) {
-			dev_warn(&adapter->pdev->dev, "Too many delete VLAN changes in one request\n");
+			dev_warn(&adapter->pdev->dev, "Too many delete VLAN changes in one request (A)\n");
 			while (len > IAVF_MAX_AQ_BUF_SIZE)
 				len = virtchnl_ss_vlan_filter_list(vvfl, vlan_id,
 								   --count);
 			more = true;
-		}
-		vvfl = kzalloc(len, GFP_ATOMIC);
-		if (!vvfl) {
-			spin_unlock_bh(&adapter->mac_vlan_list_lock);
-			return;
 		}
 
 		vvfl->vsi_id = adapter->vsi_res->vsi_id;
@@ -1426,45 +1402,29 @@ void iavf_del_vlans(struct iavf_adapter *adapter)
 				vvfl->vlan_id[i] = f->vlan.vid;
 				f->state = IAVF_VLAN_INACTIVE;
 				i++;
-				if (i == count)
-					break;
 			} else if (f->state == IAVF_VLAN_REMOVE) {
 				vvfl->vlan_id[i] = f->vlan.vid;
 				list_del(&f->list);
 				kfree(f);
 				adapter->num_vlan_filters--;
 				i++;
-				if (i == count)
-					break;
 			}
+			if (i == count)
+				break;
 		}
-
-		if (!more)
-			adapter->aq_required &= ~IAVF_FLAG_AQ_DEL_VLAN_FILTER;
-
-		spin_unlock_bh(&adapter->mac_vlan_list_lock);
-
-		iavf_send_pf_msg(adapter, VIRTCHNL_OP_DEL_VLAN, (u8 *)vvfl, len);
-		kfree(vvfl);
 	} else {
-		struct virtchnl_vlan_filter_list_v2 *vvfl_v2;
+		struct virtchnl_vlan_filter_list_v2 *vvfl_v2 = vcmsg;
 
-		adapter->current_op = VIRTCHNL_OP_DEL_VLAN_V2;
+		op = VIRTCHNL_OP_DEL_VLAN_V2;
 
 		len = virtchnl_ss_vlan_filter_list_v2(vvfl_v2, filters, count);
 		if (len > IAVF_MAX_AQ_BUF_SIZE) {
-			dev_warn(&adapter->pdev->dev, "Too many add VLAN changes in one request\n");
+			dev_warn(&adapter->pdev->dev, "Too many add VLAN changes in one request (B)\n");
 			while (len > IAVF_MAX_AQ_BUF_SIZE)
 				len = virtchnl_ss_vlan_filter_list_v2(vvfl_v2,
 								      filters,
 								      --count);
 			more = true;
-		}
-
-		vvfl_v2 = kzalloc(len, GFP_ATOMIC);
-		if (!vvfl_v2) {
-			spin_unlock_bh(&adapter->mac_vlan_list_lock);
-			return;
 		}
 
 		vvfl_v2->vport_id = adapter->vsi_res->vsi_id;
@@ -1497,16 +1457,15 @@ void iavf_del_vlans(struct iavf_adapter *adapter)
 					break;
 			}
 		}
-
-		if (!more)
-			adapter->aq_required &= ~IAVF_FLAG_AQ_DEL_VLAN_FILTER;
-
-		spin_unlock_bh(&adapter->mac_vlan_list_lock);
-
-		iavf_send_pf_msg(adapter, VIRTCHNL_OP_DEL_VLAN_V2,
-				 (u8 *)vvfl_v2, len);
-		kfree(vvfl_v2);
 	}
+	adapter->current_op = op;
+	if (!more)
+		adapter->aq_required &= ~IAVF_FLAG_AQ_DEL_VLAN_FILTER;
+out:
+	spin_unlock_bh(&adapter->mac_vlan_list_lock);
+	if (count)
+		iavf_send_pf_msg(adapter, op, vcmsg, len);
+	kfree(vcmsg);
 }
 
 /**
