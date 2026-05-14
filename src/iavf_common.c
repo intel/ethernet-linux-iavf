@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
-/* Copyright (C) 2013-2025 Intel Corporation */
+/* Copyright (C) 2013-2026 Intel Corporation */
 
 #include "iavf_type.h"
 #include "iavf_adminq.h"
@@ -25,7 +25,6 @@ enum iavf_status iavf_set_mac_type(struct iavf_hw *hw)
 		case IAVF_DEV_ID_VF:
 		case IAVF_DEV_ID_VF_HV:
 		case IAVF_DEV_ID_ADAPTIVE_VF:
-		case IAVF_DEV_ID_VDEV:
 			hw->mac.type = IAVF_MAC_VF;
 			break;
 		default:
@@ -798,12 +797,14 @@ enum iavf_status iavf_aq_send_msg_to_pf(struct iavf_hw *hw,
  * iavf_vf_parse_hw_config
  * @hw: pointer to the hardware structure
  * @msg: pointer to the virtual channel VF resource structure
+ * @vf_cap_flags: VF capability flags
  *
  * Given a VF resource message from the PF, populate the hw struct
  * with appropriate information.
  **/
 void iavf_vf_parse_hw_config(struct iavf_hw *hw,
-			     struct virtchnl_vf_resource *msg)
+			     struct virtchnl_vf_resource *msg,
+			     const unsigned long *vf_cap_flags)
 {
 	struct virtchnl_vsi_resource *vsi_res;
 	int i;
@@ -814,8 +815,7 @@ void iavf_vf_parse_hw_config(struct iavf_hw *hw,
 	hw->dev_caps.num_rx_qp = msg->num_queue_pairs;
 	hw->dev_caps.num_tx_qp = msg->num_queue_pairs;
 	hw->dev_caps.num_msix_vectors_vf = msg->max_vectors;
-	hw->dev_caps.dcb = msg->vf_cap_flags &
-			   VIRTCHNL_VF_OFFLOAD_L2;
+	hw->dev_caps.dcb = test_bit(VIRTCHNL_VF_OFFLOAD_L2, vf_cap_flags);
 	hw->dev_caps.max_mtu = msg->max_mtu;
 	for (i = 0; i < msg->num_vsis; i++) {
 		if (vsi_res->vsi_type == VIRTCHNL_VSI_SRIOV) {

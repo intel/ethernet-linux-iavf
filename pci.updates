@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-2.0-only
-# Copyright (C) 2013-2025 Intel Corporation
+# Copyright (C) 2013-2026 Intel Corporation
 
 # updates for the system pci.ids file
 #
@@ -11,7 +11,6 @@
 #             the string is consumed by the tools using it.
 #
 8086  Intel Corporation
-	0dd5  Ethernet Virtual Device
 	154c  Ethernet Virtual Function 700 Series
 	1571  Ethernet Virtual Function 700 Series
 	1889  Ethernet Adaptive Virtual Function

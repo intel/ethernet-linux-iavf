@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
-/* Copyright (C) 2013-2025 Intel Corporation */
+/* Copyright (C) 2013-2026 Intel Corporation */
 
 #ifndef _IAVF_H_
 #define _IAVF_H_
@@ -103,6 +103,27 @@ struct iavf_vsi {
 #define IAVF_TX_DESC(R, i) (&(((struct iavf_tx_desc *)((R)->desc))[i]))
 #define IAVF_TX_CTXTDESC(R, i) \
 	(&(((struct iavf_tx_context_desc *)((R)->desc))[i]))
+
+#ifdef HAVE_TC_ETF_QOPT_OFFLOAD
+#define IAVF_TXTIME_TS_DESC_IDX_M	GENMASK(12, 0)
+#define IAVF_TXTIME_TS_M		GENMASK(31, 13)
+
+#define IAVF_TS_DESC(R, i) (&(((struct iavf_ts_desc *)((R)->desc))[i]))
+
+/**
+ * iavf_build_tstamp_desc - build Tx time stamp descriptor
+ * @tx_desc: Tx LAN descriptor index
+ * @tstamp: time stamp
+ *
+ * Return: Tx time stamp descriptor
+ */
+static inline __le32
+iavf_build_tstamp_desc(u16 tx_desc, u32 tstamp)
+{
+	return cpu_to_le32(FIELD_PREP(IAVF_TXTIME_TS_DESC_IDX_M, tx_desc) |
+			   FIELD_PREP(IAVF_TXTIME_TS_M, tstamp));
+}
+#endif /* HAVE_TC_ETF_QOPT_OFFLOAD */
 
 #define IAVF_MAX_REQ_QUEUES 256
 #define IAVF_MIN_ALLOC_QUEUES	4
@@ -463,9 +484,19 @@ enum iavf_state_t {
 	__IAVF_RUNNING,		/* opened, working */
 };
 
+#ifdef HAVE_TC_ETF_QOPT_OFFLOAD
+enum iavf_txtimeq_cfg_state_t {
+	__IAVF_TXTIMEQ_CONFIG_IDLE,		/* no Tx time queue configure in progress */
+	__IAVF_TXTIMEQ_CONFIG_ENABLE_PENDING,	/* Tx time queue enable in progress */
+	__IAVF_TXTIMEQ_CONFIG_DISABLE_PENDING,	/* Tx time queue disable in progress */
+};
+#endif /* HAVE_TC_ETF_QOPT_OFFLOAD */
+
 enum iavf_critical_section_t {
 	__IAVF_IN_REMOVE_TASK,	/* device being removed */
+	__IAVF_NAPI_ENABLED,	/* NAPI is currently enabled on all q_vectors */
 	__IAVF_TX_TSTAMP_IN_PROGRESS,	/* PTP Tx timestamp request in progress */
+	__IAVF_CRIT_SECTION_NBITS	/* must be last */
 };
 
 #define IAVF_CLOUD_FIELD_OMAC		0x01
@@ -566,6 +597,11 @@ struct iavf_adapter {
 	struct iavf_ring *tx_rings;
 	u32 tx_timeout_count;
 	u32 tx_desc_count;
+#ifdef HAVE_TC_ETF_QOPT_OFFLOAD
+	unsigned long *txtime_txqs;	/* bitmap to track Tx Time queues */
+	enum iavf_txtimeq_cfg_state_t txtimeq_cfg_state;
+	u16 txq_pending_cfg;
+#endif /* HAVE_TC_ETF_QOPT_OFFLOAD */
 
 	/* RX */
 	struct iavf_ring *rx_rings;
@@ -609,8 +645,8 @@ struct iavf_adapter {
 #define IAVF_FLAG_AQ_CONFIGURE_RSS		BIT_ULL(9) /* direct AQ config */
 #define IAVF_FLAG_AQ_GET_CONFIG			BIT_ULL(10)
 /* Newer style, RSS done by the PF so we can ignore hardware vagaries. */
-#define IAVF_FLAG_AQ_GET_HENA			BIT_ULL(11)
-#define IAVF_FLAG_AQ_SET_HENA			BIT_ULL(12)
+#define IAVF_FLAG_AQ_GET_HASHCFG		BIT_ULL(11)
+#define IAVF_FLAG_AQ_SET_HASHCFG		BIT_ULL(12)
 #define IAVF_FLAG_AQ_SET_RSS_KEY		BIT_ULL(13)
 #define IAVF_FLAG_AQ_SET_RSS_LUT		BIT_ULL(14)
 #define IAVF_FLAG_AQ_CONFIGURE_PROMISC_MODE	BIT_ULL(15)
@@ -638,6 +674,7 @@ struct iavf_adapter {
 #define IAVF_FLAG_AQ_DEL_FDIR_FILTER			BIT_ULL(40)
 #define IAVF_FLAG_AQ_ADD_ADV_RSS_CFG			BIT_ULL(41)
 #define IAVF_FLAG_AQ_DEL_ADV_RSS_CFG			BIT_ULL(42)
+#define IAVF_FLAG_AQ_GET_VF_CAP_CAPS2			BIT_ULL(43)
 
 	/* AQ messages that must be sent after IAVF_FLAG_AQ_GET_CONFIG, in
 	 * order to negotiated extended capabilities.
@@ -645,7 +682,9 @@ struct iavf_adapter {
 #define IAVF_FLAG_AQ_EXTENDED_CAPS			\
 	(IAVF_FLAG_AQ_GET_OFFLOAD_VLAN_V2_CAPS |	\
 	 IAVF_FLAG_AQ_GET_SUPPORTED_RXDIDS     |	\
-	 IAVF_FLAG_AQ_GET_PTP_CAPS)
+	 IAVF_FLAG_AQ_GET_PTP_CAPS |			\
+	 IAVF_FLAG_AQ_GET_VF_CAP_CAPS2 |		\
+	 0)
 
 	/* flags for processing extended capability messages during
 	 * __IAVF_INIT_EXTENDED_CAPS. Each capability exchange requires
@@ -663,6 +702,8 @@ struct iavf_adapter {
 #define IAVF_EXTENDED_CAP_RECV_PTP			BIT_ULL(5)
 #define IAVF_EXTENDED_CAP_SEND_RSS_QREGION		BIT_ULL(6)
 #define IAVF_EXTENDED_CAP_RECV_RSS_QREGION		BIT_ULL(7)
+#define IAVF_EXTENDED_CAP_SEND_CAPS2			BIT_ULL(8)
+#define IAVF_EXTENDED_CAP_RECV_CAPS2			BIT_ULL(9)
 
 #define IAVF_EXTENDED_CAPS				\
 	(IAVF_EXTENDED_CAP_SEND_VLAN_V2 |		\
@@ -670,7 +711,10 @@ struct iavf_adapter {
 	 IAVF_EXTENDED_CAP_SEND_RXDID |			\
 	 IAVF_EXTENDED_CAP_RECV_RXDID |			\
 	 IAVF_EXTENDED_CAP_SEND_RSS_QREGION |		\
-	 IAVF_EXTENDED_CAP_RECV_RSS_QREGION)
+	 IAVF_EXTENDED_CAP_RECV_RSS_QREGION |			\
+	 IAVF_EXTENDED_CAP_SEND_CAPS2 |			\
+	 IAVF_EXTENDED_CAP_RECV_CAPS2 |			\
+	 0)
 
 	/* Lock to prevent possible clobbering of
 	 * current_netdev_promisc_flags
@@ -690,64 +734,57 @@ struct iavf_adapter {
 
 	enum iavf_state_t state;
 	enum iavf_state_t last_state;
-	unsigned long crit_section;
+	DECLARE_BITMAP(crit_section, __IAVF_CRIT_SECTION_NBITS);
 
 	struct delayed_work watchdog_task;
 	bool link_up;
 	enum virtchnl_link_speed link_speed;
-#ifdef VIRTCHNL_VF_CAP_ADV_LINK_SPEED
 	/* This is only populated if the VIRTCHNL_VF_CAP_ADV_LINK_SPEED is set
-	 * in vf_res->vf_cap_flags. Use ADV_LINK_SUPPORT macro to determine if
+	 * in vf_cap_flags. Use ADV_LINK_SUPPORT macro to determine if
 	 * this field is valid. This field should be used going forward and the
 	 * enum virtchnl_link_speed above should be considered the legacy way of
 	 * storing/communicating link speeds.
 	 */
 	u32 link_speed_mbps;
-#endif /* VIRTCHNL_VF_CAP_ADV_LINK_SPEED */
 
 	enum virtchnl_ops current_op;
 	struct iavf_vc_msg_queue vc_msg_queue;
 
-#define RDMA_ALLOWED(_a) ((_a)->vf_res->vf_cap_flags & \
-			  VIRTCHNL_VF_CAP_RDMA)
+#define RDMA_ALLOWED(_a) test_bit(VIRTCHNL_VF_OFFLOAD_RDMA, (_a)->vf_cap_flags)
 /* RSS by the PF should be preferred over RSS via other methods. */
-#define RSS_PF(_a) ((_a)->vf_res->vf_cap_flags & \
-		    VIRTCHNL_VF_OFFLOAD_RSS_PF)
-#define RSS_AQ(_a) ((_a)->vf_res->vf_cap_flags & \
-		    VIRTCHNL_VF_OFFLOAD_RSS_AQ)
-#define RSS_REG(_a) (!((_a)->vf_res->vf_cap_flags & \
-		       (VIRTCHNL_VF_OFFLOAD_RSS_AQ | \
-			VIRTCHNL_VF_OFFLOAD_RSS_PF)))
-#define LARGE_NUM_QPAIRS_SUPPORT(_a) \
-	((_a)->vf_res->vf_cap_flags & VIRTCHNL_VF_LARGE_NUM_QPAIRS)
-#define VLAN_ALLOWED(_a) ((_a)->vf_res->vf_cap_flags & \
-			  VIRTCHNL_VF_OFFLOAD_VLAN)
-#define VLAN_V2_ALLOWED(_a) ((_a)->vf_res->vf_cap_flags & \
-			     VIRTCHNL_VF_OFFLOAD_VLAN_V2)
-#define CRC_OFFLOAD_ALLOWED(_a) ((_a)->vf_res->vf_cap_flags & \
-				 VIRTCHNL_VF_OFFLOAD_CRC)
+#define RSS_PF(_a) test_bit(VIRTCHNL_VF_OFFLOAD_RSS_PF, (_a)->vf_cap_flags)
+#define RSS_AQ(_a) test_bit(VIRTCHNL_VF_OFFLOAD_RSS_AQ, (_a)->vf_cap_flags)
+#define RSS_REG(_a) (!(RSS_PF(_a) || RSS_AQ(_a)))
+#define LARGE_NUM_QPAIRS_SUPPORT(_a)					\
+	test_bit(VIRTCHNL_VF_LARGE_NUM_QPAIRS, (_a)->vf_cap_flags)
+#define VLAN_ALLOWED(_a) test_bit(VIRTCHNL_VF_OFFLOAD_VLAN, (_a)->vf_cap_flags)
+#define VLAN_V2_ALLOWED(_a)						\
+	test_bit(VIRTCHNL_VF_OFFLOAD_VLAN_V2, (_a)->vf_cap_flags)
+#define CRC_OFFLOAD_ALLOWED(_a)						\
+	test_bit(VIRTCHNL_VF_OFFLOAD_CRC, (_a)->vf_cap_flags)
 #define VLAN_V2_FILTERING_ALLOWED(_a) \
 	(VLAN_V2_ALLOWED((_a)) && \
 	 ((_a)->vlan_v2_caps.filtering.filtering_support.outer || \
 	  (_a)->vlan_v2_caps.filtering.filtering_support.inner))
 #define VLAN_FILTERING_ALLOWED(_a) \
 	(VLAN_ALLOWED((_a)) || VLAN_V2_FILTERING_ALLOWED((_a)))
-#ifdef VIRTCHNL_VF_CAP_ADV_LINK_SPEED
-#define ADV_LINK_SUPPORT(_a) ((_a)->vf_res->vf_cap_flags & \
-			      VIRTCHNL_VF_CAP_ADV_LINK_SPEED)
-#endif /* VIRTCHNL_VF_CAP_ADV_LINK_SPEED */
-#define FDIR_FLTR_SUPPORT(_a) ((_a)->vf_res->vf_cap_flags & \
-			       VIRTCHNL_VF_OFFLOAD_FDIR_PF)
-#define ADV_RSS_SUPPORT(_a) ((_a)->vf_res->vf_cap_flags & \
-			     VIRTCHNL_VF_OFFLOAD_ADV_RSS_PF)
-#define ADQ_ALLOWED(_a) ((_a)->vf_res->vf_cap_flags & \
-			  VIRTCHNL_VF_OFFLOAD_ADQ)
-#define ADQ_V2_ALLOWED(_a) ((_a)->vf_res->vf_cap_flags & \
-			  VIRTCHNL_VF_OFFLOAD_ADQ_V2)
-#define RXDID_ALLOWED(_a) ((_a)->vf_res->vf_cap_flags & \
-			   VIRTCHNL_VF_OFFLOAD_RX_FLEX_DESC)
-#define PTP_ALLOWED(_a) ((_a)->vf_res->vf_cap_flags & \
-			 VIRTCHNL_VF_CAP_PTP)
+#define ADV_LINK_SUPPORT(_a)						\
+	test_bit(VIRTCHNL_VF_CAP_ADV_LINK_SPEED, (_a)->vf_cap_flags)
+#define FDIR_FLTR_SUPPORT(_a)						\
+	test_bit(VIRTCHNL_VF_OFFLOAD_FDIR_PF, (_a)->vf_cap_flags)
+#define ADV_RSS_SUPPORT(_a)						\
+	test_bit(VIRTCHNL_VF_OFFLOAD_ADV_RSS_PF, (_a)->vf_cap_flags)
+#define ADQ_ALLOWED(_a) test_bit(VIRTCHNL_VF_OFFLOAD_ADQ, (_a)->vf_cap_flags)
+#define ADQ_V2_ALLOWED(_a)						\
+	test_bit(VIRTCHNL_VF_OFFLOAD_ADQ_V2, (_a)->vf_cap_flags)
+#define RXDID_ALLOWED(_a)						\
+	test_bit(VIRTCHNL_VF_OFFLOAD_RX_FLEX_DESC, (_a)->vf_cap_flags)
+#define PTP_ALLOWED(_a) test_bit(VIRTCHNL_VF_CAP_PTP, (_a)->vf_cap_flags)
+#define CAPS2_ALLOWED(a) test_bit(VIRTCHNL_VF_CAPS2, (a)->vf_cap_flags)
+#ifdef HAVE_TC_ETF_QOPT_OFFLOAD
+#define TXTIME_SUPPORTED(_a) test_bit(VIRTCHNL_VF_OFFLOAD_TXTIME, \
+				    (_a)->vf_cap_flags)
+#endif /* HAVE_TC_ETF_QOPT_OFFLOAD */
 	struct virtchnl_vf_resource *vf_res; /* incl. all VSIs */
 	struct virtchnl_vsi_resource *vsi_res; /* our LAN VSI */
 	struct virtchnl_version_info pf_version;
@@ -757,6 +794,12 @@ struct iavf_adapter {
 	struct virtchnl_supported_rxdids supported_rxdids;
 	struct virtchnl_max_rss_qregion max_rss_qregion;
 	struct iavf_ptp ptp;
+
+	/* Negotiated via VIRTCHNL_OP_GET_VF_CAPS2. First 32 bits mirror
+	 * vf_res->vf_cap_flags.
+	 */
+	DECLARE_BITMAP(vf_cap_flags, VIRTCHNL_VF_CAPS_MAX);
+
 	struct iavf_synce synce;
 	struct iavf_gnss gnss;
 	u16 msg_enable;
@@ -764,7 +807,7 @@ struct iavf_adapter {
 	struct iavf_vsi vsi;
 	u32 aq_wait_count;
 	/* RSS stuff */
-	u64 hena;
+	u64 hashcfg;
 	u16 rss_key_size;
 	u16 rss_lut_size;
 	u8 *rss_key;
@@ -823,6 +866,8 @@ struct iavf_adapter {
 
 #define IAVF_STATS_UPDATE_TIMEOUT_NSEC 2000000000
 	s64 last_stats_update;
+	/* Track if traffic IRQs are currently allocated */
+	bool traffic_irqs_allocated;
 };
 
 /* Ethtool Private Flags */
@@ -941,6 +986,33 @@ static inline void iavf_force_wb(struct iavf_vsi *vsi,
 	     INT_DYN_CTL(&vsi->back->hw, q_vector->reg_idx), val);
 }
 
+#ifdef HAVE_TC_ETF_QOPT_OFFLOAD
+/**
+ * iavf_txtime_requested - check if Tx Time has been requested on the Tx ring
+ * @ring: pointer to Tx ring
+ *
+ * Return: true if the Tx ring has Tx Time requested, false otherwise.
+ */
+static inline bool iavf_txtime_requested(const struct iavf_ring *ring)
+{
+	struct iavf_vsi *vsi = ring->vsi;
+	struct iavf_adapter *adapter = vsi->back;
+
+	return test_bit(ring->queue_index,  adapter->txtime_txqs);
+}
+
+/**
+ * iavf_txtime_configured - check if Tx Time is configured on the Tx ring
+ * @ring: pointer to Tx ring
+ *
+ * Return: true if the Tx ring is configured for Tx Time ring, false otherwise.
+ */
+static inline bool iavf_txtime_configured(const struct iavf_ring *ring)
+{
+	return test_bit(IAVF_TX_FLAGS_TXTIME, ring->flags);
+}
+#endif /* HAVE_TC_ETF_QOPT_OFFLOAD */
+
 struct iavf_adapter *iavf_pdev_to_adapter(struct pci_dev *pdev);
 int iavf_up(struct iavf_adapter *adapter);
 void iavf_down(struct iavf_adapter *adapter);
@@ -957,6 +1029,8 @@ void iavf_free_all_rx_resources(struct iavf_adapter *adapter);
 
 void iavf_napi_add_all(struct iavf_adapter *adapter);
 void iavf_napi_del_all(struct iavf_adapter *adapter);
+void iavf_napi_enable_all(struct iavf_adapter *adapter);
+void iavf_napi_disable_all(struct iavf_adapter *adapter);
 
 int iavf_send_api_ver(struct iavf_adapter *adapter);
 int iavf_verify_api_ver(struct iavf_adapter *adapter);
@@ -972,6 +1046,8 @@ int iavf_send_vf_ptp_pin_cfgs_msg(struct iavf_adapter *adapter);
 #if IS_ENABLED(CONFIG_PTP_1588_CLOCK)
 int iavf_get_vf_ptp_pin_cfgs(struct iavf_adapter *adapter);
 #endif /* IS_ENABLED(CONFIG_PTP_1588_CLOCK) */
+int iavf_send_vf_caps2_msg(struct iavf_adapter *adapter);
+int iavf_get_vf_caps2(struct iavf_adapter *adapter);
 int iavf_send_vf_synce_cgu_info_msg(struct iavf_adapter *adapter);
 int iavf_send_vf_synce_cgu_abilities_msg(struct iavf_adapter *adapter);
 int iavf_send_vf_synce_hw_info_msg(struct iavf_adapter *adapter);
@@ -984,6 +1060,9 @@ int iavf_get_max_rss_qregion(struct iavf_adapter *adapter);
 void iavf_set_queue_vlan_tag_loc(struct iavf_adapter *adapter);
 u16 iavf_get_num_vlans_added(struct iavf_adapter *adapter);
 void iavf_irq_enable(struct iavf_adapter *adapter, bool flush);
+#ifdef HAVE_TC_ETF_QOPT_OFFLOAD
+void iavf_configure(struct iavf_adapter *adapter);
+#endif /* HAVE_TC_ETF_QOPT_OFFLOAD */
 void iavf_configure_queues(struct iavf_adapter *adapter);
 void iavf_deconfigure_queues(struct iavf_adapter *adapter);
 void iavf_enable_queues(struct iavf_adapter *adapter);
@@ -998,8 +1077,8 @@ void iavf_set_promiscuous(struct iavf_adapter *adapter);
 bool iavf_promiscuous_mode_changed(struct iavf_adapter *adapter);
 void iavf_request_stats(struct iavf_adapter *adapter);
 int iavf_request_reset(struct iavf_adapter *adapter);
-void iavf_get_hena(struct iavf_adapter *adapter);
-void iavf_set_hena(struct iavf_adapter *adapter);
+void iavf_get_hashcfg(struct iavf_adapter *adapter);
+void iavf_set_hashcfg(struct iavf_adapter *adapter);
 void iavf_set_rss_key(struct iavf_adapter *adapter);
 void iavf_set_rss_lut(struct iavf_adapter *adapter);
 void iavf_enable_vlan_stripping(struct iavf_adapter *adapter);

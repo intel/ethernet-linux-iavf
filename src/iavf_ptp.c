@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
-/* Copyright (C) 2013-2025 Intel Corporation */
+/* Copyright (C) 2013-2026 Intel Corporation */
 
 #include "iavf.h"
 #include "iavf_prototype.h"
@@ -53,7 +53,7 @@ static void iavf_ptp_disable_tx_tstamp(struct iavf_adapter *adapter)
 	unsigned int i;
 
 	for (i = 0; i < adapter->num_active_queues; i++)
-		adapter->tx_rings[i].flags &= ~IAVF_TXRX_FLAGS_HW_TSTAMP;
+		clear_bit(IAVF_TXRX_FLAGS_HW_TSTAMP, adapter->tx_rings[i].flags);
 }
 
 /**
@@ -67,7 +67,7 @@ static void iavf_ptp_enable_tx_tstamp(struct iavf_adapter *adapter)
 	unsigned int i;
 
 	for (i = 0; i < adapter->num_active_queues; i++)
-		adapter->tx_rings[i].flags |= IAVF_TXRX_FLAGS_HW_TSTAMP;
+		set_bit(IAVF_TXRX_FLAGS_HW_TSTAMP, adapter->tx_rings[i].flags);
 }
 
 /**
@@ -81,7 +81,7 @@ static void iavf_ptp_disable_rx_tstamp(struct iavf_adapter *adapter)
 	unsigned int i;
 
 	for (i = 0; i < adapter->num_active_queues; i++)
-		adapter->rx_rings[i].flags &= ~IAVF_TXRX_FLAGS_HW_TSTAMP;
+		clear_bit(IAVF_TXRX_FLAGS_HW_TSTAMP, adapter->rx_rings[i].flags);
 }
 
 /**
@@ -95,7 +95,7 @@ static void iavf_ptp_enable_rx_tstamp(struct iavf_adapter *adapter)
 	unsigned int i;
 
 	for (i = 0; i < adapter->num_active_queues; i++)
-		adapter->rx_rings[i].flags |= IAVF_TXRX_FLAGS_HW_TSTAMP;
+		set_bit(IAVF_TXRX_FLAGS_HW_TSTAMP, adapter->rx_rings[i].flags);
 }
 
 /**
@@ -159,6 +159,62 @@ iavf_ptp_set_timestamp_mode(struct iavf_adapter *adapter, struct hwtstamp_config
 
 	return 0;
 }
+
+#ifdef HAVE_NDO_HWTSTAMP
+/**
+ * iavf_ptp_hwtstamp_get - ndo interface to read the timestamping config
+ * @netdev: network interface device structure
+ * @config: kernel timestamping configuration structure
+ *
+ * Copy the current hardware timestamping configuration back to the kernel.
+ */
+int iavf_ptp_hwtstamp_get(struct net_device *netdev,
+			  struct kernel_hwtstamp_config *config)
+{
+	struct iavf_adapter *adapter = netdev_priv(netdev);
+
+	config->flags = adapter->ptp.hwtstamp_config.flags;
+	config->tx_type = adapter->ptp.hwtstamp_config.tx_type;
+	config->rx_filter = adapter->ptp.hwtstamp_config.rx_filter;
+
+	return 0;
+}
+
+/**
+ * iavf_ptp_hwtstamp_set - ndo interface to set the timestamping config
+ * @netdev: network interface device structure
+ * @config: kernel timestamping configuration structure
+ * @extack: netlink extended ack structure for error reporting
+ *
+ * Program the requested timestamping configuration to the device.
+ */
+int iavf_ptp_hwtstamp_set(struct net_device *netdev,
+			  struct kernel_hwtstamp_config *config,
+			  struct netlink_ext_ack *extack)
+{
+	struct iavf_adapter *adapter = netdev_priv(netdev);
+	struct hwtstamp_config legacy_cfg;
+	int err;
+
+	legacy_cfg.flags = config->flags;
+	legacy_cfg.tx_type = config->tx_type;
+	legacy_cfg.rx_filter = config->rx_filter;
+
+	err = iavf_ptp_set_timestamp_mode(adapter, &legacy_cfg);
+	if (err)
+		return err;
+
+	/* Save successful settings for future reference */
+	adapter->ptp.hwtstamp_config = legacy_cfg;
+
+	/* Return the actual configuration set */
+	config->flags = adapter->ptp.hwtstamp_config.flags;
+	config->tx_type = adapter->ptp.hwtstamp_config.tx_type;
+	config->rx_filter = adapter->ptp.hwtstamp_config.rx_filter;
+
+	return 0;
+}
+#endif /* HAVE_NDO_HWTSTAMP */
 
 /**
  * iavf_ptp_get_ts_config - Get timestamping configuration for SIOCGHWTSTAMP
@@ -610,14 +666,15 @@ static int iavf_ptp_adjfreq(struct ptp_clock_info *ptp, s32 ppb)
  */
 static void iavf_ptp_tx_hang(struct iavf_adapter *adapter)
 {
-	if (!test_bit(__IAVF_TX_TSTAMP_IN_PROGRESS, &adapter->crit_section))
+	if (!test_bit(__IAVF_TX_TSTAMP_IN_PROGRESS, adapter->crit_section))
 		return;
 
 	if (time_is_before_jiffies(adapter->ptp.tx_start + HZ)) {
 		struct sk_buff *skb = adapter->ptp.tx_skb;
 
 		adapter->ptp.tx_skb = NULL;
-		clear_bit_unlock(__IAVF_TX_TSTAMP_IN_PROGRESS, &adapter->crit_section);
+		clear_bit_unlock(__IAVF_TX_TSTAMP_IN_PROGRESS,
+				 adapter->crit_section);
 
 		/* Free the SKB after we've cleared the bitlock */
 		dev_kfree_skb_any(skb);
@@ -1631,7 +1688,7 @@ void iavf_virtchnl_ptp_tx_timestamp(struct iavf_adapter *adapter, void *data,
 	 * skb now prior to notifying the stack via skb_tstamp_tx().
 	 */
 	adapter->ptp.tx_skb = NULL;
-	clear_bit_unlock(__IAVF_TX_TSTAMP_IN_PROGRESS, &adapter->crit_section);
+	clear_bit_unlock(__IAVF_TX_TSTAMP_IN_PROGRESS, adapter->crit_section);
 
 	switch (adapter->ptp.hw_caps.tx_tstamp_format) {
 	case VIRTCHNL_1588_PTP_TSTAMP_40BIT:

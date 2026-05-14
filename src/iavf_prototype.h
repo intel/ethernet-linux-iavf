@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
-/* Copyright (C) 2013-2025 Intel Corporation */
+/* Copyright (C) 2013-2026 Intel Corporation */
 
 #ifndef _IAVF_PROTOTYPE_H_
 #define _IAVF_PROTOTYPE_H_
@@ -67,7 +67,8 @@ void iavf_release_spinlock(struct iavf_spinlock *sp);
 void iavf_destroy_spinlock(struct iavf_spinlock *sp);
 
 void iavf_vf_parse_hw_config(struct iavf_hw *hw,
-			     struct virtchnl_vf_resource *msg);
+			     struct virtchnl_vf_resource *msg,
+			     const unsigned long *vf_cap_flags);
 enum iavf_status iavf_vf_reset(struct iavf_hw *hw);
 enum iavf_status iavf_aq_send_msg_to_pf(struct iavf_hw *hw,
 					enum virtchnl_ops v_opcode,

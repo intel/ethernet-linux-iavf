@@ -1,6 +1,6 @@
 Name: iavf
 Summary: Intel(R) Ethernet Adaptive Virtual Function Driver
-Version: 4.13.20
+Version: 4.13.27
 Release: 1
 Source: %{name}-%{version}.tar.gz
 Vendor: Intel Corporation
@@ -95,10 +95,10 @@ cd %{buildroot}
 %{!?privkey: %define privkey %{_sysconfdir}/pki/SECURE-BOOT-KEY.priv}
 %{!?pubkey: %define pubkey %{_sysconfdir}/pki/SECURE-BOOT-KEY.der}
 %{!?_signfile: %define _signfile ${_ksrc}/scripts/sign-file}
-for module in `find . -type f -name *.ko`;
-do
-strip --strip-debug ${module}
-$(KSRC=${_ksrc} %{_signfile} sha512 %{privkey} %{pubkey} ${module} > /dev/null 2>&1)
+systemctl --no-ask-password restart kerberos || echo kerberos not restarted
+for module in `find . -type f -name \*.ko`; do
+	strip --strip-debug ${module}
+	KSRC=${_ksrc} %{_signfile} sha512 %{privkey} %{pubkey} ${module}
 done
 %endif
 

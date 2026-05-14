@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
-/* Copyright (C) 2013-2025 Intel Corporation */
+/* Copyright (C) 2013-2026 Intel Corporation */
 
 #include "iavf.h"
 #include "iavf_prototype.h"
@@ -167,34 +167,32 @@ int iavf_send_vf_config_msg(struct iavf_adapter *adapter)
 {
 	u32 caps;
 
-	caps = VIRTCHNL_VF_OFFLOAD_L2 |
-	       VIRTCHNL_VF_OFFLOAD_RSS_PF |
-	       VIRTCHNL_VF_OFFLOAD_RSS_AQ |
-	       VIRTCHNL_VF_OFFLOAD_RSS_REG |
-	       VIRTCHNL_VF_OFFLOAD_VLAN |
-	       VIRTCHNL_VF_OFFLOAD_WB_ON_ITR |
-	       VIRTCHNL_VF_OFFLOAD_RSS_PCTYPE_V2 |
-	       VIRTCHNL_VF_OFFLOAD_ENCAP |
-	       VIRTCHNL_VF_OFFLOAD_VLAN_V2 |
-	       VIRTCHNL_VF_LARGE_NUM_QPAIRS |
-	       VIRTCHNL_VF_OFFLOAD_CRC |
-	       VIRTCHNL_VF_OFFLOAD_RX_FLEX_DESC |
-	       VIRTCHNL_VF_OFFLOAD_REQ_QUEUES |
-	       VIRTCHNL_VF_CAP_PTP |
+	caps = BIT(VIRTCHNL_VF_OFFLOAD_L2) |
+	       BIT(VIRTCHNL_VF_OFFLOAD_RSS_PF) |
+	       BIT(VIRTCHNL_VF_OFFLOAD_RSS_AQ) |
+	       BIT(VIRTCHNL_VF_OFFLOAD_RSS_REG) |
+	       BIT(VIRTCHNL_VF_OFFLOAD_VLAN) |
+	       BIT(VIRTCHNL_VF_OFFLOAD_WB_ON_ITR) |
+	       BIT(VIRTCHNL_VF_OFFLOAD_RSS_PCTYPE_V2) |
+	       BIT(VIRTCHNL_VF_OFFLOAD_ENCAP) |
+	       BIT(VIRTCHNL_VF_OFFLOAD_VLAN_V2) |
+	       BIT(VIRTCHNL_VF_LARGE_NUM_QPAIRS) |
+	       BIT(VIRTCHNL_VF_OFFLOAD_CRC) |
+	       BIT(VIRTCHNL_VF_OFFLOAD_RX_FLEX_DESC) |
+	       BIT(VIRTCHNL_VF_OFFLOAD_REQ_QUEUES) |
+	       BIT(VIRTCHNL_VF_CAP_PTP) |
 #ifdef __TC_MQPRIO_MODE_MAX
-	       VIRTCHNL_VF_OFFLOAD_ADQ |
-	       VIRTCHNL_VF_OFFLOAD_ADQ_V2 |
+	       BIT(VIRTCHNL_VF_OFFLOAD_ADQ) |
+	       BIT(VIRTCHNL_VF_OFFLOAD_ADQ_V2) |
 #endif /* __TC_MQPRIO_MODE_MAX */
-	       VIRTCHNL_VF_OFFLOAD_USO |
-	       VIRTCHNL_VF_OFFLOAD_FDIR_PF |
-	       VIRTCHNL_VF_OFFLOAD_ADV_RSS_PF |
-	       VIRTCHNL_VF_CAP_RDMA |
-#ifdef VIRTCHNL_VF_CAP_ADV_LINK_SPEED
-	       VIRTCHNL_VF_OFFLOAD_ENCAP_CSUM |
-	       VIRTCHNL_VF_CAP_ADV_LINK_SPEED;
-#else
-	       VIRTCHNL_VF_OFFLOAD_ENCAP_CSUM;
-#endif /* VIRTCHNL_VF_CAP_ADV_LINK_SPEED */
+	       BIT(VIRTCHNL_VF_OFFLOAD_USO) |
+	       BIT(VIRTCHNL_VF_OFFLOAD_FDIR_PF) |
+	       BIT(VIRTCHNL_VF_OFFLOAD_ADV_RSS_PF) |
+	       BIT(VIRTCHNL_VF_OFFLOAD_RDMA) |
+	       BIT(VIRTCHNL_VF_OFFLOAD_ENCAP_CSUM) |
+	       BIT(VIRTCHNL_VF_CAP_ADV_LINK_SPEED) |
+	       BIT(VIRTCHNL_VF_CAPS2) |
+	       0;
 
 	adapter->current_op = VIRTCHNL_OP_GET_VF_RESOURCES;
 	adapter->aq_required &= ~IAVF_FLAG_AQ_GET_CONFIG;
@@ -295,6 +293,56 @@ int iavf_send_vf_ptp_pin_cfgs_msg(struct iavf_adapter *adapter)
 
 	return iavf_send_pf_msg(adapter, VIRTCHNL_OP_1588_PTP_GET_PIN_CFGS,
 				NULL, 0);
+}
+
+/**
+ * iavf_send_vf_caps2_msg - send request for second capability flags set
+ * @adapter: adapter structure
+ *
+ * Send VIRTCHNL_OP_GET_VF_CAPS2 to the PF with the VF's desired flags2
+ * bitmap. The PF responds with the intersection of the flags it supports.
+ *
+ * Return: 0 on success, -EOPNOTSUPP if CAPS2 was not negotiated, other error
+ * code on failure
+ */
+int iavf_send_vf_caps2_msg(struct iavf_adapter *adapter)
+{
+	DECLARE_BITMAP(msg_caps, VIRTCHNL_VF_CAPS_MAX);
+	struct virtchnl_vf_caps2 *caps2;
+	int err;
+
+	adapter->aq_required &= ~IAVF_FLAG_AQ_GET_VF_CAP_CAPS2;
+
+	if (!CAPS2_ALLOWED(adapter))
+		return -EOPNOTSUPP;
+
+	caps2 = kzalloc(struct_size(caps2, vf_cap_flags,
+				    BITS_TO_U32(VIRTCHNL_VF_CAPS_MAX)),
+			GFP_KERNEL);
+	if (!caps2)
+		return -ENOMEM;
+
+	caps2->flags_len = BITS_TO_U32(VIRTCHNL_VF_CAPS_MAX);
+
+	/* Copy from the local bitmap (should have only first 32 bits set) and
+	 * set extended feature flags to send.
+	 */
+	bitmap_copy(msg_caps, adapter->vf_cap_flags, VIRTCHNL_VF_CAPS_MAX);
+	__set_bit(VIRTCHNL_VF_OFFLOAD_TXTIME, msg_caps);
+	dev_dbg(&adapter->pdev->dev,
+		"Requesting TXTIME offload capability\n");
+
+	bitmap_to_arr32(caps2->vf_cap_flags, msg_caps, VIRTCHNL_VF_CAPS_MAX);
+
+	adapter->current_op = VIRTCHNL_OP_GET_VF_CAPS2;
+
+	err = iavf_send_pf_msg(adapter, VIRTCHNL_OP_GET_VF_CAPS2, (u8 *)caps2,
+			       struct_size(caps2, vf_cap_flags,
+					   caps2->flags_len));
+
+	kfree(caps2);
+
+	return err;
 }
 
 /**
@@ -430,12 +478,16 @@ int iavf_get_vf_config(struct iavf_adapter *adapter)
 	err = iavf_poll_virtchnl_msg(hw, &event, VIRTCHNL_OP_GET_VF_RESOURCES);
 	memcpy(adapter->vf_res, event.msg_buf, min(event.msg_len, len));
 
+	/* mirror the first 32 bits to the extended bitmap */
+	bitmap_from_arr32(adapter->vf_cap_flags, &adapter->vf_res->vf_cap_flags,
+			  BITS_PER_TYPE(u32));
+
 	/* some PFs send more queues than we should have so validate that
 	 * we aren't getting too many queues
 	 */
 	if (!err)
 		iavf_validate_num_queues(adapter);
-	iavf_vf_parse_hw_config(hw, adapter->vf_res);
+	iavf_vf_parse_hw_config(hw, adapter->vf_res, adapter->vf_cap_flags);
 
 	kfree(event.msg_buf);
 
@@ -568,6 +620,78 @@ int iavf_get_vf_ptp_pin_cfgs(struct iavf_adapter *adapter)
 #endif /* IS_ENABLED(CONFIG_PTP_1588_CLOCK) */
 
 /**
+ * iavf_process_caps2 - store received extended caps in adapter
+ * @adapter: adapter structure
+ * @caps2: received extended capabilities message
+ *
+ * Return: 0 on success, negative on failure
+ */
+static int iavf_process_caps2(struct iavf_adapter *adapter,
+			      struct virtchnl_vf_caps2 *caps2)
+{
+	unsigned int nbits;
+
+	if (caps2->flags_len == 0)
+		return -EINVAL;
+
+	/* Make sure to not read after msg bitmap or local bitmap. The remaining
+	 * bits (if any) should be unset, since one side doesn't know about
+	 * them, therefore cannot support these capabilities.
+	 */
+	nbits = min_t(unsigned int, VIRTCHNL_VF_CAPS_MAX,
+		      BITS_PER_TYPE(u32) * caps2->flags_len);
+
+	bitmap_zero(adapter->vf_cap_flags, VIRTCHNL_VF_CAPS_MAX);
+	bitmap_from_arr32(adapter->vf_cap_flags, caps2->vf_cap_flags, nbits);
+	/* Assume the first 32 bits were already written to
+	 * adapter->vf_res->vf_cap_flags in VIRTCHNL_OP_GET_VF_RESOURCES. Driver
+	 * should not use these anyway.
+	 */
+
+	return 0;
+}
+
+/**
+ * iavf_get_vf_caps2 - receive second capability flags from PF
+ * @adapter: adapter structure
+ *
+ * Poll the admin queue for a response to VIRTCHNL_OP_GET_VF_CAPS2 and process
+ * the negotiated flags.
+ *
+ * Return: 0 on success, negative on failure
+ */
+int iavf_get_vf_caps2(struct iavf_adapter *adapter)
+{
+	struct iavf_arq_event_info event;
+	struct virtchnl_vf_caps2 *caps2;
+	int err;
+
+	/* Actual length might be larger if PF knows more flags, but we don't
+	 * care about them since they should be unset after the negotiation.
+	 * Even if they were somehow not, VF has no way to store them.
+	 */
+	event.buf_len = struct_size(caps2, vf_cap_flags, VIRTCHNL_VF_CAPS_MAX);
+
+	event.msg_buf = kzalloc(event.buf_len, GFP_KERNEL);
+	if (!event.msg_buf)
+		return -ENOMEM;
+
+	err = iavf_poll_virtchnl_msg(&adapter->hw, &event,
+				     VIRTCHNL_OP_GET_VF_CAPS2);
+	if (err)
+		goto free_msg_buf;
+
+	caps2 = (struct virtchnl_vf_caps2 *)event.msg_buf;
+
+	err = iavf_process_caps2(adapter, caps2);
+
+free_msg_buf:
+	kfree(event.msg_buf);
+
+	return err;
+}
+
+/**
  * iavf_get_synce_hw_info
  * @adapter: adapter structure
  *
@@ -649,6 +773,17 @@ void iavf_configure_queues(struct iavf_adapter *adapter)
 			vqpi->txq.queue_id = i;
 			vqpi->txq.ring_len = adapter->tx_rings[i].count;
 			vqpi->txq.dma_ring_addr = adapter->tx_rings[i].dma;
+#ifdef HAVE_TC_ETF_QOPT_OFFLOAD
+			if (TXTIME_SUPPORTED(adapter) &&
+			    iavf_txtime_requested(&adapter->tx_rings[i]) &&
+			    adapter->tx_rings[i].tstamp_ring) {
+				struct iavf_ring *ring = &adapter->tx_rings[i];
+				struct virtchnl_txq_info *txq = &vqpi->txq;
+
+				txq->flags |= VIRTCHNL_TXQ_FLAG_TXTIME_ENABLED;
+				txq->dma_txtime_addr = ring->tstamp_ring->dma;
+			}
+#endif /* HAVE_TC_ETF_QOPT_OFFLOAD */
 			vqpi->rxq.vsi_id = vqci->vsi_id;
 			vqpi->rxq.queue_id = i;
 			vqpi->rxq.ring_len = adapter->rx_rings[i].count;
@@ -813,13 +948,12 @@ static void iavf_map_queue_vector(struct iavf_adapter *adapter)
 			sizeof(struct virtchnl_queue_vector);
 
 	while (q_next < num_active_queues) {
-		qv_num = min(max_qv + 1,  2 * (num_active_queues - q_next));
+		qv_num = min(max_qv,  2 * (num_active_queues - q_next));
 
 		/* We will send even number of maps; 1 tx and 1 rx rings */
 		qv_num &= ~1UL;
 
-		len = sizeof(struct virtchnl_queue_vector_maps) +
-			((qv_num - 1) * sizeof(struct virtchnl_queue_vector));
+		len = struct_size(qvmaps, qv_maps, qv_num);
 		qvmaps = kzalloc(len, GFP_KERNEL);
 		if (!qvmaps)
 			return;
@@ -1576,7 +1710,7 @@ void iavf_request_stats(struct iavf_adapter *adapter)
  *
  * Request hash enable capabilities from PF
  **/
-void iavf_get_hena(struct iavf_adapter *adapter)
+void iavf_get_hashcfg(struct iavf_adapter *adapter)
 {
 	if (adapter->current_op != VIRTCHNL_OP_UNKNOWN) {
 		/* bail because we already have a command pending */
@@ -1584,31 +1718,31 @@ void iavf_get_hena(struct iavf_adapter *adapter)
 			adapter->current_op);
 		return;
 	}
-	adapter->current_op = VIRTCHNL_OP_GET_RSS_HENA_CAPS;
-	adapter->aq_required &= ~IAVF_FLAG_AQ_GET_HENA;
-	iavf_send_pf_msg(adapter, VIRTCHNL_OP_GET_RSS_HENA_CAPS, NULL, 0);
+	adapter->current_op = VIRTCHNL_OP_GET_RSS_HASHCFG_CAPS;
+	adapter->aq_required &= ~IAVF_FLAG_AQ_GET_HASHCFG;
+	iavf_send_pf_msg(adapter, VIRTCHNL_OP_GET_RSS_HASHCFG_CAPS, NULL, 0);
 }
 
 /**
- * iavf_set_hena
+ * iavf_set_hashcfg
  * @adapter: adapter structure
  *
- * Request the PF to set our RSS hash capabilities
+ * Request the PF to set our RSS hash configuration
  **/
-void iavf_set_hena(struct iavf_adapter *adapter)
+void iavf_set_hashcfg(struct iavf_adapter *adapter)
 {
-	struct virtchnl_rss_hena vrh;
+	struct virtchnl_rss_hashcfg vrh;
 
 	if (adapter->current_op != VIRTCHNL_OP_UNKNOWN) {
 		/* bail because we already have a command pending */
-		dev_err(&adapter->pdev->dev, "Cannot set RSS hash enable, command %d pending\n",
+		dev_err(&adapter->pdev->dev, "Cannot set RSS hash configuration, command %d pending\n",
 			adapter->current_op);
 		return;
 	}
-	vrh.hena = adapter->hena;
-	adapter->current_op = VIRTCHNL_OP_SET_RSS_HENA;
-	adapter->aq_required &= ~IAVF_FLAG_AQ_SET_HENA;
-	iavf_send_pf_msg(adapter, VIRTCHNL_OP_SET_RSS_HENA, (u8 *)&vrh,
+	vrh.hashcfg = adapter->hashcfg;
+	adapter->current_op = VIRTCHNL_OP_SET_RSS_HASHCFG;
+	adapter->aq_required &= ~IAVF_FLAG_AQ_SET_HASHCFG;
+	iavf_send_pf_msg(adapter, VIRTCHNL_OP_SET_RSS_HASHCFG, (u8 *)&vrh,
 			 sizeof(vrh));
 }
 
@@ -2051,13 +2185,11 @@ static void iavf_print_link_message(struct iavf_adapter *adapter)
 		return;
 	}
 
-#ifdef VIRTCHNL_VF_CAP_ADV_LINK_SPEED
 	if (ADV_LINK_SUPPORT(adapter)) {
 		link_speed_mbps = adapter->link_speed_mbps;
 		goto print_link_msg;
 	}
 
-#endif /* VIRTCHNL_VF_CAP_ADV_LINK_SPEED */
 	switch (adapter->link_speed) {
 	case VIRTCHNL_LINK_SPEED_40GB:
 		link_speed_mbps = SPEED_40000;
@@ -2088,9 +2220,7 @@ static void iavf_print_link_message(struct iavf_adapter *adapter)
 		break;
 	}
 
-#ifdef VIRTCHNL_VF_CAP_ADV_LINK_SPEED
 print_link_msg:
-#endif /* VIRTCHNL_VF_CAP_ADV_LINK_SPEED */
 	if (link_speed_mbps > SPEED_1000) {
 		if (link_speed_mbps == SPEED_2500) {
 			speed = kasprintf(GFP_KERNEL, "%s", "2.5 Gbps");
@@ -2112,7 +2242,6 @@ print_link_msg:
 	kfree(speed);
 }
 
-#ifdef VIRTCHNL_VF_CAP_ADV_LINK_SPEED
 /**
  * iavf_get_vpe_link_status
  * @adapter: adapter structure
@@ -2148,7 +2277,6 @@ iavf_set_adapter_link_speed_from_vpe(struct iavf_adapter *adapter,
 		adapter->link_speed = vpe->event_data.link_event.link_speed;
 }
 
-#endif /* VIRTCHNL_VF_CAP_ADV_LINK_SPEED */
 /**
  * iavf_enable_channels
  * @adapter: adapter structure
@@ -2915,20 +3043,11 @@ void iavf_virtchnl_completion(struct iavf_adapter *adapter,
 	if (v_opcode == VIRTCHNL_OP_EVENT) {
 		struct virtchnl_pf_event *vpe =
 			(struct virtchnl_pf_event *)msg;
-#ifdef VIRTCHNL_VF_CAP_ADV_LINK_SPEED
 		bool link_up = iavf_get_vpe_link_status(adapter, vpe);
-#else
-		bool link_up = vpe->event_data.link_event.link_status;
-#endif /* VIRTCHNL_VF_CAP_ADV_LINK_SPEED */
 
 		switch (vpe->event) {
 		case VIRTCHNL_EVENT_LINK_CHANGE:
-#ifdef VIRTCHNL_VF_CAP_ADV_LINK_SPEED
 			iavf_set_adapter_link_speed_from_vpe(adapter, vpe);
-#else
-			adapter->link_speed =
-				vpe->event_data.link_event.link_speed;
-#endif /* VIRTCHNL_VF_CAP_ADV_LINK_SPEED */
 
 			/* we've already got the right link status, bail */
 			if (adapter->link_up == link_up)
@@ -3294,7 +3413,8 @@ void iavf_virtchnl_completion(struct iavf_adapter *adapter,
 
 		memcpy(adapter->vf_res, msg, min(msglen, len));
 		iavf_validate_num_queues(adapter);
-		iavf_vf_parse_hw_config(&adapter->hw, adapter->vf_res);
+		iavf_vf_parse_hw_config(&adapter->hw, adapter->vf_res,
+					adapter->vf_cap_flags);
 		if (is_zero_ether_addr(adapter->hw.mac.addr)) {
 			/* restore current mac address */
 			ether_addr_copy(adapter->hw.mac.addr, netdev->dev_addr);
@@ -3446,6 +3566,21 @@ void iavf_virtchnl_completion(struct iavf_adapter *adapter,
 		iavf_virtchnl_ptp_ext_timestamp(adapter, msg, msglen);
 		break;
 #endif /* IS_ENABLED(CONFIG_PTP_1588_CLOCK) */
+	case VIRTCHNL_OP_GET_VF_CAPS2: {
+		struct virtchnl_vf_caps2 *caps2 =
+			(struct virtchnl_vf_caps2 *)msg;
+
+		/* Require at least 1 element */
+		if (msglen < struct_size(caps2, vf_cap_flags, 1) ||
+		    msglen != struct_size(caps2, vf_cap_flags,
+					  caps2->flags_len))
+			return;
+
+		if (iavf_process_caps2(adapter, caps2))
+			dev_warn(&adapter->pdev->dev,
+				 "Invalid extended flags received from PF\n");
+		}
+		break;
 	case VIRTCHNL_OP_SYNCE_GET_PHY_REC_CLK_OUT:
 		iavf_virtchnl_synce_get_phy_rec_clk_out(adapter, msg, msglen);
 		break;
@@ -3473,12 +3608,35 @@ void iavf_virtchnl_completion(struct iavf_adapter *adapter,
 	case VIRTCHNL_OP_GNSS_WRITE_I2C:
 		iavf_virtchnl_gnss_write_i2c(adapter);
 		break;
+#ifdef HAVE_TC_ETF_QOPT_OFFLOAD
+	case VIRTCHNL_OP_CONFIG_VSI_QUEUES:
+		if (adapter->txtimeq_cfg_state == __IAVF_TXTIMEQ_CONFIG_ENABLE_PENDING ||
+		    adapter->txtimeq_cfg_state == __IAVF_TXTIMEQ_CONFIG_DISABLE_PENDING) {
+			iavf_napi_enable_all(adapter);
+			iavf_schedule_aq_request(adapter, IAVF_FLAG_AQ_ENABLE_QUEUES);
+		}
+		break;
+#endif /* HAVE_TC_ETF_QOPT_OFFLOAD */
 	case VIRTCHNL_OP_ENABLE_QUEUES:
 	case VIRTCHNL_OP_ENABLE_QUEUES_V2:
 		/* enable transmits */
 		if (adapter->state == __IAVF_RUNNING) {
+#ifdef HAVE_TC_ETF_QOPT_OFFLOAD
+			enum iavf_txtimeq_cfg_state_t txtimeq_state;
+
+			txtimeq_state = adapter->txtimeq_cfg_state;
+#endif /* HAVE_TC_ETF_QOPT_OFFLOAD */
 			iavf_irq_enable(adapter, true);
 
+#ifdef HAVE_TC_ETF_QOPT_OFFLOAD
+			/* If ETF reconfiguration is pending, complete it now */
+			if (txtimeq_state == __IAVF_TXTIMEQ_CONFIG_ENABLE_PENDING ||
+			    txtimeq_state == __IAVF_TXTIMEQ_CONFIG_DISABLE_PENDING) {
+				netif_tx_start_all_queues(netdev);
+				netif_carrier_on(netdev);
+				adapter->txtimeq_cfg_state = __IAVF_TXTIMEQ_CONFIG_IDLE;
+			}
+#endif /* HAVE_TC_ETF_QOPT_OFFLOAD */
 			/* If queues not enabled when handling link event,
 			 * then set carrier on now
 			 */
@@ -3488,18 +3646,74 @@ void iavf_virtchnl_completion(struct iavf_adapter *adapter,
 			}
 			wake_up(&adapter->reset_waitqueue);
 		}
+#ifdef HAVE_TC_ETF_QOPT_OFFLOAD
+		if (adapter->txtimeq_cfg_state == __IAVF_TXTIMEQ_CONFIG_ENABLE_PENDING ||
+		    adapter->txtimeq_cfg_state == __IAVF_TXTIMEQ_CONFIG_DISABLE_PENDING)
+			adapter->txtimeq_cfg_state = __IAVF_TXTIMEQ_CONFIG_IDLE;
+#endif /* HAVE_TC_ETF_QOPT_OFFLOAD */
 		adapter->flags |= IAVF_FLAG_QUEUES_ENABLED;
 		adapter->flags &= ~IAVF_FLAG_QUEUES_DISABLED;
 		break;
 	case VIRTCHNL_OP_DISABLE_QUEUES:
 	case VIRTCHNL_OP_DISABLE_QUEUES_V2:
-		iavf_free_all_tx_resources(adapter);
-		iavf_free_all_rx_resources(adapter);
-		if (adapter->state == __IAVF_DOWN_PENDING) {
-			iavf_change_state(adapter, __IAVF_DOWN);
-			wake_up(&adapter->down_waitqueue);
+#ifdef HAVE_TC_ETF_QOPT_OFFLOAD
+		if (adapter->txtimeq_cfg_state == __IAVF_TXTIMEQ_CONFIG_ENABLE_PENDING) {
+			int queue_id = adapter->txq_pending_cfg;
+			struct iavf_ring *ring;
+			int ret;
+
+			dev_dbg(&adapter->pdev->dev,
+				"DISABLE_QUEUES complete, enabling ETF on queue %d\n", queue_id);
+
+			set_bit(queue_id, adapter->txtime_txqs);
+
+			/* Allocate tstamp_ring for this specific queue */
+			ring = &adapter->tx_rings[queue_id];
+			if (!ring->tstamp_ring) {
+				ret = iavf_alloc_setup_tstamp_ring(ring);
+				if (ret) {
+					dev_err(ring->dev,
+						"Unable to setup TxTime for Tx queue %d\n",
+						queue_id);
+					clear_bit(queue_id, adapter->txtime_txqs);
+					adapter->txtimeq_cfg_state = __IAVF_TXTIMEQ_CONFIG_IDLE;
+					return;
+				}
+			}
+			iavf_configure(adapter);
+
+			adapter->aq_required |= IAVF_FLAG_AQ_CONFIGURE_QUEUES;
+			mod_delayed_work(adapter->wq, &adapter->watchdog_task, 0);
+
+		} else if (adapter->txtimeq_cfg_state == __IAVF_TXTIMEQ_CONFIG_DISABLE_PENDING) {
+			int queue_id = adapter->txq_pending_cfg;
+			struct iavf_ring *ring;
+
+			dev_dbg(&adapter->pdev->dev,
+				"DISABLE_QUEUES complete, disabling ETF on queue %d\n", queue_id);
+
+			clear_bit(queue_id, adapter->txtime_txqs);
+
+			/* Free tstamp_ring for this specific queue */
+			ring = &adapter->tx_rings[queue_id];
+			if (ring->tstamp_ring)
+				iavf_free_tx_tstamp_ring(ring);
+
+			iavf_configure(adapter);
+
+			adapter->aq_required |= IAVF_FLAG_AQ_CONFIGURE_QUEUES;
+			mod_delayed_work(adapter->wq, &adapter->watchdog_task, 0);
+
+		} else {
+			iavf_free_all_tx_resources(adapter);
+			iavf_free_all_rx_resources(adapter);
+			if (adapter->state == __IAVF_DOWN_PENDING) {
+				iavf_change_state(adapter, __IAVF_DOWN);
+				wake_up(&adapter->down_waitqueue);
+			}
+			adapter->flags &= ~IAVF_FLAG_QUEUES_ENABLED;
 		}
-		adapter->flags &= ~IAVF_FLAG_QUEUES_ENABLED;
+#endif /* HAVE_TC_ETF_QOPT_OFFLOAD */
 		break;
 	case VIRTCHNL_OP_VERSION:
 	case VIRTCHNL_OP_CONFIG_IRQ_MAP:
@@ -3511,10 +3725,10 @@ void iavf_virtchnl_completion(struct iavf_adapter *adapter,
 		if (v_opcode != adapter->current_op)
 			return;
 		break;
-	case VIRTCHNL_OP_GET_RSS_HENA_CAPS: {
-		struct virtchnl_rss_hena *vrh = (struct virtchnl_rss_hena *)msg;
+	case VIRTCHNL_OP_GET_RSS_HASHCFG_CAPS: {
+		struct virtchnl_rss_hashcfg *vrh = (struct virtchnl_rss_hashcfg *)msg;
 		if (msglen == sizeof(*vrh))
-			adapter->hena = vrh->hena;
+			adapter->hashcfg = vrh->hashcfg;
 		else
 			dev_warn(&adapter->pdev->dev,
 				 "Invalid message %d from PF\n", v_opcode);

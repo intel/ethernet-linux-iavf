@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
-/* Copyright (C) 2013-2025 Intel Corporation */
+/* Copyright (C) 2013-2026 Intel Corporation */
 
 #include "iavf.h"
 
@@ -38,6 +38,58 @@ static inline __le64 build_ctob(u32 td_cmd, u32 td_offset, unsigned int size,
 			   ((u64)td_tag  << IAVF_TXD_QW1_L2TAG1_SHIFT));
 }
 
+#ifdef HAVE_TC_ETF_QOPT_OFFLOAD
+/**
+ * iavf_clean_tstamp_ring - clean time stamp ring
+ * @tx_ring: Tx ring to clean the time stamp ring for
+ */
+static void iavf_clean_tstamp_ring(struct iavf_ring *tx_ring)
+{
+	struct iavf_tstamp_ring *tstamp_ring = tx_ring->tstamp_ring;
+	u32 size;
+
+	if (!tstamp_ring->desc)
+		return;
+
+	size = ALIGN(tstamp_ring->count * sizeof(struct iavf_ts_desc),
+		     PAGE_SIZE);
+	memset(tstamp_ring->desc, 0, size);
+	tstamp_ring->next_to_use = 0;
+}
+
+/**
+ * iavf_free_tstamp_ring - free time stamp resources per queue
+ * @tx_ring: Tx ring to free the time stamp ring for
+ */
+static void iavf_free_tstamp_ring(struct iavf_ring *tx_ring)
+{
+	struct iavf_tstamp_ring *tstamp_ring = tx_ring->tstamp_ring;
+
+	if (!tstamp_ring || !tstamp_ring->desc)
+		return;
+
+	iavf_clean_tstamp_ring(tx_ring);
+	tstamp_ring->size = tstamp_ring->count * sizeof(struct iavf_ts_desc);
+	tstamp_ring->size = ALIGN(tstamp_ring->size, 4096);
+	dma_free_coherent(tx_ring->dev, tstamp_ring->size,
+			  tstamp_ring->desc, tstamp_ring->dma);
+	tstamp_ring->desc = NULL;
+}
+
+/**
+ * iavf_free_tx_tstamp_ring - free time stamp resources per Tx ring
+ * @tx_ring: Tx ring to free the Time Stamp ring for
+ */
+void iavf_free_tx_tstamp_ring(struct iavf_ring *tx_ring)
+{
+	iavf_free_tstamp_ring(tx_ring);
+	clear_bit(IAVF_TX_FLAGS_TXTIME, tx_ring->flags);
+	smp_wmb();	/* order flag clear before pointer NULL */
+	kfree_rcu(tx_ring->tstamp_ring, rcu);
+	WRITE_ONCE(tx_ring->tstamp_ring, NULL);
+}
+#endif /* HAVE_TC_ETF_QOPT_OFFLOAD */
+
 #define IAVF_TXD_CMD (IAVF_TX_DESC_CMD_EOP | IAVF_TX_DESC_CMD_RS)
 
 /**
@@ -75,7 +127,11 @@ static void iavf_unmap_and_free_tx_resource(struct iavf_ring *ring,
  * iavf_clean_tx_ring - Free any empty Tx buffers
  * @tx_ring: ring to be cleaned
  **/
+#ifdef HAVE_TC_ETF_QOPT_OFFLOAD
+void iavf_clean_tx_ring(struct iavf_ring *tx_ring)
+#else /* HAVE_TC_ETF_QOPT_OFFLOAD */
 static void iavf_clean_tx_ring(struct iavf_ring *tx_ring)
+#endif /* HAVE_TC_ETF_QOPT_OFFLOAD */
 {
 	unsigned long bi_size;
 	u16 i;
@@ -102,6 +158,11 @@ static void iavf_clean_tx_ring(struct iavf_ring *tx_ring)
 
 	/* cleanup Tx queue statistics */
 	netdev_tx_reset_queue(txring_txq(tx_ring));
+
+#ifdef HAVE_TC_ETF_QOPT_OFFLOAD
+	if (iavf_txtime_configured(tx_ring))
+		iavf_free_tx_tstamp_ring(tx_ring);
+#endif /* HAVE_TC_ETF_QOPT_OFFLOAD */
 }
 
 /**
@@ -392,7 +453,7 @@ static bool iavf_clean_tx_irq(struct iavf_vsi *vsi,
 	tx_ring->q_vector->tx.total_packets += total_packets;
 	iavf_chnl_queue_stats(tx_ring, total_packets);
 
-	if (tx_ring->flags & IAVF_TXR_FLAGS_WB_ON_ITR) {
+	if (test_bit(IAVF_TXR_FLAGS_WB_ON_ITR, tx_ring->flags)) {
 		/* check to see if there are < 4 descriptors
 		 * waiting to be written back, then kick the hardware to force
 		 * them to be written back in case we stay in NAPI.
@@ -439,10 +500,10 @@ static bool iavf_clean_tx_irq(struct iavf_vsi *vsi,
 static void iavf_enable_wb_on_itr(struct iavf_vsi *vsi,
 				  struct iavf_q_vector *q_vector)
 {
-	u16 flags = q_vector->tx.ring[0].flags;
+	unsigned long *flags = q_vector->tx.ring[0].flags;
 	u32 val;
 
-	if (!(flags & IAVF_TXR_FLAGS_WB_ON_ITR))
+	if (!test_bit(IAVF_TXR_FLAGS_WB_ON_ITR, flags))
 		return;
 
 	if (q_vector->arm_wb_state)
@@ -725,6 +786,83 @@ clear_counts:
 	rc->total_packets = 0;
 }
 
+#ifdef HAVE_TC_ETF_QOPT_OFFLOAD
+/**
+ * iavf_alloc_tstamp_ring - allocate the Time Stamp ring
+ * @tx_ring: Tx ring to allocate the Time Stamp ring for
+ *
+ * Return: 0 on success, negative on error
+ */
+static int iavf_alloc_tstamp_ring(struct iavf_ring *tx_ring)
+{
+	struct iavf_tstamp_ring *tstamp_ring;
+
+	/* allocate with kzalloc(), free with kfree_rcu() */
+	tstamp_ring = kzalloc(sizeof(*tstamp_ring), GFP_KERNEL);
+	if (!tstamp_ring)
+		return -ENOMEM;
+
+	tstamp_ring->tx_ring = tx_ring;
+	tx_ring->tstamp_ring = tstamp_ring;
+	tstamp_ring->desc = NULL;
+	tstamp_ring->count = tx_ring->count +
+					VIRTCHNL_MAX_TXTIME_FETCH_TX_DESC;
+	set_bit(IAVF_TX_FLAGS_TXTIME, tx_ring->flags);
+	return 0;
+}
+
+/**
+ * iavf_setup_tstamp_ring - allocate the Time Stamp ring
+ * @tx_ring: Tx ring to set up the Time Stamp ring for
+ *
+ * Return: 0 on success, negative on error
+ */
+static int iavf_setup_tstamp_ring(struct iavf_ring *tx_ring)
+{
+	struct iavf_tstamp_ring *tstamp_ring = tx_ring->tstamp_ring;
+	struct device *dev = tx_ring->dev;
+
+	/* round up to nearest page */
+	tstamp_ring->size = tstamp_ring->count * sizeof(struct iavf_ts_desc);
+	tstamp_ring->size = ALIGN(tstamp_ring->size, 4096);
+	tstamp_ring->desc = dma_alloc_coherent(dev, tstamp_ring->size,
+					       &tstamp_ring->dma, GFP_KERNEL);
+	if (!tstamp_ring->desc)
+		return -ENOMEM;
+
+	tstamp_ring->next_to_use = 0;
+	return 0;
+}
+
+/**
+ * iavf_alloc_setup_tstamp_ring - Allocate and setup the Time Stamp ring
+ * @tx_ring: Tx ring to allocate and setup the Time Stamp ring for
+ *
+ * Return: 0 on success, negative on error
+ */
+int iavf_alloc_setup_tstamp_ring(struct iavf_ring *tx_ring)
+{
+	struct device *dev = tx_ring->dev;
+	int err;
+
+	err = iavf_alloc_tstamp_ring(tx_ring);
+	if (err) {
+		dev_err(dev, "Unable to allocate Time stamp ring for Tx ring %d\n",
+			tx_ring->queue_index);
+		return err;
+	}
+
+	err = iavf_setup_tstamp_ring(tx_ring);
+	if (err) {
+		dev_err(dev, "Unable to setup Time stamp ring for Tx ring %d\n",
+			tx_ring->queue_index);
+		iavf_free_tx_tstamp_ring(tx_ring);
+		return err;
+	}
+	return 0;
+}
+#endif /* HAVE_TC_ETF_QOPT_OFFLOAD */
+
 /**
  * iavf_setup_tx_descriptors - Allocate the Tx descriptors
  * @tx_ring: the tx ring to set up
@@ -760,6 +898,19 @@ int iavf_setup_tx_descriptors(struct iavf_ring *tx_ring)
 	tx_ring->next_to_use = 0;
 	tx_ring->next_to_clean = 0;
 	tx_ring->tx_stats.prev_pkt_ctr = -1;
+
+#ifdef HAVE_TC_ETF_QOPT_OFFLOAD
+	if (iavf_txtime_requested(tx_ring)) {
+		int err;
+
+		err = iavf_alloc_setup_tstamp_ring(tx_ring);
+		if (err) {
+			dev_err(dev, "Unable to setup Time stamp ring for Tx ring %d\n",
+				tx_ring->queue_index);
+			goto err;
+		}
+	}
+#endif /* HAVE_TC_ETF_QOPT_OFFLOAD */
 	return 0;
 
 err:
@@ -772,7 +923,7 @@ err:
  * iavf_clean_rx_ring - Free Rx buffers
  * @rx_ring: ring to be cleaned
  **/
-static void iavf_clean_rx_ring(struct iavf_ring *rx_ring)
+void iavf_clean_rx_ring(struct iavf_ring *rx_ring)
 {
 	unsigned long bi_size;
 	u16 i;
@@ -1403,7 +1554,7 @@ iavf_flex_rx_tstamp(struct iavf_ring *rx_ring, union iavf_rx_desc *rx_desc, stru
 	u64 ns;
 
 	/* Skip processing if timestamps aren't enabled */
-	if (!(rx_ring->flags & IAVF_TXRX_FLAGS_HW_TSTAMP))
+	if (!test_bit(IAVF_TXRX_FLAGS_HW_TSTAMP, rx_ring->flags))
 		return;
 
 	/* Check if this Rx descriptor has a valid timestamp */
@@ -1971,12 +2122,12 @@ static void iavf_extract_legacy_rx_fields(struct iavf_ring *rx_ring,
 	fields->rx_ptype = FIELD_GET(IAVF_RXD_QW1_PTYPE_MASK, qword);
 
 	if (qword & BIT(IAVF_RX_DESC_STATUS_L2TAG1P_SHIFT) &&
-	    rx_ring->flags & IAVF_TXRX_FLAGS_VLAN_TAG_LOC_L2TAG1)
+	    test_bit(IAVF_TXRX_FLAGS_VLAN_TAG_LOC_L2TAG1, rx_ring->flags))
 		fields->vlan_tag = le16_to_cpu(rx_desc->wb.qword0.lo_dword.l2tag1);
 
 	if (rx_desc->wb.qword2.ext_status &
 	    cpu_to_le16(BIT(IAVF_RX_DESC_EXT_STATUS_L2TAG2P_SHIFT)) &&
-	    rx_ring->flags & IAVF_RXR_FLAGS_VLAN_TAG_LOC_L2TAG2_2)
+	    test_bit(IAVF_RXR_FLAGS_VLAN_TAG_LOC_L2TAG2_2, rx_ring->flags))
 		fields->vlan_tag = le16_to_cpu(rx_desc->wb.qword2.l2tag2_2);
 
 	fields->end_of_packet = FIELD_GET(BIT(IAVF_RX_DESC_STATUS_EOF_SHIFT),
@@ -2012,12 +2163,12 @@ static void iavf_extract_flex_rx_fields(struct iavf_ring *rx_ring,
 
 	status0 = rx_desc->flex_wb.status_error0;
 	if (status0 & cpu_to_le16(BIT(IAVF_RX_FLEX_DESC_STATUS0_L2TAG1P_S)) &&
-	    rx_ring->flags & IAVF_TXRX_FLAGS_VLAN_TAG_LOC_L2TAG1)
+	    test_bit(IAVF_TXRX_FLAGS_VLAN_TAG_LOC_L2TAG1, rx_ring->flags))
 		fields->vlan_tag = le16_to_cpu(rx_desc->flex_wb.l2tag1);
 
 	status1 = rx_desc->flex_wb.status_error1;
 	if (status1 & cpu_to_le16(BIT(IAVF_RX_FLEX_DESC_STATUS1_L2TAG2P_S)) &&
-	    rx_ring->flags & IAVF_RXR_FLAGS_VLAN_TAG_LOC_L2TAG2_2)
+	    test_bit(IAVF_RXR_FLAGS_VLAN_TAG_LOC_L2TAG2_2, rx_ring->flags))
 		fields->vlan_tag = le16_to_cpu(rx_desc->flex_wb.l2tag2_2nd);
 
 	fields->end_of_packet = FIELD_GET(IAVF_RX_FLEX_DESC_STATUS_ERR0_EOP_BIT,
@@ -2402,7 +2553,6 @@ int iavf_napi_poll(struct napi_struct *napi, int budget)
 			       container_of(napi, struct iavf_q_vector, napi);
 	struct iavf_vsi *vsi = q_vector->vsi;
 	bool cleaned_any_data_pkt = false;
-	u64 flags = vsi->back->flags;
 	bool unlikely_cb_bp = false;
 	bool clean_complete = true;
 	bool ch_enabled = false;
@@ -2422,7 +2572,7 @@ int iavf_napi_poll(struct napi_struct *napi, int budget)
 	 */
 	wb_on_itr_enabled = true;
 	iavf_for_each_ring(ring, q_vector->tx) {
-		if (!(ring->flags & IAVF_TXR_FLAGS_WB_ON_ITR)) {
+		if (!test_bit(IAVF_TXR_FLAGS_WB_ON_ITR, ring->flags)) {
 			wb_on_itr_enabled &= false;
 			break;
 		}
@@ -2552,7 +2702,7 @@ tx_only:
 		return budget;
 	}
 
-	if (flags & IAVF_TXR_FLAGS_WB_ON_ITR)
+	if (test_bit(IAVF_TXR_FLAGS_WB_ON_ITR, q_vector->tx.ring[0].flags))
 		q_vector->arm_wb_state = false;
 
 bypass:
@@ -2662,9 +2812,10 @@ static void iavf_tx_prepare_vlan_flags(struct sk_buff *skb,
 		return;
 
 	tx_flags |= skb_vlan_tag_get(skb) << IAVF_TX_FLAGS_VLAN_SHIFT;
-	if (tx_ring->flags & IAVF_TXR_FLAGS_VLAN_TAG_LOC_L2TAG2) {
+	if (test_bit(IAVF_TXR_FLAGS_VLAN_TAG_LOC_L2TAG2, tx_ring->flags)) {
 		tx_flags |= IAVF_TX_FLAGS_HW_OUTER_SINGLE_VLAN;
-	} else if (tx_ring->flags & IAVF_TXRX_FLAGS_VLAN_TAG_LOC_L2TAG1) {
+	} else if (test_bit(IAVF_TXRX_FLAGS_VLAN_TAG_LOC_L2TAG1,
+			      tx_ring->flags)) {
 		tx_flags |= IAVF_TX_FLAGS_HW_VLAN;
 	} else {
 		dev_dbg(tx_ring->dev, "Unsupported Tx VLAN tag location requested\n");
@@ -3079,7 +3230,7 @@ iavf_tstamp(struct iavf_ring *tx_ring, struct sk_buff *skb, u32 tx_flags, u64 *c
 	u64 ts_idx;
 
 	/* Timestamping is not enabled */
-	if (!(tx_ring->flags & IAVF_TXRX_FLAGS_HW_TSTAMP))
+	if (!test_bit(IAVF_TXRX_FLAGS_HW_TSTAMP, tx_ring->flags))
 		return 0;
 
 	if (likely(!(skb_shinfo(skb)->tx_flags & SKBTX_HW_TSTAMP)))
@@ -3092,7 +3243,8 @@ iavf_tstamp(struct iavf_ring *tx_ring, struct sk_buff *skb, u32 tx_flags, u64 *c
 	adapter = netdev_priv(tx_ring->netdev);
 	ptp = &adapter->ptp;
 
-	if (test_and_set_bit_lock(__IAVF_TX_TSTAMP_IN_PROGRESS, &adapter->crit_section)) {
+	if (test_and_set_bit_lock(__IAVF_TX_TSTAMP_IN_PROGRESS,
+				  adapter->crit_section)) {
 		ptp->tx_hwtstamp_skipped++;
 		return 0;
 	}
@@ -3246,6 +3398,76 @@ int __iavf_maybe_stop_tx(struct iavf_ring *tx_ring, int size)
 	return 0;
 }
 
+#ifdef HAVE_TC_ETF_QOPT_OFFLOAD
+/**
+ * iavf_ring_doorbell - Write to the tail register
+ * @tx_ring: Tx ring to write doorbell for
+ * @first: first tx buffer
+ * @i: next_to_use index
+ *
+ * Ring the doorbell to notify hardware of new descriptors
+ */
+static inline void iavf_ring_doorbell(struct iavf_ring *tx_ring,
+				      struct iavf_tx_buffer *first,
+				      u16 tx_next_to_use)
+{
+	struct iavf_tstamp_ring *tstamp_ring;
+	struct iavf_ts_desc *ts_desc;
+	struct timespec64 ts;
+	u16 tstamp_count, j;
+	u32 tstamp;
+
+	/* If the timestamp ring isn't configured, ring the Tx doorbell.
+	 */
+	if (!iavf_txtime_configured(tx_ring))
+		goto ring_kick;
+
+	/* Prepare the timestamp descriptor with the timestamp value and index of the
+	 * Tx descriptor associated with the timestamp request. Then ring the
+	 * timestamp ring doorbell to notify hardware of new timestamp descriptor.
+	 */
+	smp_rmb();	/* order flag read before pointer read */
+	tstamp_ring = READ_ONCE(tx_ring->tstamp_ring);
+	if (unlikely(!tstamp_ring))
+		goto ring_kick;
+
+	tstamp_count = tstamp_ring->count;
+	j = tstamp_ring->next_to_use;
+
+	ts = ktime_to_timespec64(first->skb->tstamp);
+
+#define IAVF_TXTIME_NS_TO_128NS_SHIFT 7
+	tstamp = ts.tv_nsec >> IAVF_TXTIME_NS_TO_128NS_SHIFT;
+	ts_desc = IAVF_TS_DESC(tstamp_ring, j);
+	ts_desc->tx_desc_idx_tstamp = iavf_build_tstamp_desc(tx_next_to_use, tstamp);
+
+	j++;
+	if (j == tstamp_count) {
+		int fetch = tstamp_count - tx_ring->count;
+
+		j = 0;
+		/* To prevent an MDD, when wrapping the tstamp
+		 * ring create additional TS descriptors equal
+		 * to the number of the fetch TS descriptors
+		 * value. HW will merge the TS descriptors with
+		 * the same timestamp value into a single
+		 * descriptor.
+		 */
+		for (; j < fetch; j++) {
+			ts_desc = IAVF_TS_DESC(tstamp_ring, j);
+			ts_desc->tx_desc_idx_tstamp =
+				iavf_build_tstamp_desc(tx_next_to_use, tstamp);
+		}
+	}
+	tstamp_ring->next_to_use = j;
+	writel(j, tstamp_ring->tail);
+	return;
+
+ring_kick:
+	writel(tx_next_to_use, tx_ring->tail);
+}
+#endif /* HAVE_TC_ETF_QOPT_OFFLOAD */
+
 /**
  * iavf_tx_map - Build the Tx descriptor
  * @tx_ring:  ring to send buffer on
@@ -3374,7 +3596,12 @@ static int iavf_tx_map(struct iavf_ring *tx_ring, struct sk_buff *skb,
 	/* notify HW of packet */
 #ifdef HAVE_SKB_XMIT_MORE
 	if (netif_xmit_stopped(txring_txq(tx_ring)) || !netdev_xmit_more()) {
+#ifdef HAVE_TC_ETF_QOPT_OFFLOAD
+		iavf_ring_doorbell(tx_ring, first, i);
+#else
 		writel(i, tx_ring->tail);
+#endif /* HAVE_TC_ETF_QOPT_OFFLOAD */
+
 #ifndef SPIN_UNLOCK_IMPLIES_MMIOWB
 		/* We need this mmiowb on IA64/Altix systems where wmb() isn't
 		 * guaranteed to synchronize I/O.
@@ -3388,7 +3615,11 @@ static int iavf_tx_map(struct iavf_ring *tx_ring, struct sk_buff *skb,
 #endif /* SPIN_UNLOCK_IMPLIES_MMIOWB */
 	}
 #else
+#ifdef HAVE_TC_ETF_QOPT_OFFLOAD
+	iavf_ring_doorbell(tx_ring, first, i);
+#else
 	writel(i, tx_ring->tail);
+#endif /* HAVE_TC_ETF_QOPT_OFFLOAD */
 
 #ifndef SPIN_UNLOCK_IMPLIES_MMIOWB
 	/* We need this mmiowb on IA64/Altix systems where wmb() isn't
@@ -3539,7 +3770,8 @@ cleanup_ret:
 
 		dev_kfree_skb_any(adapter->ptp.tx_skb);
 		adapter->ptp.tx_skb = NULL;
-		clear_bit_unlock(__IAVF_TX_TSTAMP_IN_PROGRESS, &adapter->crit_section);
+		clear_bit_unlock(__IAVF_TX_TSTAMP_IN_PROGRESS,
+				 adapter->crit_section);
 	}
 
 	return NETDEV_TX_OK;
