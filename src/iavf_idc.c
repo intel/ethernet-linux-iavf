@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
-/* Copyright (C) 2013-2025 Intel Corporation */
+/* Copyright (C) 2013-2026 Intel Corporation */
 
 #include "iavf.h"
 
@@ -30,7 +30,7 @@ static bool iavf_idc_is_adapter_ready(struct iavf_adapter *adapter)
 		return false;
 	}
 
-	if (test_bit(__IAVF_IN_REMOVE_TASK, &adapter->crit_section)) {
+	if (test_bit(__IAVF_IN_REMOVE_TASK, adapter->crit_section)) {
 		dev_dbg(&adapter->pdev->dev, "Adapter is being removed, preventing IDC communication\n");
 		return false;
 	}

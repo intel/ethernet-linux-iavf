@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
-/* Copyright (C) 2013-2025 Intel Corporation */
+/* Copyright (C) 2013-2026 Intel Corporation */
 
 #ifndef _IAVF_PTP_H_
 #define _IAVF_PTP_H_
@@ -54,6 +54,13 @@ bool iavf_ptp_cap_supported(struct iavf_adapter *adapter, u32 cap);
 u64 iavf_ptp_extend_32b_timestamp(u64 cached_phc_time, u32 in_tstamp);
 int iavf_ptp_get_ts_config(struct iavf_adapter *adapter, struct ifreq *ifr);
 int iavf_ptp_set_ts_config(struct iavf_adapter *adapter, struct ifreq *ifr);
+#ifdef HAVE_NDO_HWTSTAMP
+int iavf_ptp_hwtstamp_get(struct net_device *netdev,
+			  struct kernel_hwtstamp_config *config);
+int iavf_ptp_hwtstamp_set(struct net_device *netdev,
+			  struct kernel_hwtstamp_config *config,
+			  struct netlink_ext_ack *extack);
+#endif /* HAVE_NDO_HWTSTAMP */
 void iavf_virtchnl_ptp_get_time(struct iavf_adapter *adapter, void *data,
 				u16 len);
 void iavf_virtchnl_ptp_tx_timestamp(struct iavf_adapter *adapter, void *data,
@@ -79,6 +86,22 @@ static inline int iavf_ptp_set_ts_config(struct iavf_adapter *adapter, struct if
 {
 	return -EOPNOTSUPP;
 }
+#ifdef HAVE_NDO_HWTSTAMP
+static inline int
+iavf_ptp_hwtstamp_get(struct net_device *netdev,
+		      struct kernel_hwtstamp_config *config)
+{
+	return -EOPNOTSUPP;
+}
+
+static inline int
+iavf_ptp_hwtstamp_set(struct net_device *netdev,
+		      struct kernel_hwtstamp_config *config,
+		      struct netlink_ext_ack *extack)
+{
+	return -EOPNOTSUPP;
+}
+#endif /* HAVE_NDO_HWTSTAMP */
 #endif
 
 #endif /* _IAVF_PTP_H_ */

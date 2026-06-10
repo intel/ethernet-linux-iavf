@@ -1,12 +1,11 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
-/* Copyright (C) 2013-2025 Intel Corporation */
+/* Copyright (C) 2013-2026 Intel Corporation */
 
 #ifndef _IAVF_TYPE_H_
 #define _IAVF_TYPE_H_
 
 #include "iavf_status.h"
 #include "iavf_osdep.h"
-#include "siov_regs.h"
 #include "iavf_register.h"
 #include "iavf_adminq.h"
 #include "iavf_devids.h"
@@ -680,6 +679,11 @@ enum iavf_rx_prog_status_desc_error_bits {
 	IAVF_RX_PROG_STATUS_DESC_NO_FD_ENTRY_SHIFT	= 1,
 	IAVF_RX_PROG_STATUS_DESC_FCOE_TBL_FULL_SHIFT	= 2,
 	IAVF_RX_PROG_STATUS_DESC_FCOE_CONFLICT_SHIFT	= 3
+};
+
+/* Tx time stamp descriptor */
+struct iavf_ts_desc {
+	__le32 tx_desc_idx_tstamp;
 };
 
 /* TX Descriptor */

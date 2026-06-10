@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
-/* Copyright (C) 2013-2025 Intel Corporation */
+/* Copyright (C) 2013-2026 Intel Corporation */
 
 #ifndef _IAVF_TXRX_H_
 #define _IAVF_TXRX_H_
@@ -73,7 +73,7 @@ enum iavf_dyn_idx_t {
 #define IAVF_PE_ITR    IAVF_IDX_ITR2
 
 /* Supported RSS offloads */
-#define IAVF_DEFAULT_RSS_HENA ( \
+#define IAVF_DEFAULT_RSS_HASHCFG ( \
 	BIT_ULL(VIRTCHNL_HASH_FILTER_IPV4_UDP) | \
 	BIT_ULL(VIRTCHNL_HASH_FILTER_IPV4_SCTP) | \
 	BIT_ULL(VIRTCHNL_HASH_FILTER_IPV4_TCP) | \
@@ -86,7 +86,7 @@ enum iavf_dyn_idx_t {
 	BIT_ULL(VIRTCHNL_HASH_FILTER_FRAG_IPV6) | \
 	BIT_ULL(VIRTCHNL_HASH_FILTER_L2_PAYLOAD))
 
-#define IAVF_DEFAULT_RSS_HENA_EXPANDED (IAVF_DEFAULT_RSS_HENA | \
+#define IAVF_DEFAULT_RSS_HASHCFG_EXPANDED (IAVF_DEFAULT_RSS_HASHCFG | \
 	BIT_ULL(VIRTCHNL_HASH_FILTER_IPV4_TCP_SYN_NO_ACK) | \
 	BIT_ULL(VIRTCHNL_HASH_FILTER_UNICAST_IPV4_UDP) | \
 	BIT_ULL(VIRTCHNL_HASH_FILTER_MULTICAST_IPV4_UDP) | \
@@ -347,6 +347,19 @@ enum iavf_ring_state_t {
 	__IAVF_RING_STATE_NBITS /* must be last */
 };
 
+#ifdef HAVE_TC_ETF_QOPT_OFFLOAD
+struct iavf_tstamp_ring {
+	struct iavf_ring *tx_ring;    /* Backreference to associated Tx ring */
+	u16 next_to_use;         /* Time stamp ring next to use */
+	u16 count;               /* Time stamp ring descriptors count */
+	u8 __iomem *tail;        /* Time stamp ring tail pointer */
+	void *desc;              /* Time stamp descriptor ring memory */
+	dma_addr_t dma;                 /* physical address of ring */
+	struct rcu_head rcu;            /* to avoid race on free */
+	unsigned int size;              /* length of descriptor ring in bytes */
+} ____cacheline_internodealigned_in_smp;
+#endif /* HAVE_TC_ETF_QOPT_OFFLOAD */
+
 /* some useful defines for virtchannel interface, which
  * is the only remaining user of header split
  */
@@ -357,6 +370,19 @@ enum iavf_ring_state_t {
 #define IAVF_RX_SPLIT_IP      0x2
 #define IAVF_RX_SPLIT_TCP_UDP 0x4
 #define IAVF_RX_SPLIT_SCTP    0x8
+
+enum iavf_ring_flags {
+	IAVF_TXR_FLAGS_WB_ON_ITR,
+	IAVF_RXR_FLAGS_BUILD_SKB_ENABLED,
+	IAVF_TXRX_FLAGS_VLAN_TAG_LOC_L2TAG1,
+	IAVF_TXR_FLAGS_VLAN_TAG_LOC_L2TAG2,
+	IAVF_RXR_FLAGS_VLAN_TAG_LOC_L2TAG2_2,
+	IAVF_TXRX_FLAGS_HW_TSTAMP,
+#ifdef HAVE_TC_ETF_QOPT_OFFLOAD
+	IAVF_TX_FLAGS_TXTIME,
+#endif /* HAVE_TC_ETF_QOPT_OFFLOAD */
+	IAVF_RING_FLAGS_NBITS
+};
 
 /* struct that defines a descriptor ring, associated with a VSI */
 struct iavf_ring {
@@ -397,13 +423,7 @@ struct iavf_ring {
 
 	u8 rxdid;			/* Rx descriptor format */
 
-	u16 flags;
-#define IAVF_TXR_FLAGS_WB_ON_ITR		BIT(0)
-#define IAVF_RXR_FLAGS_BUILD_SKB_ENABLED	BIT(1)
-#define IAVF_TXRX_FLAGS_VLAN_TAG_LOC_L2TAG1	BIT(3)
-#define IAVF_TXR_FLAGS_VLAN_TAG_LOC_L2TAG2	BIT(4)
-#define IAVF_RXR_FLAGS_VLAN_TAG_LOC_L2TAG2_2	BIT(5)
-#define IAVF_TXRX_FLAGS_HW_TSTAMP		BIT(6)
+	DECLARE_BITMAP(flags, IAVF_RING_FLAGS_NBITS);
 
 	/* stats structs */
 	struct iavf_queue_stats	stats;
@@ -438,6 +458,7 @@ struct iavf_ring {
 #define IAVF_RING_CHNL_PERF_ENA	BIT(0)
 
 	struct iavf_channel_ex *ch;
+	struct iavf_tstamp_ring *tstamp_ring;
 } ____cacheline_internodealigned_in_smp;
 
 static inline bool ring_ch_ena(struct iavf_ring *ring)
@@ -452,17 +473,17 @@ static inline bool ring_ch_perf_ena(struct iavf_ring *ring)
 
 static inline bool ring_uses_build_skb(struct iavf_ring *ring)
 {
-	return !!(ring->flags & IAVF_RXR_FLAGS_BUILD_SKB_ENABLED);
+	return test_bit(IAVF_RXR_FLAGS_BUILD_SKB_ENABLED, ring->flags);
 }
 
 static inline void set_ring_build_skb_enabled(struct iavf_ring *ring)
 {
-	ring->flags |= IAVF_RXR_FLAGS_BUILD_SKB_ENABLED;
+	set_bit(IAVF_RXR_FLAGS_BUILD_SKB_ENABLED, ring->flags);
 }
 
 static inline void clear_ring_build_skb_enabled(struct iavf_ring *ring)
 {
-	ring->flags &= ~IAVF_RXR_FLAGS_BUILD_SKB_ENABLED;
+	clear_bit(IAVF_RXR_FLAGS_BUILD_SKB_ENABLED, ring->flags);
 }
 
 #define IAVF_ITR_ADAPTIVE_MIN_INC       0x0002
@@ -508,6 +529,12 @@ void iavf_detect_recover_hung(struct iavf_vsi *vsi);
 void iavf_chnl_detect_recover(struct iavf_vsi *vsi);
 int __iavf_maybe_stop_tx(struct iavf_ring *tx_ring, int size);
 bool __iavf_chk_linearize(struct sk_buff *skb);
+#ifdef HAVE_TC_ETF_QOPT_OFFLOAD
+int iavf_alloc_setup_tstamp_ring(struct iavf_ring *tx_ring);
+void iavf_free_tx_tstamp_ring(struct iavf_ring *tx_ring);
+void iavf_clean_tx_ring(struct iavf_ring *tx_ring);
+void iavf_clean_rx_ring(struct iavf_ring *rx_ring);
+#endif /* HAVE_TC_ETF_QOPT_OFFLOAD */
 
 /**
  * iavf_xmit_descriptor_count - calculate number of Tx descriptors needed

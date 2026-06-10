@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-2.0-only
-# Copyright (C) 2013-2025 Intel Corporation
+# Copyright (C) 2013-2026 Intel Corporation
 
 ifneq ($(KERNELRELEASE),)
 include $(src)/common.mk
@@ -29,6 +29,10 @@ obj-m += intel_auxiliary.o
 endif
 
 iavf-y += kcompat.o
+
+ifeq ($(shell grep HAVE_XARRAY_API $(src)/kcompat_generated_defs.h),)
+iavf-y += kcompat_xarray.o
+endif
 
 else	# ifneq($(KERNELRELEASE),)
 # normal makefile

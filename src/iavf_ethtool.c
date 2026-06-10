@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
-/* Copyright (C) 2013-2025 Intel Corporation */
+/* Copyright (C) 2013-2026 Intel Corporation */
 
 /* ethtool support for iavf */
 #include "iavf.h"
@@ -484,9 +484,7 @@ static int iavf_get_link_ksettings(struct net_device *netdev,
 				   struct ethtool_link_ksettings *cmd)
 {
 	struct iavf_adapter *adapter = netdev_priv(netdev);
-#ifdef VIRTCHNL_VF_CAP_ADV_LINK_SPEED
 	int status = 0;
-#endif /* VIRTCHNL_VF_CAP_ADV_LINK_SPEED */
 
 	ethtool_link_ksettings_zero_link_mode(cmd, supported);
 	ethtool_link_ksettings_zero_link_mode(cmd, advertising);
@@ -495,7 +493,6 @@ static int iavf_get_link_ksettings(struct net_device *netdev,
 	cmd->base.port = PORT_NONE;
 	cmd->base.duplex = DUPLEX_FULL;
 
-#ifdef VIRTCHNL_VF_CAP_ADV_LINK_SPEED
 	mutex_lock(&adapter->crit_lock);
 
 	if (!adapter->vf_res) {
@@ -513,7 +510,6 @@ static int iavf_get_link_ksettings(struct net_device *netdev,
 		goto unlock;
 	}
 
-#endif /* VIRTCHNL_VF_CAP_ADV_LINK_SPEED */
 	switch (adapter->link_speed) {
 	case VIRTCHNL_LINK_SPEED_40GB:
 		cmd->base.speed = SPEED_40000;
@@ -549,13 +545,9 @@ static int iavf_get_link_ksettings(struct net_device *netdev,
 		break;
 	}
 
-#ifdef VIRTCHNL_VF_CAP_ADV_LINK_SPEED
 unlock:
 	mutex_unlock(&adapter->crit_lock);
 	return status;
-#else
-	return 0;
-#endif /* VIRTCHNL_VF_CAP_ADV_LINK_SPEED */
 }
 
 #ifndef ETHTOOL_GLINKSETTINGS

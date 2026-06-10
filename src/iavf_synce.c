@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
-/* Copyright (C) 2013-2025 Intel Corporation */
+/* Copyright (C) 2013-2026 Intel Corporation */
 
 #include "iavf.h"
 #include "iavf_prototype.h"
@@ -205,6 +205,19 @@ void iavf_virtchnl_synce_get_hw_info(struct iavf_adapter *adapter, void *data,
 	} else {
 		dev_err_once(dev, "Invalid hw info. Got size %u, expected %lu\n",
 			     len, sizeof(*msg));
+		return;
+	}
+
+	if (msg->len > IAVF_MAX_CGU_PIN_NUM) {
+		dev_err_once(dev, "Invalid hw info. Too many CGU pins: %u, max %u\n",
+			     msg->len, IAVF_MAX_CGU_PIN_NUM);
+		return;
+	}
+
+	if (len < sizeof(*msg) +
+	    (msg->len - 1) * sizeof(struct virtchnl_cgu_pin)) {
+		dev_err_once(dev, "Invalid hw info. Buffer too small for %u pins\n",
+			     msg->len);
 		return;
 	}
 
