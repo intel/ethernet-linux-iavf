@@ -2446,7 +2446,7 @@ static void iavf_refresh_bp_state(struct napi_struct *napi)
 
 #ifdef HAVE_NAPI_STATE_IN_BUSY_POLL
 	/* update current state of vector */
-	if (test_bit(NAPI_STATE_IN_BUSY_POLL, &napi->state))
+	if (napi->state & BIT(NAPI_STATE_IN_BUSY_POLL))
 		q_vector->state_flags |= IAVF_VECTOR_STATE_IN_BP;
 	else
 		q_vector->state_flags &= ~IAVF_VECTOR_STATE_IN_BP;

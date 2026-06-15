@@ -24,8 +24,8 @@ static const char iavf_driver_string[] =
 
 #define DRV_VERSION_MAJOR (4)
 #define DRV_VERSION_MINOR (13)
-#define DRV_VERSION_BUILD (27)
-#define DRV_VERSION "4.13.27"
+#define DRV_VERSION_BUILD (35)
+#define DRV_VERSION "4.13.35"
 const char iavf_driver_version[] = DRV_VERSION;
 static const char iavf_copyright[] =
 	"Copyright (C) 2013-2026 Intel Corporation";
@@ -6553,6 +6553,7 @@ static void iavf_remove(struct pci_dev *pdev)
 		mutex_lock(&adapter->crit_lock);
 		if (adapter->state == __IAVF_RUNNING ||
 		    adapter->state == __IAVF_DOWN ||
+		    adapter->state == __IAVF_DOWN_PENDING ||
 		    adapter->state == __IAVF_INIT_FAILED) {
 			mutex_unlock(&adapter->crit_lock);
 			break;

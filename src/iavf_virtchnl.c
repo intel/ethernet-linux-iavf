@@ -3703,17 +3703,25 @@ void iavf_virtchnl_completion(struct iavf_adapter *adapter,
 
 			adapter->aq_required |= IAVF_FLAG_AQ_CONFIGURE_QUEUES;
 			mod_delayed_work(adapter->wq, &adapter->watchdog_task, 0);
-
-		} else {
-			iavf_free_all_tx_resources(adapter);
-			iavf_free_all_rx_resources(adapter);
-			if (adapter->state == __IAVF_DOWN_PENDING) {
-				iavf_change_state(adapter, __IAVF_DOWN);
-				wake_up(&adapter->down_waitqueue);
-			}
-			adapter->flags &= ~IAVF_FLAG_QUEUES_ENABLED;
+			/* ETF reconfiguration in progress,
+			 * do not transition to DOWN.
+			 */
+			break;
 		}
 #endif /* HAVE_TC_ETF_QOPT_OFFLOAD */
+		/* Normal DISABLE_QUEUES handling: free resources and
+		 * signal DOWN. This path runs on kernels without ETF
+		 * support and when no ETF reconfiguration is pending,
+		 * ensuring iavf_close() can complete and iavf_remove()
+		 * does not spin indefinitely in __IAVF_DOWN_PENDING.
+		 */
+		iavf_free_all_tx_resources(adapter);
+		iavf_free_all_rx_resources(adapter);
+		if (adapter->state == __IAVF_DOWN_PENDING) {
+			iavf_change_state(adapter, __IAVF_DOWN);
+			wake_up(&adapter->down_waitqueue);
+		}
+		adapter->flags &= ~IAVF_FLAG_QUEUES_ENABLED;
 		break;
 	case VIRTCHNL_OP_VERSION:
 	case VIRTCHNL_OP_CONFIG_IRQ_MAP:
