@@ -56,6 +56,7 @@ struct iavf_gnss_serial {
 	struct iavf_adapter *back;
 	struct tty_struct *tty;
 	int open_count;
+	bool exiting;
 	struct mutex gnss_mutex; /* protects GNSS serial structure */
 	struct kthread_worker *kworker;
 	struct kthread_delayed_work read_work;
