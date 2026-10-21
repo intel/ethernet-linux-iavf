@@ -316,8 +316,7 @@ int iavf_send_vf_caps2_msg(struct iavf_adapter *adapter)
 	if (!CAPS2_ALLOWED(adapter))
 		return -EOPNOTSUPP;
 
-	caps2 = kzalloc(struct_size(caps2, vf_cap_flags,
-				    BITS_TO_U32(VIRTCHNL_VF_CAPS_MAX)),
+	caps2 = kzalloc(struct_size(caps2, vf_cap_flags, BITS_TO_U32(VIRTCHNL_VF_CAPS_MAX)),
 			GFP_KERNEL);
 	if (!caps2)
 		return -ENOMEM;
@@ -682,7 +681,6 @@ int iavf_get_vf_caps2(struct iavf_adapter *adapter)
 		goto free_msg_buf;
 
 	caps2 = (struct virtchnl_vf_caps2 *)event.msg_buf;
-
 	err = iavf_process_caps2(adapter, caps2);
 
 free_msg_buf:
@@ -3684,6 +3682,10 @@ void iavf_virtchnl_completion(struct iavf_adapter *adapter,
 
 			adapter->aq_required |= IAVF_FLAG_AQ_CONFIGURE_QUEUES;
 			mod_delayed_work(adapter->wq, &adapter->watchdog_task, 0);
+			/* ETF reconfiguration in progress,
+			 * do not transition to DOWN.
+			 */
+			break;
 
 		} else if (adapter->txtimeq_cfg_state == __IAVF_TXTIMEQ_CONFIG_DISABLE_PENDING) {
 			int queue_id = adapter->txq_pending_cfg;

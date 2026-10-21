@@ -24,8 +24,8 @@ static const char iavf_driver_string[] =
 
 #define DRV_VERSION_MAJOR (4)
 #define DRV_VERSION_MINOR (13)
-#define DRV_VERSION_BUILD (35)
-#define DRV_VERSION "4.13.35"
+#define DRV_VERSION_BUILD (78)
+#define DRV_VERSION "4.13.78"
 const char iavf_driver_version[] = DRV_VERSION;
 static const char iavf_copyright[] =
 	"Copyright (C) 2013-2026 Intel Corporation";
@@ -1264,6 +1264,7 @@ static bool iavf_chnl_filters_exist(struct iavf_adapter *adapter)
 
 	scoped_guard(spinlock_bh, &adapter->cloud_filter_list_lock)
 		return adapter->num_cloud_filters;
+	return false;
 }
 
 /**
@@ -5836,10 +5837,9 @@ iavf_fix_netdev_vlan_features(struct iavf_adapter *adapter,
 		requested_features &= ~NETIF_F_HW_VLAN_STAG_RX;
 #endif /* NETIF_F_HW_VLAN_STAG_RX */
 
-	if (!IAVF_NETDEV_VLAN_FEATURE_ALLOWED(requested_features,
-					      allowed_features,
-					      IAVF_NETIF_F_HW_VLAN_CTAG_FILTER))
-		requested_features &= ~IAVF_NETIF_F_HW_VLAN_CTAG_FILTER;
+	requested_features =
+		(requested_features & ~IAVF_NETIF_F_HW_VLAN_CTAG_FILTER) |
+		(allowed_features & IAVF_NETIF_F_HW_VLAN_CTAG_FILTER);
 
 #ifdef NETIF_F_HW_VLAN_STAG_FILTER
 	if (!IAVF_NETDEV_VLAN_FEATURE_ALLOWED(requested_features,
@@ -6179,12 +6179,10 @@ int iavf_process_config(struct iavf_adapter *adapter)
 	netdev->hw_features |= hw_features | hw_vlan_features;
 #endif
 #endif /* HAVE_NDO_SET_FEATURES */
-	vlan_features = iavf_get_netdev_vlan_features(adapter);
+	vlan_features = iavf_get_netdev_vlan_features(adapter) &
+		~NETIF_F_HW_VLAN_CTAG_FILTER;
 
 	netdev->features |= hw_features | vlan_features;
-
-	if (test_bit(VIRTCHNL_VF_OFFLOAD_VLAN, adapter->vf_cap_flags))
-		netdev->features |= NETIF_F_HW_VLAN_CTAG_FILTER;
 
 	if (FDIR_FLTR_SUPPORT(adapter)) {
 		netdev->hw_features |= NETIF_F_NTUPLE;

@@ -1,6 +1,6 @@
 Name: iavf
 Summary: Intel(R) Ethernet Adaptive Virtual Function Driver
-Version: 4.13.35
+Version: 4.13.78
 Release: 1
 Source: %{name}-%{version}.tar.gz
 Vendor: Intel Corporation
@@ -67,9 +67,13 @@ make -C src INSTALL_MOD_PATH=%{buildroot} MANDIR=%{_mandir} modules_install_no_a
 if [ -d %{buildroot}/lib/modules ]; then
 	find %{buildroot}/lib/modules/ -name 'modules.*' -exec rm -f {} \;
 fi
+
 cd %{buildroot}
 find . -name "iavf.ko" -printf "/%p\n" \
 	>%{_builddir}/%{name}-%{version}/file.list
+
+find . -path '*/ddp/*' -printf "/%p\n" \
+	>>%{_builddir}/%{name}-%{version}/file.list
 %if (%need_aux_rpm == 2)
 make -C %{_builddir}/%{name}-%{version}/src INSTALL_MOD_PATH=%{buildroot} auxiliary_install
 

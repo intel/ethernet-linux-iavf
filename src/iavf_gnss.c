@@ -55,6 +55,29 @@ void iavf_virtchnl_gnss_write_i2c(struct iavf_adapter *adapter)
 	wake_up(&gnss->i2c_write_waitqueue);
 }
 
+static void iavf_gnss_tty_hangup(struct tty_port *tty_port)
+{
+#if defined(HAVE_TTY_PORT_TTY_HANGUP)
+	tty_port_tty_hangup(tty_port, false);
+#elif defined(HAVE_TTY_PORT_HANGUP)
+	tty_port_hangup(tty_port);
+#endif
+}
+
+static void
+iavf_gnss_serial_release(struct iavf_adapter *adapter,
+			 struct iavf_gnss_serial *gnss_serial)
+{
+	kthread_cancel_work_sync(&gnss_serial->write_work);
+	kthread_cancel_delayed_work_sync(&gnss_serial->read_work);
+	kthread_destroy_worker(gnss_serial->kworker);
+	gnss_serial->kworker = NULL;
+	mutex_destroy(&gnss_serial->gnss_mutex);
+	if (adapter->gnss.serial == gnss_serial)
+		adapter->gnss.serial = NULL;
+	kfree(gnss_serial);
+}
+
 /**
  * iavf_gnss_read_i2c
  * @adapter: pointer to iavf adapter
@@ -451,6 +474,7 @@ iavf_gnss_struct_init(struct iavf_adapter *adapter, int index)
 
 	mutex_init(&gnss_serial->gnss_mutex);
 	gnss_serial->open_count = 0;
+	gnss_serial->exiting = false;
 	gnss_serial->back = adapter;
 	adapter->gnss.serial = gnss_serial;
 
@@ -500,6 +524,10 @@ static int iavf_gnss_tty_open(struct tty_struct *tty, struct file *filp)
 	}
 
 	mutex_lock(&gnss_serial->gnss_mutex);
+	if (gnss_serial->exiting) {
+		mutex_unlock(&gnss_serial->gnss_mutex);
+		return -ENODEV;
+	}
 
 	/* Save our structure within the tty structure */
 	tty->driver_data = gnss_serial;
@@ -521,7 +549,9 @@ static int iavf_gnss_tty_open(struct tty_struct *tty, struct file *filp)
 static void iavf_gnss_tty_close(struct tty_struct *tty, struct file *filp)
 {
 	struct iavf_gnss_serial *gnss_serial;
+	struct kthread_delayed_work *read_work;
 	struct iavf_adapter *adapter;
+	bool release_serial = false;
 
 	gnss_serial = (struct iavf_gnss_serial *)tty->driver_data;
 	if (!gnss_serial)
@@ -533,19 +563,29 @@ static void iavf_gnss_tty_close(struct tty_struct *tty, struct file *filp)
 
 	mutex_lock(&gnss_serial->gnss_mutex);
 
-	if (!gnss_serial->open_count) {
+	if (gnss_serial->open_count <= 0) {
 		/* Port was never opened */
-		dev_err(&adapter->pdev->dev, "GNSS port not opened\n");
+		if (!gnss_serial->exiting)
+			dev_err(&adapter->pdev->dev, "GNSS port not opened\n");
 		goto exit;
 	}
 
 	gnss_serial->open_count--;
 	if (gnss_serial->open_count <= 0) {
 		/* Port is in shutdown state */
-		kthread_cancel_delayed_work_sync(&gnss_serial->read_work);
+		tty->driver_data = NULL;
+		if (gnss_serial->exiting) {
+			release_serial = true;
+		} else {
+			read_work = &gnss_serial->read_work;
+			kthread_cancel_delayed_work_sync(read_work);
+		}
 	}
 exit:
 	mutex_unlock(&gnss_serial->gnss_mutex);
+
+	if (release_serial)
+		iavf_gnss_serial_release(adapter, gnss_serial);
 }
 
 /**
@@ -592,7 +632,8 @@ iavf_gnss_tty_write(struct tty_struct *tty,
 
 	mutex_lock(&gnss_serial->gnss_mutex);
 
-	if (!gnss_serial->open_count) {
+	if (!gnss_serial->open_count || gnss_serial->exiting ||
+	    !gnss_serial->kworker) {
 		err = -EINVAL;
 		goto exit;
 	}
@@ -651,7 +692,8 @@ static int iavf_gnss_tty_write_room(struct tty_struct *tty)
 
 	mutex_lock(&gnss_serial->gnss_mutex);
 
-	if (!gnss_serial->open_count) {
+	if (!gnss_serial->open_count || gnss_serial->exiting ||
+	    !gnss_serial->kworker) {
 		mutex_unlock(&gnss_serial->gnss_mutex);
 #ifndef HAVE_TTY_WRITE_ROOM_UINT
 		return 0;
@@ -798,29 +840,38 @@ static bool iavf_gnss_op_match(enum virtchnl_ops pending_op)
  */
 void iavf_gnss_exit(struct iavf_adapter *adapter)
 {
+	struct iavf_gnss_serial *gnss_serial;
+
 	if (!adapter->gnss.initialized || !adapter->gnss.tty_driver)
 		return;
 
 	iavf_flush_vc_msg_queue(adapter, iavf_gnss_op_match);
+	gnss_serial = adapter->gnss.serial;
+	if (gnss_serial) {
+		mutex_lock(&gnss_serial->gnss_mutex);
+		gnss_serial->exiting = true;
+		mutex_unlock(&gnss_serial->gnss_mutex);
+	}
+
+	if (adapter->gnss.tty_port)
+		iavf_gnss_tty_hangup(adapter->gnss.tty_port);
+
+	tty_unregister_driver(adapter->gnss.tty_driver);
+
+	kfree((void *)(adapter->gnss.tty_driver->name));
+	tty_driver_kref_put(adapter->gnss.tty_driver);
+	adapter->gnss.tty_driver = NULL;
+
+	if (gnss_serial && gnss_serial->open_count <= 0)
+		iavf_gnss_serial_release(adapter, gnss_serial);
+	else if (gnss_serial)
+		kthread_cancel_delayed_work_sync(&gnss_serial->read_work);
 
 	if (adapter->gnss.tty_port) {
 		tty_port_destroy(adapter->gnss.tty_port);
 		kfree(adapter->gnss.tty_port);
+		adapter->gnss.tty_port = NULL;
 	}
 
-	if (adapter->gnss.serial) {
-		struct iavf_gnss_serial *gnss_serial = adapter->gnss.serial;
-
-		kthread_cancel_work_sync(&gnss_serial->write_work);
-		kthread_cancel_delayed_work_sync(&gnss_serial->read_work);
-		kthread_destroy_worker(gnss_serial->kworker);
-		gnss_serial->kworker = NULL;
-		kfree(gnss_serial);
-		adapter->gnss.serial = NULL;
-	}
-
-	tty_unregister_driver(adapter->gnss.tty_driver);
-	kfree((void *)(adapter->gnss.tty_driver->name));
-	tty_driver_kref_put(adapter->gnss.tty_driver);
-	adapter->gnss.tty_driver = NULL;
+	adapter->gnss.initialized = false;
 }

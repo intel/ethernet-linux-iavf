@@ -2385,6 +2385,15 @@ static int iavf_set_channels(struct net_device *netdev,
 
 #endif /* ETHTOOL_GCHANNELS */
 
+#ifdef HAVE_ETHTOOL_GET_RX_RING_COUNT
+static u32 iavf_get_rx_ring_count(struct net_device *netdev)
+{
+	struct iavf_adapter *adapter = netdev_priv(netdev);
+
+	return adapter->num_active_queues;
+}
+#endif /* HAVE_ETHTOOL_GET_RX_RING_COUNT */
+
 #if defined(ETHTOOL_GRSSH) && defined(ETHTOOL_SRSSH)
 /**
  * iavf_get_rxfh_key_size - get the RSS hash key size
@@ -2651,6 +2660,9 @@ static const struct ethtool_ops iavf_ethtool_ops = {
 	.get_rxfh_indir_size	= iavf_get_rxfh_indir_size,
 	.get_rxfh		= iavf_get_rxfh,
 	.set_rxfh		= iavf_set_rxfh,
+#ifdef HAVE_ETHTOOL_GET_RX_RING_COUNT
+	.get_rx_ring_count	= iavf_get_rx_ring_count,
+#endif /* HAVE_ETHTOOL_GET_RX_RING_COUNT */
 #endif /* ETHTOOL_GRSSH && ETHTOOL_SRSSH */
 #ifdef ETHTOOL_GCHANNELS
 	.get_channels		= iavf_get_channels,
